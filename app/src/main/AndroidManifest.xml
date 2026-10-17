@@ -37,30 +37,6 @@
                 <action android:name="android.net.VpnService" />
             </intent-filter>
         </service>
-        <service
-            android:name="dev.rouzbeh.hybridvpn.openvpn.OpenVpnAnchorService"
-            android:process=":openvpn"
-            android:exported="false"
-            android:foregroundServiceType="specialUse"
-            android:isolatedProcess="false">
-            <property
-                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
-                android:value="VPN Anchor Process Keep-Alive" />
-        </service>
-
-        <!-- External OpenVPN Library Service -->
-        <service
-            android:name="com.tim.openvpn.service.OpenVPNService"
-            android:process=":openvpn"
-            android:exported="false"
-            android:foregroundServiceType="specialUse"
-            tools:replace="android:process,android:exported,android:foregroundServiceType">
-            <intent-filter tools:node="removeAll" />
-            <property
-                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
-                android:value="OpenVPN Core Runtime"
-                tools:replace="android:value" />
-        </service>
 
         <activity
             android:name="dev.rouzbeh.hybridvpn.MainActivity"

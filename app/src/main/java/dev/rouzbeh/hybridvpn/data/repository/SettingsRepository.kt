@@ -5,9 +5,7 @@ import android.content.SharedPreferences
 import dev.rouzbeh.hybridvpn.core.routing.RoutingPolicy
 
 /**
- * Source of truth for user settings. Single-process (main process only); the
- * `:openvpn` process receives routing policy via RoutingPolicyFile, never via
- * cross-process SharedPreferences.
+ * Source of truth for user settings.
  */
 class SettingsRepository(context: Context) {
     private val prefs: SharedPreferences =
@@ -29,7 +27,7 @@ class SettingsRepository(context: Context) {
     /**
      * Monotonic policy revision, bumped on every routing-affecting change.
      * Survives process restarts; establishes session identity for the policy
-     * snapshot that is transferred to the :openvpn process.
+     * snapshot captured at each connection start.
      */
     fun getRoutingRevision(): Long = prefs.getLong(KEY_ROUTING_REVISION, 0L)
 

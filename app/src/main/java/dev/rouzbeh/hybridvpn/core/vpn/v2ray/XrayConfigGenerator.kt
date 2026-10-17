@@ -197,58 +197,224 @@ object XrayConfigGenerator {
 
     private fun buildStreamSettings(link: ShareLink): JSONObject {
         val p = link.params
-        val net = p["type"] ?: "tcp"
-        val security = p["security"] ?: "none"
-        val sni = p["sni"]?.takeIf { it.isNotBlank() }
-            ?: p["host"]?.takeIf { it.isNotBlank() }
-            ?: link.host
+        val rawNet = p["type"] ?: "tcp"
+        val securityRaw = p["security"]?.takeIf { it.isNotBlank() }
+        // v2rayNG: security is "tls" or "reality", otherwise null/no security
+        val security = when (securityRaw?.lowercase()) {
+            "tls", "reality" -> securityRaw.lowercase()
+            else -> null
+        }
 
-        return JSONObject().apply {
-            put("network", net)
-            put("security", security)
+        // Normalize network like v2rayNG NetworkType (+ legacy aliases) but keep
+        // xhttp as "xhttp" so we emit the canonical name; Xray accepts both
+        // xhttp and splithttp (TransportProtocol.Build maps both to splithttp).
+        val normalizedNet = when (rawNet.lowercase()) {
+            "xhttp", "splithttp", "x-http" -> "xhttp"
+            "tcp", "raw" -> "tcp"
+            "ws", "websocket" -> "ws"
+            "grpc" -> "grpc"
+            "kcp", "mkcp" -> "kcp"
+            "httpupgrade" -> "httpupgrade"
+            // Legacy HTTP/H2 transports were removed in Xray ("HTTP transport ...
+            // without header padding" -> use XHTTP stream-one). Map them to
+            // XHTTP for forward-compat instead of emitting an invalid "h2".
+            "h2", "h3", "http" -> "xhttp"
+            else -> rawNet.lowercase()
+        }
 
-            when (security) {
-                "tls" -> put("tlsSettings", JSONObject().apply {
-                    put("serverName", sni)
-                    put("allowInsecure", p["allowInsecure"] == "1")
-                    put("fingerprint", p["fp"] ?: "chrome")
-                    p["alpn"]?.takeIf { it.isNotBlank() }
-                        ?.let { put("alpn", JSONArray(it.split(","))) }
-                })
-                "reality" -> put("realitySettings", JSONObject().apply {
-                    put("serverName", sni)
-                    put("publicKey", p["pbk"].orEmpty())
-                    put("shortId", p["sid"].orEmpty())
-                    put("spiderX", p["spx"] ?: "/")
-                    put("fingerprint", p["fp"] ?: "chrome")
-                })
+        // Pre-extract fields exactly like FmtBase.getItemFormQuery / CoreOutboundBuilder
+        val hostParam = p["host"]?.takeIf { it.isNotBlank() }
+        val pathParam = p["path"]?.takeIf { it.isNotBlank() }
+        val modeParam = p["mode"]?.takeIf { it.isNotBlank() }
+        val extraParam = p["extra"]?.takeIf { it.isNotBlank() }
+        val serviceNameParam = p["serviceName"]?.takeIf { it.isNotBlank() }
+        val authorityParam = p["authority"]?.takeIf { it.isNotBlank() }
+        val headerType = p["headerType"]?.takeIf { it.isNotBlank() }
+
+        // Determine sniExt from transport host the same way CoreOutboundBuilder
+        // does: the return value of populateTransportSettings.
+        // For each network we compute it and then derive TLS SNI from it.
+        var sniExt: String? = null
+        val streamObj = JSONObject().apply {
+            put("network", normalizedNet)
+            if (security != null) put("security", security) else put("security", "none")
+
+            when (normalizedNet) {
+                "tcp" -> {
+                    if (headerType == "http") {
+                        val requestHost = hostParam ?: link.host
+                        put("tcpSettings", JSONObject().put("header", JSONObject().apply {
+                            put("type", "http")
+                            put("request", JSONObject().apply {
+                                put("path", JSONArray().put(pathParam ?: "/"))
+                                put("headers", JSONObject().put("Host", JSONArray().put(requestHost)))
+                            })
+                        }))
+                        sniExt = requestHost
+                    } else {
+                        // Still emit a tcpSettings header type none for completeness
+                        put("tcpSettings", JSONObject().put("header", JSONObject().apply { put("type", "none") }))
+                        sniExt = hostParam
+                    }
+                }
+                "ws" -> {
+                    put("wsSettings", JSONObject().apply {
+                        put("path", pathParam ?: "/")
+                        // v2rayNG WsSettingsBean uses plain host field, not headers map
+                        if (!hostParam.isNullOrBlank()) put("host", hostParam) else put("host", "")
+                    })
+                    sniExt = hostParam
+                }
+                "grpc" -> {
+                    put("grpcSettings", JSONObject().apply {
+                        put("serviceName", serviceNameParam.orEmpty())
+                        put("authority", authorityParam.orEmpty())
+                        put("multiMode", modeParam == "multi")
+                        // Align with v2rayNG defaults
+                        put("idle_timeout", 60)
+                        put("health_check_timeout", 20)
+                    })
+                    sniExt = authorityParam
+                }
+                "httpupgrade" -> {
+                    put("httpupgradeSettings", JSONObject().apply {
+                        put("path", pathParam ?: "/")
+                        put("host", hostParam.orEmpty())
+                    })
+                    sniExt = hostParam
+                }
+                "xhttp" -> {
+                    val xPath = pathParam ?: "/"
+                    val xHost = hostParam.orEmpty()
+                    val xhttpObj = JSONObject().apply {
+                        put("path", xPath)
+                        put("host", xHost)
+                        if (!modeParam.isNullOrBlank()) put("mode", modeParam)
+                        // v2rayNG uses xhttpExtra -> extra (parsed JSON), NOT headers
+                        if (!extraParam.isNullOrBlank()) {
+                            // Try to parse as JSON object; if invalid keep raw string
+                            // to match JsonUtil.parseString behaviour (null on invalid)
+                            try {
+                                val parsed = JSONObject(extraParam)
+                                put("extra", parsed)
+                            } catch (_: Exception) {
+                                try {
+                                    val parsedArr = JSONArray(extraParam)
+                                    put("extra", parsedArr)
+                                } catch (_: Exception) {
+                                    // Invalid JSON -> omit, matching v2rayNG null
+                                }
+                            }
+                        }
+                    }
+                    // Emit both keys for Xray compat: infra/conf copies xhttpSettings->splithttpSettings
+                    put("xhttpSettings", xhttpObj)
+                    put("splithttpSettings", JSONObject(xhttpObj.toString()))
+                    sniExt = hostParam
+                }
+                "kcp", "mkcp" -> {
+                    put("kcpSettings", JSONObject().apply {
+                        put("uplinkCapacity", 5)
+                        put("downlinkCapacity", 20)
+                        put("congestion", true)
+                    })
+                    sniExt = null
+                }
             }
 
-            when (net) {
-                "tcp" -> if (p["headerType"] == "http") {
-                    put("tcpSettings", JSONObject().put("header", JSONObject().apply {
-                        put("type", "http")
-                        put("request", JSONObject().apply {
-                            put("path", JSONArray().put(p["path"] ?: "/"))
-                            put("headers", JSONObject().put("Host",
-                                JSONArray().put(p["host"] ?: link.host)))
-                        })
-                    }))
+            // --- TLS / REALITY (populateTlsSettings) ---
+            if (security != null) {
+                // allowInsecure: support "insecure", "allowInsecure", "allow_insecure" like FmtBase
+                val allowInsecureRaw = when {
+                    p["insecure"] == "1" || p["allowInsecure"] == "1" || p["allow_insecure"] == "1" -> true
+                    p["insecure"] == "0" || p["allowInsecure"] == "0" || p["allow_insecure"] == "0" -> false
+                    else -> false
                 }
-                "ws" -> put("wsSettings", JSONObject().apply {
-                    put("path", p["path"]?.takeIf { it.isNotBlank() } ?: "/")
-                    put("headers", JSONObject().put("Host", p["host"] ?: sni))
-                })
-                "grpc" -> put("grpcSettings", JSONObject().apply {
-                    put("serviceName", p["serviceName"].orEmpty())
-                    put("multiMode", p["mode"] == "multi")
-                })
-                "httpupgrade" -> put("httpupgradeSettings", JSONObject().apply {
-                    put("path", p["path"]?.takeIf { it.isNotBlank() } ?: "/")
-                    put("host", p["host"] ?: sni)
-                })
+                val pinnedCA = p["pcs"]?.takeIf { it.isNotBlank() }
+                val allowInsecure = allowInsecureRaw && pinnedCA.isNullOrEmpty()
+
+                // SNI resolution: mirrors CoreOutboundBuilder.populateTlsSettings
+                val sniParam = p["sni"]?.takeIf { it.isNotBlank() }
+                val sniValue: String? = if (sniParam.isNullOrBlank()) {
+                    when {
+                        !sniExt.isNullOrBlank() && isDomainName(sniExt) -> sniExt
+                        isDomainName(link.host) -> link.host
+                        else -> sniExt
+                    }
+                } else sniParam
+
+                val fingerprint = p["fp"]?.takeIf { it.isNotBlank() }
+                val alpnRaw = p["alpn"]?.takeIf { it.isNotBlank() }
+                val alpnList = alpnRaw?.split(",")?.map { it.trim() }?.filter { it.isNotEmpty() }
+                val ech = p["ech"]?.takeIf { it.isNotBlank() }
+                val vcn = p["vcn"]?.takeIf { it.isNotBlank() }
+                val pcs = p["pcs"]?.takeIf { it.isNotBlank() }
+                val pbk = p["pbk"]?.takeIf { it.isNotBlank() }
+                val sid = p["sid"]?.takeIf { it.isNotBlank() }
+                val spx = p["spx"]?.takeIf { it.isNotBlank() } ?: "/"
+                val pqv = p["pqv"]?.takeIf { it.isNotBlank() }
+
+                if (security == "tls") {
+                    put("tlsSettings", JSONObject().apply {
+                        put("serverName", sniValue ?: "")
+                        put("allowInsecure", allowInsecure)
+                        if (!fingerprint.isNullOrBlank()) put("fingerprint", fingerprint)
+                        if (!alpnList.isNullOrEmpty()) put("alpn", JSONArray(alpnList))
+                        if (!ech.isNullOrBlank()) put("echConfigList", ech)
+                        if (!vcn.isNullOrBlank()) put("verifyPeerCertByName", vcn)
+                        if (!pcs.isNullOrBlank()) put("pinnedPeerCertSha256", pcs)
+                        // Reality-only fields are not set for TLS, but keep null-safe
+                    })
+                } else { // reality
+                    put("realitySettings", JSONObject().apply {
+                        put("serverName", sniValue ?: "")
+                        put("fingerprint", fingerprint ?: "chrome")
+                        put("publicKey", pbk.orEmpty())
+                        put("shortId", sid.orEmpty())
+                        put("spiderX", spx)
+                        if (!pqv.isNullOrBlank()) put("mldsa65Verify", pqv)
+                        // TLS-specific fields that also belong in realitySettings
+                        put("allowInsecure", allowInsecure)
+                        if (!alpnList.isNullOrEmpty()) put("alpn", JSONArray(alpnList))
+                        if (!ech.isNullOrBlank()) put("echConfigList", ech)
+                        if (!vcn.isNullOrBlank()) put("verifyPeerCertByName", vcn)
+                        if (!pcs.isNullOrBlank()) put("pinnedPeerCertSha256", pcs)
+                    })
+                }
+            }
+
+            // finalmask: fm param -> finalmask (mirrors populateTransportSettings finalMask)
+            p["fm"]?.takeIf { it.isNotBlank() }?.let { fmRaw ->
+                try {
+                    // fm is expected to be a JSON object string
+                    val fmJson = JSONObject(fmRaw)
+                    put("finalmask", fmJson)
+                } catch (_: Exception) {
+                    // Try raw as is (could be already JSON array/object fragment)
+                    try { put("finalmask", JSONObject("""{"tcp":$fmRaw}""")) } catch (_: Exception) {}
+                }
             }
         }
+        return streamObj
+    }
+
+    private fun isDomainName(value: String?): Boolean {
+        if (value.isNullOrBlank()) return false
+        val v = value.trim()
+        // mirrored approximation of Utils.isDomainName: not pure IP and looks like domain
+        if (isPureIpAddress(v)) return false
+        // simple domain check: contains dot and valid chars
+        return v.contains('.') && Regex("^[A-Za-z0-9.-]+$").matches(v)
+    }
+
+    private fun isPureIpAddress(value: String): Boolean {
+        val v = value.trim().removePrefix("[").removeSuffix("]")
+        // IPv4
+        if (Regex("^([0-9]{1,3}\\.){3}[0-9]{1,3}$").matches(v)) {
+            return v.split('.').all { it.toIntOrNull() in 0..255 }
+        }
+        // IPv6 heuristic: contains colon and hex chars
+        return v.contains(':') && Regex("^[0-9a-fA-F:]+$").matches(v)
     }
 
     private fun buildVmessOutbound(vmess: String): JSONObject {

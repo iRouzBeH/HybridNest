@@ -171,4 +171,23 @@ object V2RayManager {
             -1L
         }
     }
+
+    /**
+     * True v2rayNG-style ping: creates an ephemeral Xray instance from the
+     * full JSON config (no TUN) and dials through core.Dial. This tests the
+     * *actual* proxy stack (TLS, REALITY, XHTTP/splithttp, etc.), not just
+     * whether the TCP port is open. Returns -1 on any failure, matching
+     * v2rayNG's "-1ms" convention.
+     */
+    fun measureOutboundDelay(configJson: String, testUrl: String = "https://www.google.com/generate_204"): Long {
+        return try {
+            Libv2ray.measureOutboundDelay(configJson, testUrl)
+        } catch (e: Exception) {
+            Log.d(TAG, "measureOutboundDelay failed: ${e.message}")
+            -1L
+        } catch (t: Throwable) {
+            Log.d(TAG, "measureOutboundDelay throwable: ${t.message}")
+            -1L
+        }
+    }
 }

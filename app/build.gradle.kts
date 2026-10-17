@@ -48,7 +48,6 @@ android {
     }
     buildFeatures {
         compose = true
-        aidl = true
     }
     externalNativeBuild {
         cmake {
@@ -90,10 +89,6 @@ dependencies {
     implementation(libs.androidx.room.runtime)
     implementation(libs.androidx.room.ktx)
     ksp(libs.androidx.room.compiler)
-
-    // OpenVPN Implementation
-    implementation(libs.vpnprotocols.openvpn)
-    implementation(libs.vpnprotocols.base.api)
 
     // ML Kit Barcode Scanning
     implementation("com.google.mlkit:barcode-scanning:17.2.0")

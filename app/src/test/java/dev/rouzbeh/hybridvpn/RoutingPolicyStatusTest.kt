@@ -44,7 +44,7 @@ class RoutingPolicyStatusTest {
         RoutingPolicyStatus.publish(sessionId = 100, revision = 7, protocol = "OpenConnect", nowMs = 1_000L)
 
         // A NEWER session replaces the active policy (service re-established).
-        RoutingPolicyStatus.publish(sessionId = 200, revision = 9, protocol = "OpenVPN", nowMs = 2_000L)
+        RoutingPolicyStatus.publish(sessionId = 200, revision = 9, protocol = "v2rayNG", nowMs = 2_000L)
 
         // LATE teardown of the OLD session arrives: must NOT clobber session 200.
         RoutingPolicyStatus.clearActive(100, intentional = true, detail = "late teardown of old session")

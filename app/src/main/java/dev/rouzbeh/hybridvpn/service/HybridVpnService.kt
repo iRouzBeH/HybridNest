@@ -13,7 +13,6 @@ import android.os.ParcelFileDescriptor
 import android.system.Os
 import android.util.Log
 import androidx.core.app.NotificationCompat
-import dev.rouzbeh.hybridvpn.core.routing.OpenVpnPolicyGuard
 import dev.rouzbeh.hybridvpn.core.routing.RoutingRefusedException
 import dev.rouzbeh.hybridvpn.core.utils.LogRedactor
 import dev.rouzbeh.hybridvpn.core.vpn.ConnectivityDiagnostics
@@ -282,14 +281,13 @@ class HybridVpnService : VpnService() {
         when (intent?.action) {
             "STOP_SERVICE", "ACTION_STOP_VPN", "ACTION_FORCE_STOP" -> {
                 synchronized(stopLock) {
-                    if (stoppingSessionId != null) {
+                    if (stoppingSessionId != null && stoppingSessionId != 0L) {
                         emitLog("Stop action received (${intent.action}) while teardown of session $stoppingSessionId already in progress - ignoring duplicate.")
                         return START_NOT_STICKY
                     }
                 }
                 emitLog("Stop action received (${intent.action}).")
-                stopAllEngines(reason = "requested via ${intent.action}", intentional = true)
-                stopSelf()
+                stopAllEngines(reason = "requested via ${intent.action}", intentional = true, startId = startId)
                 return START_NOT_STICKY
             }
             "ACTION_REQUEST_STATE_SYNC" -> {
@@ -298,7 +296,6 @@ class HybridVpnService : VpnService() {
             }
             ACTION_START_VPN -> {
                 currentConnectedProtocol = when (intent.getStringExtra(EXTRA_PROTOCOL)) {
-                    VpnProtocol.OpenVPN.title -> VpnProtocol.OpenVPN
                     VpnProtocol.V2rayNG.title -> VpnProtocol.V2rayNG
                     else -> VpnProtocol.OpenConnect
                 }
@@ -332,7 +329,6 @@ class HybridVpnService : VpnService() {
                 return@launch
             }
             currentConnectedProtocol = when (activeProfile.protocol) {
-                VpnProtocol.OpenVPN.title -> VpnProtocol.OpenVPN
                 VpnProtocol.V2rayNG.title -> VpnProtocol.V2rayNG
                 else -> VpnProtocol.OpenConnect
             }
@@ -363,31 +359,6 @@ class HybridVpnService : VpnService() {
             
             when (activeProfile.protocol) {
                 "v2rayNG" -> startV2Ray(activeProfile)
-                VpnProtocol.OpenVPN.title -> {
-                    // Defense in depth: the UI refuses OpenVPN + per-app before
-                    // sending any intent, but if a stale settings write slipped in
-                    // between UI check and this point, refuse HERE too instead of
-                    // acting as a silent proxy for an unrestricted tunnel.
-                    val policy = sessionRoutingPolicy
-                    val refusal = policy?.let { OpenVpnPolicyGuard.refusalReason(it) }
-                    if (refusal != null) {
-                        emitLog("OpenVPN REFUSED: $refusal")
-                        VpnStateManager.updateState(ConnectionState.ERROR)
-                        stopAllEngines(reason = "OpenVPN per-app policy cannot be enforced by vpnprotocols 3.0.4", intentional = true)
-                        removeVpnNotification()
-                        stopSelf()
-                        return@launch
-                    }
-                    emitLog("OpenVPN TUN managed by external library (global routing). Operating as Notification proxy.")
-                    emitLog(
-                        "OpenVPN policy transfer: sent r" + (policy?.revision ?: -1L) +
-                            " (" + (policy?.describe() ?: "null") + "). " +
-                            "NOTE: vpnprotocols 3.0.4 does not consume this filter (verified bytecode audit)."
-                    )
-                    // Do NOT call startOpenVPNNative here.
-                    // The external library handles the TUN; the CONNECTED observer above
-                    // runs the (now diagnostic-only) connectivity check.
-                }
                 else -> startOpenConnectPath(activeProfile)
             }
         }
@@ -473,11 +444,6 @@ class HybridVpnService : VpnService() {
                 (protocolTitle ?: "from profile") + "), policy r" + snapshot.revision + ": " +
                 snapshot.describe()
         )
-
-        // Transfer the policy snapshot to the :openvpn process BEFORE the library
-        // can establish its TUN. The file is written synchronously here so the
-        // :openvpn process's applications filter reads a complete snapshot.
-        dev.rouzbeh.hybridvpn.core.routing.RoutingPolicyFile.write(applicationContext, snapshot)
     }
 
     private suspend fun startV2Ray(activeProfile: dev.rouzbeh.hybridvpn.data.local.VpnProfile) {
@@ -541,7 +507,7 @@ class HybridVpnService : VpnService() {
 
         // Tunnel + core are up: mark CONNECTED immediately (tunnel-ready truth).
         // The HTTP check becomes diagnostic-only (degraded flag), consistent with
-        // OpenConnect/OpenVPN; the launchConnectivityCheck path skips V2Ray, so run
+        // OpenConnect; the launchConnectivityCheck path skips V2Ray, so run
         // it here with the local proxy explicitly.
         VpnStateManager.updateStateFromNative(2)
         BroadcastStateManager.broadcastConnectedStateDetailed(applicationContext, VpnProtocol.V2rayNG)
@@ -551,7 +517,7 @@ class HybridVpnService : VpnService() {
 
     @androidx.annotation.Keep
     private fun establishTunNative(ip: String, dns: String): Int {
-        emitLog("Establishing standard TUN for OpenConnect/OpenVPN...")
+        emitLog("Establishing standard TUN for OpenConnect...")
         if (VpnService.prepare(this) != null) {
             emitLog("FATAL: VPN consent not granted / revoked.")
             return -1
@@ -610,7 +576,7 @@ class HybridVpnService : VpnService() {
             val f = java.io.FileDescriptor::class.java.getDeclaredField("descriptor").apply { isAccessible = true }
             f.getInt(dup)
         } catch (t: Throwable) {
-            emitLog("dup() failed for OC/OVPN, falling back to detachFd(): ${t.message}")
+            emitLog("dup() failed, falling back to detachFd(): ${t.message}")
             tunFdClaimedByCore = true
             val raw = pfd.detachFd()
             vpnInterface = null
@@ -637,8 +603,28 @@ class HybridVpnService : VpnService() {
             emitLog("FATAL: IPv6 proxy endpoints are unsupported by the current TUN.")
             return -1
         }
-        builder.addIpv4DefaultRouteExcept(excludedServerIp)
-        emitLog("Excluded Xray server from VPN routes: ${excludedServerIp.hostAddress}")
+
+        // Route strategy depends on whether the VPN app itself is inside the
+        // tunnel (determined by the routing policy):
+        //
+        // Global / Bypass: the VPN app is explicitly EXCLUDED (disallowed) to
+        //   prevent Xray's transport from looping. We still need to exclude the
+        //   proxy server's IP from the route table so outbound transport traffic
+        //   isn't captured → use addIpv4DefaultRouteExcept.
+        //
+        // Allow: the VPN app is NOT in the allowed list (see applyPerAppRouting),
+        //   so its traffic never enters the TUN regardless of routes. A full
+        //   default route (0.0.0.0/0) is safe and REQUIRED — the complementary
+        //   route trick breaks DNS resolution for the allowed apps on some devices.
+        val policy = sessionRoutingPolicy
+        val isAllowMode = policy != null && policy.enabled && policy.mode == dev.rouzbeh.hybridvpn.core.routing.RoutingPolicy.Mode.ALLOW
+        if (isAllowMode) {
+            builder.addRoute("0.0.0.0", 0)
+            emitLog("V2Ray Allow mode: using full default route (app excluded from tunnel; no loop risk)")
+        } else {
+            builder.addIpv4DefaultRouteExcept(excludedServerIp)
+            emitLog("Excluded Xray server from VPN routes: ${excludedServerIp.hostAddress}")
+        }
 
         // Xray config is pinned to IPs, so `dns` is a literal resolver address here;
         // parse defensively anyway (comma-joined list convention shared with the
@@ -708,15 +694,15 @@ class HybridVpnService : VpnService() {
 
         when (decision) {
             is dev.rouzbeh.hybridvpn.core.routing.RoutingDecision.Global -> {
-                // Global routing. Protocol transport exception only for V2Ray:
-                // Xray dials the proxy server directly from this app's UID and Xray's
-                // own protect() handles other sockets; without the exclusion its own
-                // outbound traffic would loop back into its TUN.
-                // OpenConnect/OpenVPN protect their transport sockets natively and
-                // intentionally remain INSIDE the tunnel for diagnostics.
+                // Global routing. Transport exception only for V2Ray:
+                // Xray dials the proxy server directly from this app's UID; without
+                // the exclusion its outbound traffic would loop back into its TUN.
+                // OpenConnect uses protect() on transport sockets and stays
+                // INSIDE the tunnel for diagnostics.
                 if (currentConnectedProtocol == dev.rouzbeh.hybridvpn.service.VpnProtocol.V2rayNG) {
                     addDisallow(builder, packageName)
                 }
+                android.util.Log.d("PerAppDebug", "Global $currentConnectedProtocol policy=${policy.describe()}")
             }
 
             is dev.rouzbeh.hybridvpn.core.routing.RoutingDecision.Allow -> {
@@ -727,17 +713,28 @@ class HybridVpnService : VpnService() {
                 decision.allowedPackages.forEach { pkg ->
                     if (addAllow(builder, pkg)) userPackagesAdded++
                 }
-                
-                // The VPN app itself MUST be in the tunnel in Allow mode.
-                // The app uses protect() on its transport sockets,
-                // so there is no risk of traffic looping. It must be allowed
-                // through the TUN so that it can resolve its own IP/location/flag
-                // over the tunnel.
-                addAllow(builder, packageName)
+
+                // Per-app Allow: the VPN app must be tunneled for OpenConnect
+                // so its IP/location check (vpnNetwork.openConnection) sees the VPN exit.
+                // OpenConnect transports are protected via protect() -> no loop risk.
+                // For V2Ray the app must NOT be tunneled: Xray runs in this process
+                // without protect(), allowing it would capture its transport -> loop.
+                // V2Ray detects the exit via localhost HTTP proxy (127.0.0.1:10809).
+                if (currentConnectedProtocol == dev.rouzbeh.hybridvpn.service.VpnProtocol.OpenConnect) {
+                    val addedSelf = addAllow(builder, packageName)
+                    if (addedSelf) {
+                        emitLog("Routing: allowed self (OpenConnect Allow requires tunneled app for IP detection)")
+                    }
+                    android.util.Log.d("PerAppDebug", "Allow OpenConnect: userAdded=$userPackagesAdded selfAdded=$addedSelf packages=${decision.allowedPackages.sorted()} pruned=${decision.prunedPackages.sorted()}")
+                } else if (currentConnectedProtocol == dev.rouzbeh.hybridvpn.service.VpnProtocol.V2rayNG) {
+                    android.util.Log.d("PerAppDebug", "Allow V2Ray: userAdded=$userPackagesAdded packages=${decision.allowedPackages.sorted()} pruned=${decision.prunedPackages.sorted()} (self NOT added to avoid Xray loop)")
+                } else {
+                    android.util.Log.d("PerAppDebug", "Allow $currentConnectedProtocol: userAdded=$userPackagesAdded packages=${decision.allowedPackages.sorted()}")
+                }
 
                 if (userPackagesAdded == 0) {
                     // Every user selection vanished at Builder time: refuse rather
-                    // than establish a self-only (effectively diagnostic) tunnel.
+                    // than establish an empty tunnel.
                     val msg = "All user-selected apps vanished before TUN creation; refusing establishment (allow policy not widened)."
                     emitLog("Routing: REFUSED - $msg")
                     throw RoutingRefusedException(msg)
@@ -752,6 +749,7 @@ class HybridVpnService : VpnService() {
                 if (currentConnectedProtocol == dev.rouzbeh.hybridvpn.service.VpnProtocol.V2rayNG) {
                     addDisallow(builder, packageName)
                 }
+                android.util.Log.d("PerAppDebug", "Bypass $currentConnectedProtocol policy=${policy.describe()} disallowed=${decision.disallowedPackages.sorted()} pruned=${decision.prunedPackages.sorted()}")
             }
 
             is dev.rouzbeh.hybridvpn.core.routing.RoutingDecision.Refused -> {
@@ -901,10 +899,10 @@ class HybridVpnService : VpnService() {
         }
     }
 
-    private fun stopAllEngines(reason: String = "unspecified", intentional: Boolean) {
+    private fun stopAllEngines(reason: String = "unspecified", intentional: Boolean, startId: Int = -1) {
         val forSession = sessionId
         synchronized(stopLock) {
-            if (stoppingSessionId == forSession) {
+            if (stoppingSessionId == forSession && forSession != 0L) {
                 Log.d(TAG, "stopAllEngines: teardown of session $forSession already in progress; duplicate request ignored ($reason)")
                 return
             }
@@ -913,58 +911,78 @@ class HybridVpnService : VpnService() {
         stopReason = reason
         Log.d(TAG, "Stopping all engines (session $forSession, intentional=$intentional, reason=$reason)...")
 
+        VpnStateManager.updateState(ConnectionState.DISCONNECTING)
+
         connectionJob?.cancel()
         connectionJob = null
         checkJob?.cancel()
         checkJob = null
-        removeVpnNotification()
+        notificationJob?.cancel()
+        notificationJob = null
 
-        // Signal the UI/ViewModel to cleanup OpenVPN library resources (IPC loops).
-        // Sent ONCE per session here; the ViewModel must not re-enter via FORCE_STOP
-        // intents just because the service announced it is stopping.
+        // Signal the UI/ViewModel that a disconnect was requested.
         VpnActionBus.disconnectFlow.tryEmit(Unit)
 
-        // Mark the cancellation as intentional BEFORE the native state updates so
-        // the expected native -4 (cancel) is not published as a spurious ERROR.
         if (intentional) VpnStateManager.beginIntentionalCancel()
 
         tunFdClaimedByCore = false
         currentConnectedProtocol = null
-        // Session identity is cleared so late callbacks from the old session can be
-        // detected via session-id guards; active-policy status returns to "no tunnel".
         sessionRoutingPolicy = null
         RoutingPolicyStatus.clearActive(forSession, intentional, reason)
-        VpnStateManager.updateStateFromNative(0)
-        
-        // Notification removal happened before native teardown to avoid a stale update.
 
         // Synchronously send cancellation signals to native engines to begin teardown immediately
         try { stopOpenConnectNative() } catch (e: Throwable) { Log.e(TAG, "stopOpenConnectNative failed", e) }
-        try { 
-            stopOpenVPNNative() 
-            val stopOpenVpnIntent = Intent().setClassName("dev.rouzbeh.hybridvpn", "com.tim.openvpn.service.OpenVPNService")
-            stopService(stopOpenVpnIntent)
-        } catch (e: Throwable) { Log.e(TAG, "stopOpenVPNNative failed", e) }
 
-        // Perform async resource teardown cleanly inside serviceScope
         val fdToClose = coreTunFd
         val pfdToClose = vpnInterface
+        coreTunFd = null
+        vpnInterface = null
 
         serviceScope.launch(Dispatchers.IO) {
             try { V2RayManager.stopCore() } catch (e: Throwable) { Log.e(TAG, "V2Ray stop failed", e) }
             try { fdToClose?.let { Os.close(it) } } catch (_: Throwable) {}
             try { pfdToClose?.close() } catch (_: Throwable) {}
-            coreTunFd = null
-            vpnInterface = null
+
+            if (forSession == sessionId || sessionId == 0L) {
+                VpnStateManager.updateStateFromNative(0)
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                    stopForeground(STOP_FOREGROUND_REMOVE)
+                } else {
+                    @Suppress("DEPRECATION")
+                    stopForeground(true)
+                }
+                getSystemService(NotificationManager::class.java)?.cancel(NOTIFICATION_ID)
+                if (startId != -1) {
+                    stopSelfResult(startId)
+                } else {
+                    stopSelf()
+                }
+            }
             Log.d(TAG, "Teardown of session $forSession complete (reason=$reason).")
-            stoppingSessionId = null
+            synchronized(stopLock) {
+                if (stoppingSessionId == forSession) {
+                    stoppingSessionId = null
+                }
+            }
             VpnActionBus.teardownComplete.tryEmit(forSession)
         }
     }
 
     private fun replyToStateSyncRequest() {
-        if (vpnInterface != null) BroadcastStateManager.broadcastConnectedStateDetailed(applicationContext, currentConnectedProtocol ?: VpnProtocol.OpenConnect)
-        else BroadcastStateManager.broadcastReadyState(applicationContext)
+        VpnStateManager.initPersist(applicationContext)
+        VpnStateManager.refreshPersistedStartTime(applicationContext)
+        if (vpnInterface != null || VpnStateManager.connectionState.value == ConnectionState.CONNECTED) {
+            // Re-broadcast CONNECTED even if vpnInterface handle was transiently null
+            // due to service restart race; authoritative state is connectionState.
+            val proto = currentConnectedProtocol ?: VpnProtocol.OpenConnect
+            BroadcastStateManager.broadcastConnectedStateDetailed(applicationContext, proto)
+            // Ensure persisted start time is authoritative for re-entry uptime.
+            if (VpnStateManager.connectionStartTime == 0L) {
+                val t = VpnStateManager.connectionStartTime
+                // initPersist already restored it if available; nothing else to do.
+                android.util.Log.d(TAG, "replyToStateSyncRequest: CONNECTED sync, startTime=$t")
+            }
+        } else BroadcastStateManager.broadcastReadyState(applicationContext)
     }
 
     override fun onRevoke() {
@@ -980,8 +998,6 @@ class HybridVpnService : VpnService() {
 
     private external fun startOpenConnectNative(serverAddress: String, username: String, password: String, vpnFileDescriptor: Int, sessionId: Long)
     private external fun stopOpenConnectNative()
-    private external fun startOpenVPNNative(config: String, username: String, password: String)
-    private external fun stopOpenVPNNative()
 
     private fun startOpenConnectPath(p: dev.rouzbeh.hybridvpn.data.local.VpnProfile) {
         if (!nativeLibLoaded) { 
@@ -991,9 +1007,5 @@ class HybridVpnService : VpnService() {
             return 
         }
         startOpenConnectNative(p.serverAddress, p.username, p.password, -1, sessionId)
-    }
-
-    private fun startOpenVpnPath(activeProfile: dev.rouzbeh.hybridvpn.data.local.VpnProfile) {
-        startOpenVPNNative(activeProfile.serverAddress, activeProfile.username, activeProfile.password)
     }
 }

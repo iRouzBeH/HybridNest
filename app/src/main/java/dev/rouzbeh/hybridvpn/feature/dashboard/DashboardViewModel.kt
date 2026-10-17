@@ -9,26 +9,16 @@ import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
-import com.tim.basevpn.vpn.api.VpnClientApi
-import com.tim.basevpn.vpn.api.VpnClientApiFactory
-import com.tim.basevpn.vpn.api.VpnConfig
-import com.tim.basevpn.vpn.api.VpnStateHolder
-import com.tim.basevpn.vpn.api.VpnStateHolders
-import com.tim.basevpn.vpn.api.VpnUiState
-import com.tim.openvpn.OpenVpnProtocol
-import dev.rouzbeh.hybridvpn.core.routing.OpenVpnPolicyGuard
-import dev.rouzbeh.hybridvpn.core.utils.LogRedactor
 import dev.rouzbeh.hybridvpn.data.local.AppDatabase
 import dev.rouzbeh.hybridvpn.data.local.VpnProfile
 import dev.rouzbeh.hybridvpn.core.vpn.v2ray.V2RayManager
 import dev.rouzbeh.hybridvpn.data.model.AppInfo
 import dev.rouzbeh.hybridvpn.data.repository.SettingsRepository
-import dev.rouzbeh.hybridvpn.openvpn.IOpenVpnAnchor
-import dev.rouzbeh.hybridvpn.openvpn.OpenVpnAnchorService
 import dev.rouzbeh.hybridvpn.service.BroadcastStateManager
 import dev.rouzbeh.hybridvpn.service.ConnectionState
 import dev.rouzbeh.hybridvpn.service.DetailedState
 import dev.rouzbeh.hybridvpn.service.HybridVpnService
+import dev.rouzbeh.hybridvpn.service.LogStore
 import dev.rouzbeh.hybridvpn.service.NetworkInfo
 import dev.rouzbeh.hybridvpn.service.RoutingPolicyStatus
 import dev.rouzbeh.hybridvpn.service.VpnActionBus
@@ -37,6 +27,8 @@ import dev.rouzbeh.hybridvpn.service.VpnStateManager
 import kotlinx.coroutines.*
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.*
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import org.json.JSONObject
 import java.net.URL
 import kotlin.time.Duration.Companion.milliseconds
@@ -51,15 +43,6 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
     private var networkFetchJob: Job? = null
     private val _isV2raySorted = MutableStateFlow(false)
 
-    private var openVpnClientApi: VpnClientApi? = null
-    private var openVpnStateHolder: VpnStateHolder? = null
-    private var openVpnScope: CoroutineScope? = null
-    private var isOpenVpnInitialized = false
-    private var anchorConnection: android.content.ServiceConnection? = null
-    private var anchorBinder: dev.rouzbeh.hybridvpn.openvpn.IOpenVpnAnchor? = null
-    private var serviceUnavailableSince = 0L
-    private var openVpnWatchdogJob: Job? = null
-
     val allProfiles: StateFlow<List<VpnProfile>> = dao.getAllProfiles()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
@@ -71,7 +54,13 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
     ) { profiles, protocol, isSorted ->
         val filtered = profiles.filter { it.protocol == protocol }
         if (protocol == "v2rayNG" && isSorted) {
-            filtered.sortedBy { if (it.ping > 0) it.ping else Long.MAX_VALUE }
+            // Keep subscription info cards pinned at top regardless of sort / ping.
+            val (infoCards, regular) = filtered.partition { isSubscriptionInfoName(it.name) }
+            val sortedRegular = regular.sortedBy { if (it.ping > 0) it.ping else Long.MAX_VALUE }
+            infoCards + sortedRegular
+        } else if (protocol == "v2rayNG") {
+            val (infoCards, regular) = filtered.partition { isSubscriptionInfoName(it.name) }
+            infoCards + regular
         } else {
             filtered
         }
@@ -84,49 +73,31 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
     val speed: StateFlow<Pair<String, String>> = VpnStateManager.speed
     val networkInfo: StateFlow<NetworkInfo> = VpnStateManager.networkInfo
 
-    private val _openConnectLogs = MutableStateFlow<List<String>>(emptyList())
-    private val _openVpnLogs = MutableStateFlow<List<String>>(emptyList())
-    private val _v2rayLogs = MutableStateFlow<List<String>>(emptyList())
-
+    /** Live Log now backed by process-scoped LogStore so it survives re-entry. */
     val currentLogs: StateFlow<List<String>> = combine(
-        selectedProtocol, _openConnectLogs, _openVpnLogs, _v2rayLogs
-    ) { protocol, ocLogs, ovpnLogs, v2Logs ->
+        selectedProtocol, LogStore.openConnectLogs, LogStore.v2rayLogs
+    ) { protocol, ocLogs, v2Logs ->
         when (protocol) {
             "OpenConnect" -> ocLogs
-            "OpenVPN" -> ovpnLogs
             else -> v2Logs
         }
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
-    fun clearLogs(protocol: String) {
-        when (protocol) {
-            "OpenConnect" -> _openConnectLogs.value = emptyList()
-            "OpenVPN" -> _openVpnLogs.value = emptyList()
-            else -> _v2rayLogs.value = emptyList()
-        }
-    }
+    fun clearLogs(protocol: String) { LogStore.clear(protocol) }
 
-    fun appendLog(protocol: String, log: String) {
-        val time = java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.US).format(java.util.Date())
-        // Redact at the producer: this flow also drives UI display; logcat capture
-        // of the same content must never contain secrets (see LogRedactor doc).
-        val formattedLog = "[$time] ${LogRedactor.redact(log)}"
-        when (protocol) {
-            "OpenConnect" -> _openConnectLogs.value = (_openConnectLogs.value + formattedLog).takeLast(500)
-            "OpenVPN" -> _openVpnLogs.value = (_openVpnLogs.value + formattedLog).takeLast(500)
-            else -> _v2rayLogs.value = (_v2rayLogs.value + formattedLog).takeLast(500)
-        }
-    }
+    fun appendLog(protocol: String, log: String) { LogStore.append(protocol, log) }
 
     private fun startLogcatCapture(protocol: String) {
         logcatJob?.cancel()
         logcatJob = viewModelScope.launch(Dispatchers.IO) {
             try {
                 Runtime.getRuntime().exec("logcat -c").waitFor()
-                val cmd = if (protocol == "v2rayNG")
-                    "logcat -v time HybridNestVPN:D GoLog:D libv2ray:D Go:D AndroidRuntime:E DEBUG:E libc:E System.err:W *:S"
-                else
-                    "logcat -v time OpenConnect:D HybridNestJNI:D HybridNestVPN:D VPNService:D AndroidRuntime:E DEBUG:E libc:E *:S"
+                val cmd = when (protocol) {
+                    "v2rayNG" ->
+                        "logcat -v time HybridNestVPN:D GoLog:D libv2ray:D Go:D AndroidRuntime:E DEBUG:E libc:E System.err:W *:S"
+                    else ->
+                        "logcat -v time OpenConnect:D HybridNestJNI:D HybridNestVPN:D VPNService:D AndroidRuntime:E DEBUG:E libc:E *:S"
+                }
                 val process = Runtime.getRuntime().exec(cmd)
                 val reader = process.inputStream.bufferedReader()
                 while (this.isActive) {
@@ -174,9 +145,33 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
 
     private var pingJob: Job? = null
 
+    // Helpers for pinning subscription info cards (names containing volume/days)
+    private fun isSubscriptionInfoName(name: String): Boolean {
+        val hasVolume = Regex("""\d+(?:\.\d+)?\s*GB\s*/\s*\d+(?:\.\d+)?\s*GB""", RegexOption.IGNORE_CASE).containsMatchIn(name) ||
+                Regex("""\d+(?:\.\d+)?\s*/\s*\d+(?:\.\d+)?\s*GB""", RegexOption.IGNORE_CASE).containsMatchIn(name)
+        val hasDays = Regex("""\d+\s*Days?""", RegexOption.IGNORE_CASE).containsMatchIn(name)
+        return hasVolume || hasDays
+    }
+
     init {
-        VpnStateManager.updateNetworkInfo("Unknown", "Detecting...", "un")
         VpnStateManager.initPersist(application)
+        // Re-hydrate in-memory start time if the process survived but
+        // VpnStateManager's singleton lost its cached value (e.g. after
+        // Activity recreation the ViewModel was GC'd but prefs still hold it).
+        VpnStateManager.refreshPersistedStartTime(application)
+        // Cache the flag now so replay logic can distinguish a real
+        // state replay (collect immediately with isConnected==true) from a
+        // normal emission. Must be computed BEFORE any coroutine collects.
+        val initialIsConnected = VpnStateManager.connectionState.value.isConnected
+        if (initialIsConnected) {
+            // Hydrate UI state without broadcasting DISCONNECTED via init block.
+            _uptime.value = run {
+                val t = VpnStateManager.connectionStartTime
+                if (t > 0) (System.currentTimeMillis() - t) / 1000 else 0L
+            }
+        } else {
+            VpnStateManager.updateNetworkInfo("Unknown", "Detecting...", "un")
+        }
 
         viewModelScope.launch {
             VpnStateManager.vpnLogs.collect { (protocol, msg) -> appendLog(protocol, msg) }
@@ -202,25 +197,47 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
         }
 
         viewModelScope.launch {
-            val cm = getApplication<Application>().getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
-            val isVpnActive = cm.allNetworks.any { network ->
-                val capabilities = cm.getNetworkCapabilities(network)
-                capabilities?.hasTransport(NetworkCapabilities.TRANSPORT_VPN) == true
-            }
-
-            if (!isVpnActive) {
-                VpnStateManager.updateStateFromNative(0)
-                BroadcastStateManager.broadcastReadyState(application)
-            } else {
-                val syncIntent = Intent(getApplication(), HybridVpnService::class.java).apply {
-                    action = "ACTION_REQUEST_STATE_SYNC"
+            // Do not infer tunnel liveness from ConnectivityManager when this app
+            // may be excluded from the tunnel (Allow mode for V2Ray, or any future
+            // policy). That check incorrectly reports "no VPN" and forces a bogus
+            // DISCONNECTED, which resets uptime and wipes the "Detecting..." state.
+            // The service is authoritative: always ask it to sync state if we are
+            // currently CONNECTED, otherwise ensure Ready state.
+            val isConnected = VpnStateManager.connectionState.value.isConnected
+            if (isConnected) {
+                try {
+                    val syncIntent = Intent(getApplication(), HybridVpnService::class.java).apply {
+                        action = "ACTION_REQUEST_STATE_SYNC"
+                    }
+                    getApplication<Application>().startService(syncIntent)
+                } catch (_: Exception) {
+                    // Service not running (e.g. after process death while tunnel still technically exists)
+                    // Keep CONNECTED UI and let uptime hydrate from persisted START_TIME.
                 }
-                getApplication<Application>().startService(syncIntent)
+            } else {
+                // Not connected: ensure UI is in Ready state without forcing DISCONNECTED
+                // over an already-terminal state (avoids clobbering isInitialStateEmission logic).
+                if (VpnStateManager.connectionState.value.isTerminal) {
+                    BroadcastStateManager.broadcastReadyState(application)
+                } else {
+                    // Transitional state (CONNECTING etc) — request sync to recover.
+                    try {
+                        val syncIntent = Intent(getApplication(), HybridVpnService::class.java).apply {
+                            action = "ACTION_REQUEST_STATE_SYNC"
+                        }
+                        getApplication<Application>().startService(syncIntent)
+                    } catch (_: Exception) {}
+                }
             }
 
             val active = dao.getActiveProfile().firstOrNull()
             if (active != null) {
-                _selectedProtocol.value = active.protocol
+                // Migrate a stale selection from a removed protocol to a
+                // still-supported default so the selector lands on a real tab.
+                _selectedProtocol.value = when (active.protocol) {
+                    "OpenConnect", "v2rayNG" -> active.protocol
+                    else -> "OpenConnect"
+                }
             }
         }
 
@@ -254,9 +271,20 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
                 if (state == ConnectionState.CONNECTING) {
                     networkFetchJob?.cancel()
                     _uptime.value = 0L // Force zero during connection phase
-                    clearLogs(activeProfile.value?.protocol ?: _selectedProtocol.value)
+                    // Only clear logs when a NEW connection is about to be established,
+                    // not on ViewModel recreation replay. The re-entry scenario replays
+                    // CONNECTING only when a genuine new connection is starting; if we
+                    // are replaying CONNECTING because the singleton still holds it from
+                    // a previous session, the service's new sessionId will differ — but
+                    // for correctness we gate on whether we actually transitioned INTO
+                    // CONNECTING from a non-connecting state, not on replay.
+                    // LogStore is process-scoped so naive clears would wipe history.
+                    if (!isInitialStateEmission) {
+                        clearLogs(activeProfile.value?.protocol ?: _selectedProtocol.value)
+                    }
+                    logcatJob?.cancel()
                     startLogcatCapture(activeProfile.value?.protocol ?: _selectedProtocol.value)
-                if (state.isTerminal) {
+                } else if (state.isTerminal) {
                     if (isInitialStateEmission) {
                         isInitialStateEmission = false
                     } else {
@@ -268,7 +296,7 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
                         _uptime.value = 0L
                         _pingResult.value = null
                         VpnStateManager.updateSelectionLockedState(false)
-    
+
                         if (state == ConnectionState.DISCONNECTED || state == ConnectionState.IDLE) {
                             if (initialNetworkInfo != null) {
                                 val init = initialNetworkInfo!!
@@ -291,7 +319,7 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
 
                 if (state == ConnectionState.CONNECTED) {
                     stopUptime()
-                    
+
                     val savedStartTime = VpnStateManager.connectionStartTime
                     if (savedStartTime > 0L) {
                         _uptime.value = (System.currentTimeMillis() - savedStartTime) / 1000
@@ -303,7 +331,25 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
                     if (isInitialStateEmission) {
                         isInitialStateEmission = false
                     }
-                    
+
+                    // Reset IP/location to the loading animation immediately so
+                    // the card does not keep showing the previous location until
+                    // the exit IP is resolved. The VM's fetchCurrentNetworkInfo
+                    // also resets to Detecting, but we do it eagerly here so
+                    // the UI never has a frame where old data is presented as
+                    // if it were the VPN exit. The AnimatedContent in
+                    // NetworkInfoCard cross-fades between old and new flag.
+                    // Note: fetchCurrentNetworkInfo guards with
+                    // connectionState == CONNECTED and session id, so we
+                    // invalidate the display synchronously then kick the fetch
+                    // after a short settle delay.
+                    // Only reset if we still hold the previous public IP (not
+                    // already Detecting) to avoid redundant emissions.
+                    val curNet = VpnStateManager.networkInfo.value
+                    if (curNet.location != "Detecting..." && curNet.ip != "Unknown") {
+                        VpnStateManager.updateNetworkInfo("Unknown", "Detecting...", "un")
+                    }
+
                     // Launch network checks in parallel without blocking the flow collection
                     viewModelScope.launch {
                         delay(2000.milliseconds)
@@ -332,9 +378,8 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
 
     fun setProtocol(protocol: String) {
         _selectedProtocol.value = protocol
-        clearLogs("OpenConnect")
-        clearLogs("OpenVPN")
-        clearLogs("v2rayNG")
+        // Do NOT clear logs when switching protocol tabs; logs are per-protocol
+        // buffers in LogStore and should persist until a new connection starts.
     }
 
     fun testPing(ipToPing: String = "8.8.8.8") {
@@ -348,17 +393,31 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
                 return@launch
             }
             try {
-                val process = Runtime.getRuntime().exec("ping -c 1 -w 2 $ipToPing")
-                val reader = process.inputStream.bufferedReader()
-                var rtt = -1.0
-                reader.forEachLine { line ->
-                    if (line.contains("time=")) {
-                        val timeStr = line.substringAfter("time=").substringBefore(" ms")
-                        rtt = timeStr.toDouble()
-                    }
+                val cm = getApplication<Application>().getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+                val vpnNetwork = cm.allNetworks.firstOrNull { net ->
+                    cm.getNetworkCapabilities(net)?.hasTransport(NetworkCapabilities.TRANSPORT_VPN) == true
                 }
-                process.waitFor()
-                _pingResult.value = if (rtt >= 0) "${rtt.toInt()} ms" else "Timeout"
+                if (vpnNetwork != null) {
+                    val start = System.currentTimeMillis()
+                    java.net.Socket().use { socket ->
+                        vpnNetwork.bindSocket(socket)
+                        socket.connect(java.net.InetSocketAddress("1.1.1.1", 53), 3000)
+                    }
+                    val rtt = System.currentTimeMillis() - start
+                    _pingResult.value = "$rtt ms"
+                } else {
+                    val process = Runtime.getRuntime().exec("ping -c 1 -w 2 $ipToPing")
+                    val reader = process.inputStream.bufferedReader()
+                    var rtt = -1.0
+                    reader.forEachLine { line ->
+                        if (line.contains("time=")) {
+                            val timeStr = line.substringAfter("time=").substringBefore(" ms")
+                            rtt = timeStr.toDouble()
+                        }
+                    }
+                    process.waitFor()
+                    _pingResult.value = if (rtt >= 0) "${rtt.toInt()} ms" else "Timeout"
+                }
             } catch (_: Exception) { _pingResult.value = "Error" }
         }
     }
@@ -450,11 +509,14 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
         networkFetchJob?.cancel()
         networkFetchJob = viewModelScope.launch(Dispatchers.IO) {
             System.setProperty("http.keepAlive", "false")
+            // Ordered by reliability: ip-api.com and ipwho.is correctly map 45.93.168.99
+            // to NL (verified against browserleaks/ipinfo); ip.sb mis-maps it to TR.
             val endpoints = listOf(
-                "https://api-ipv4.ip.sb/geoip",
-                "https://api.myip.world/json",
                 "https://ip-api.com/json",
+                "https://ipwho.is/",
                 "https://v4.ifconfig.co/json",
+                "https://api.myip.world/json",
+                "https://api-ipv4.ip.sb/geoip",
                 "https://free.freeipapi.com/api/json"
             )
             var successResult: IpResult? = null
@@ -465,13 +527,18 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
                     try {
                         val connection = (URL(url).openConnection() as java.net.HttpURLConnection).apply {
                             connectTimeout = 2500; readTimeout = 2500; useCaches = false
+                            instanceFollowRedirects = true
                             requestMethod = "GET"
                             setRequestProperty("User-Agent", "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Mobile Safari/537.36")
                             setRequestProperty("Accept", "application/json")
                             setRequestProperty("Connection", "close")
                         }
-                        val response = connection.inputStream.bufferedReader().use { it.readText() }
-                        parseIpResponse(url, response)
+                        if (connection.responseCode !in 200..299) {
+                            null
+                        } else {
+                            val response = connection.inputStream.bufferedReader().use { it.readText() }
+                            parseIpResponse(url, response)
+                        }
                     } catch (e: Exception) { null }
                 }
                 if (successResult != null) break
@@ -495,16 +562,45 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
         networkFetchJob?.cancel()
         networkFetchJob = viewModelScope.launch(Dispatchers.IO) {
             System.setProperty("http.keepAlive", "false")
+            // Show Detecting only briefly; underlying fetch will retry automatically.
+            // If we already have a valid IP, keep displaying it while re-fetching
+            // to avoid flicker "Unknown" during a manual/automatic retry.
+                // Per user request: on (re)connect the old IP/location must NOT remain
+            // visible - the card should revert to the Detecting animation and stay
+            // there until the new exit IP is actually resolved. Previously we kept
+            // the previous (public) IP to avoid flicker; that caused the
+            // "shows previous information again" bug. Always reset to Detecting
+            // unconditionally at the start of a post-connect fetch so
+            // NetworkInfoCard's showLoading (= isTransitioning || isUnresolved)
+            // stays true until the fresh fetch succeeds.
             VpnStateManager.updateNetworkInfo("Unknown", "Detecting...", "un")
 
-            val isV2ray = activeProfile.value?.protocol == "v2rayNG"
+            val detailedState = VpnStateManager.detailedConnectionStateFlow.value
+            val isV2ray = if (detailedState is DetailedState.Connected) {
+                detailedState.activeProtocol == VpnProtocol.V2rayNG
+            } else {
+                activeProfile.value?.protocol == "v2rayNG"
+            }
             val proxy = if (isV2ray) java.net.Proxy(java.net.Proxy.Type.HTTP, java.net.InetSocketAddress("127.0.0.1", 10809)) else java.net.Proxy.NO_PROXY
 
+            val cm = getApplication<Application>().getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+            // Resolve the VPN network lazily per endpoint attempt. AnyConnect's TUN
+            // can take a moment to register with ConnectivityManager after the
+            // tunnel reports UP, so a single early query may transiently return
+            // null. Re-querying each iteration (plus a small wait when absent)
+            // makes the lookup bind to the VPN network reliably for AnyConnect.
+            fun findVpnNetwork(): android.net.Network? =
+                cm.allNetworks.firstOrNull { net ->
+                    cm.getNetworkCapabilities(net)?.hasTransport(NetworkCapabilities.TRANSPORT_VPN) == true
+                }
+
+            // Ordered by reliability (ip-api.com + ipwho.is verified against browserleaks for 45.93.168.99 → NL).
             val endpoints = listOf(
-                "https://api-ipv4.ip.sb/geoip",
-                "https://api.myip.world/json",
                 "https://ip-api.com/json",
+                "https://ipwho.is/",
                 "https://v4.ifconfig.co/json",
+                "https://api.myip.world/json",
+                "https://api-ipv4.ip.sb/geoip",
                 "https://free.freeipapi.com/api/json"
             )
             var successResult: IpResult? = null
@@ -513,15 +609,40 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
                 if (!isActive || currentLookupId != ipLookupSessionId || VpnStateManager.currentSessionId != sessionAtStart) return@launch
                 successResult = withTimeoutOrNull(3500L) {
                     try {
-                        val connection = (URL(url).openConnection(proxy) as java.net.HttpURLConnection).apply {
+                        val parsedUrl = URL(url)
+                        val rawConnection = when {
+                            isV2ray -> parsedUrl.openConnection(proxy)
+                            else -> {
+                                // AnyConnect: prefer binding to the VPN network
+                                // so we report the tunnel exit IP. Give the TUN a brief
+                                // moment to register if it isn't up yet.
+                                var vpnNet = findVpnNetwork()
+                                if (vpnNet == null) { delay(300); vpnNet = findVpnNetwork() }
+                                if (vpnNet != null) {
+                                    vpnNet.openConnection(parsedUrl, java.net.Proxy.NO_PROXY)
+                                } else {
+                                    // TUN not yet visible to ConnectivityManager; the
+                                    // default network is the VPN in a full-tunnel setup,
+                                    // so this still returns the exit IP in most cases.
+                                    android.util.Log.w("DashboardViewModel", "vpnNetwork null for $url, falling back to default network")
+                                    parsedUrl.openConnection(java.net.Proxy.NO_PROXY)
+                                }
+                            }
+                        }
+                        val connection = (rawConnection as java.net.HttpURLConnection).apply {
                             connectTimeout = 2500; readTimeout = 2500; useCaches = false
+                            instanceFollowRedirects = true
                             requestMethod = "GET"
                             setRequestProperty("User-Agent", "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Mobile Safari/537.36")
                             setRequestProperty("Accept", "application/json")
                             setRequestProperty("Connection", "close")
                         }
-                        val response = connection.inputStream.bufferedReader().use { it.readText() }
-                        parseIpResponse(url, response)
+                        if (connection.responseCode !in 200..299) {
+                            null
+                        } else {
+                            val response = connection.inputStream.bufferedReader().use { it.readText() }
+                            parseIpResponse(url, response)
+                        }
                     } catch (e: Exception) { null }
                 }
                 if (successResult != null) break
@@ -533,7 +654,28 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
                 if (successResult != null) {
                     VpnStateManager.updateNetworkInfo(successResult.ip, successResult.location, successResult.flagCode)
                 } else {
-                    VpnStateManager.updateNetworkInfo("Unknown", "Unavailable", "un")
+                    VpnStateManager.updateNetworkInfo("Unknown", "VPN exit unavailable", "un")
+                    // Auto-retry path for the intermittent "VPN exit unavailable" glitch
+                    // (screenshot 2). The single 2s-delayed fetch in CONNECTED collect
+                    // is too early when DNS/HTTP hasn't settled after tunnel up.
+                    // Schedule 2 background retries with backoff; each re-enters
+                    // fetchCurrentNetworkInfo (validates vpnNetwork/proxy + session).
+                    val failedSession = sessionAtStart
+                    viewModelScope.launch {
+                        var delayMs = 3000L
+                        repeat(2) {
+                            delay(delayMs)
+                            delayMs += 3000L
+                            if (connectionState.value == ConnectionState.CONNECTED &&
+                                VpnStateManager.currentSessionId == failedSession &&
+                                VpnStateManager.networkInfo.value.let {
+                                    it.ip == "Unknown" || it.location == "VPN exit unavailable" || it.location == "Unavailable"
+                                }
+                            ) {
+                                fetchCurrentNetworkInfo()
+                            } else return@launch
+                        }
+                    }
                 }
             }
         }
@@ -551,6 +693,21 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
             }
 
             when {
+                url.contains("ip-api.com") -> {
+                    // ip-api returns {"status":"fail"...} when queried without required fields
+                    if (json.optString("status", "success") == "fail") return null
+                    val ip = json.optString("query", "0.0.0.0")
+                    val countryCode = json.optString("countryCode", "un").lowercase()
+                    val country = json.optString("country", java.util.Locale("", countryCode).displayCountry)
+                    IpResult(ip, cleanCountryName(country), countryCode)
+                }
+                url.contains("ipwho.is") -> {
+                    if (json.optBoolean("success", true) == false) return null
+                    val ip = json.optString("ip", "0.0.0.0")
+                    val countryCode = json.optString("country_code", "un").lowercase()
+                    val country = json.optString("country", java.util.Locale("", countryCode).displayCountry)
+                    IpResult(ip, cleanCountryName(country), countryCode)
+                }
                 url.contains("ip.sb") -> {
                     val ip = json.optString("ip", "0.0.0.0")
                     val countryCode = json.optString("country_code", "un").lowercase()
@@ -560,12 +717,6 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
                 url.contains("myip.world") -> {
                     val ip = json.optString("ip", "0.0.0.0")
                     val countryCode = json.optString("country_code", "un").lowercase()
-                    val country = json.optString("country", java.util.Locale("", countryCode).displayCountry)
-                    IpResult(ip, cleanCountryName(country), countryCode)
-                }
-                url.contains("ip-api.com") -> {
-                    val ip = json.optString("query", "0.0.0.0")
-                    val countryCode = json.optString("countryCode", "un").lowercase()
                     val country = json.optString("country", java.util.Locale("", countryCode).displayCountry)
                     IpResult(ip, cleanCountryName(country), countryCode)
                 }
@@ -584,71 +735,6 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
                 else -> null
             }
         } catch (e: Exception) { null }
-    }
-
-    private suspend fun ensureOpenVpnRuntime(): Boolean {
-        anchorBinder?.let { 
-            if (it.asBinder().isBinderAlive && it.isRuntimeReady) {
-                android.util.Log.d("DashboardViewModel", "Anchor binder already alive and ready.")
-                return true 
-            }
-        }
-
-        android.util.Log.d("DashboardViewModel", "Ensuring OpenVPN runtime: binding to anchor...")
-        val app = getApplication<Application>()
-        val bound = CompletableDeferred<IOpenVpnAnchor?>()
-        val conn = object : android.content.ServiceConnection {
-            override fun onServiceConnected(n: android.content.ComponentName?, b: android.os.IBinder?) {
-                android.util.Log.d("DashboardViewModel", "Anchor service connected.")
-                bound.complete(IOpenVpnAnchor.Stub.asInterface(b))
-            }
-            override fun onNullBinding(n: android.content.ComponentName?) { 
-                android.util.Log.e("DashboardViewModel", "Anchor service returned null binding.")
-                bound.complete(null) 
-            }
-            override fun onServiceDisconnected(n: android.content.ComponentName?) { 
-                android.util.Log.w("DashboardViewModel", "Anchor service disconnected unexpectedly.")
-                anchorBinder = null 
-                if (bound.isActive) bound.complete(null) // Fail fast
-            }
-            override fun onBindingDied(name: android.content.ComponentName?) {
-                android.util.Log.e("DashboardViewModel", "Anchor binding died.")
-                anchorBinder = null
-                if (bound.isActive) bound.complete(null) // Fail fast
-                if (VpnStateManager.connectionState.value == ConnectionState.CONNECTED || 
-                    VpnStateManager.connectionState.value == ConnectionState.CONNECTING) {
-                    VpnStateManager.updateState(ConnectionState.ERROR)
-                }
-            }
-        }
-
-        val intent = Intent(app, OpenVpnAnchorService::class.java)
-        // Explicitly start the service to ensure it survives as a sticky/foreground process
-        app.startService(intent)
-        
-        if (!app.bindService(intent, conn, Context.BIND_AUTO_CREATE or Context.BIND_IMPORTANT)) {
-            android.util.Log.e("DashboardViewModel", "Failed to bind to Anchor service.")
-            return false
-        }
-        anchorConnection = conn
-
-        val binder = withTimeoutOrNull(10000) { bound.await() } ?: run {
-            android.util.Log.e("DashboardViewModel", "Timeout or failure awaiting Anchor binder.")
-            return false
-        }
-        anchorBinder = binder
-        
-        android.util.Log.d("DashboardViewModel", "Anchor bound. Waiting for socket...")
-        return withTimeoutOrNull(10000) {
-            var attempts = 0
-            while (!binder.isRuntimeReady) {
-                attempts++
-                if (attempts % 10 == 0) android.util.Log.v("DashboardViewModel", "Still waiting for socket (attempt $attempts)...")
-                delay(100)
-            }
-            android.util.Log.i("DashboardViewModel", "Anchor readiness confirmed (socket exists).")
-            true
-        } == true
     }
 
     /**
@@ -681,10 +767,6 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
                 // Full teardown (native engine included) before re-establishing, so the
                 // new TUN is built from the latest policy snapshot.
                 VpnStateManager.updateState(ConnectionState.CANCELING)
-                if (currentProfile?.protocol == "OpenVPN") {
-                    try { openVpnClientApi?.disconnect() } catch (_: Exception) {}
-                    cleanupOpenVpnResources()
-                }
                 // Send the authoritative stop ONCE. The service ignores duplicate stop
                 // requests per session, so re-sending FORCE_STOP later would be a no-op
                 // at best and a fresh-service-spawn at worst — do not do it.
@@ -727,88 +809,8 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
             return
         }
 
-        // OpenVPN per-app fail-safe: the bundled vpnprotocols 3.0.4 library ignores
-        // application filters when creating its TUN (bytecode-verified). Refuse
-        // BEFORE any state change, anchor startup or service intent — the user gets
-        // an explicit explanation instead of a silent unrestricted tunnel.
-        if (currentProfile.protocol == VpnProtocol.OpenVPN.title) {
-            val policy = settingsRepository.snapshotRoutingPolicy()
-            OpenVpnPolicyGuard.refusalReason(policy)?.let { reason ->
-                android.util.Log.e("DashboardViewModel", "OpenVPN start refused: $reason")
-                appendLog("OpenVPN", "Connection refused: $reason")
-                showToast(reason)
-                VpnStateManager.updateState(ConnectionState.ERROR)
-                return
-            }
-        }
-
         viewModelScope.launch {
             try {
-                if (currentProfile.protocol == "OpenVPN") {
-                    android.util.Log.d("DashboardViewModel", "Starting OpenVPN sequence...")
-
-                    cleanupOpenVpnResources(releaseAnchor = false)
-                    
-                    VpnStateManager.updateState(ConnectionState.CONNECTING)
-
-                    if (!ensureOpenVpnRuntime()) {
-                        appendLog("OpenVPN", "Runtime process failed to start (socket never appeared)")
-                        VpnStateManager.updateState(ConnectionState.ERROR)
-                        return@launch
-                    }
-
-                    val newScope = CoroutineScope(Dispatchers.Main + SupervisorJob())
-                    openVpnScope = newScope
-
-                    openVpnClientApi = VpnClientApiFactory.create(
-                        context = getApplication(),
-                        scope = newScope,
-                        protocol = OpenVpnProtocol.descriptor
-                    )
-                    
-                    if (!isOpenVpnInitialized) {
-                        isOpenVpnInitialized = true
-                        serviceUnavailableSince = 0L
-                        newScope.launch {
-                            try {
-                                openVpnStateHolder = VpnStateHolders.create(getApplication(), OpenVpnProtocol.descriptor)
-                                openVpnStateHolder?.state?.collect { uiState ->
-                                    android.util.Log.d("DashboardViewModel", "OpenVPN UI State: $uiState")
-                                    val mappedState = when (uiState) {
-                                        is VpnUiState.Connecting, is VpnUiState.Checking -> ConnectionState.CONNECTING
-                                        is VpnUiState.Connected -> ConnectionState.CONNECTED
-                                        is VpnUiState.Disconnecting -> ConnectionState.DISCONNECTING
-                                        is VpnUiState.ServiceUnavailable -> {
-                                            if (serviceUnavailableSince == 0L) serviceUnavailableSince = android.os.SystemClock.elapsedRealtime()
-                                            val elapsed = android.os.SystemClock.elapsedRealtime() - serviceUnavailableSince
-                                            if (elapsed > 15000) ConnectionState.ERROR else ConnectionState.CONNECTING
-                                        }
-                                        is VpnUiState.Disconnected -> ConnectionState.DISCONNECTED
-                                    }
-                                    
-                                    if (activeProfile.value?.protocol == "OpenVPN") {
-                                        VpnStateManager.updateState(mappedState)
-                                        
-                                        if (uiState is VpnUiState.Connected) {
-                                            openVpnWatchdogJob?.cancel()
-                                        }
-
-                                        if (mappedState == ConnectionState.ERROR) {
-                                            android.util.Log.e("DashboardViewModel", "OpenVPN fatal state - Force Killing")
-                                            forceKillOpenVpnService(getApplication())
-                                        }
-                                    }
-                                }
-                            } catch (e: Exception) {
-                                android.util.Log.e("DashboardViewModel", "State collection failed", e)
-                            }
-                        }
-                    }
-                    val cleanAddr = hardenForDpi(currentProfile.serverAddress.trim())
-                    openVpnClientApi?.connect(VpnConfig(cleanAddr))
-                    startOpenVpnWatchdog()
-                }
-                
                 val intent = Intent(context, HybridVpnService::class.java).apply {
                     action = HybridVpnService.ACTION_START_VPN
                     putExtra(HybridVpnService.EXTRA_PROTOCOL, currentProfile.protocol)
@@ -818,77 +820,35 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
         }
     }
 
-    private fun cleanupOpenVpnResources(releaseAnchor: Boolean = true) {
-        android.util.Log.d("DashboardViewModel", "Cleaning up OpenVPN resources (releaseAnchor=$releaseAnchor)...")
-        openVpnWatchdogJob?.cancel()
-        openVpnWatchdogJob = null
-        openVpnScope?.cancel()
-        openVpnScope = null
-        openVpnClientApi = null
-        openVpnStateHolder = null
-        isOpenVpnInitialized = false
-        serviceUnavailableSince = 0L
-
-        if (releaseAnchor) {
-            anchorConnection?.let {
-                try {
-                    getApplication<Application>().unbindService(it)
-                } catch (e: Exception) {
-                    android.util.Log.w("DashboardViewModel", "Failed to unbind anchor connection", e)
-                }
-            }
-            anchorConnection = null
-            anchorBinder = null
+    fun dispatchVpnStop(context: Context) {
+        val appContext = context.applicationContext
+        val intent = Intent(appContext, HybridVpnService::class.java).apply {
+            action = "ACTION_STOP_VPN"
         }
+        appContext.startService(intent)
     }
 
-    private fun startOpenVpnWatchdog() {
-        openVpnWatchdogJob?.cancel()
-        openVpnWatchdogJob = viewModelScope.launch {
-            android.util.Log.d("DashboardViewModel", "OpenVPN Watchdog started (30s)")
-            delay(30000)
-            val currentState = VpnStateManager.connectionState.value
-            if (currentState != ConnectionState.CONNECTED) {
-                android.util.Log.w("DashboardViewModel", "OpenVPN Watchdog triggered. Force stopping.")
-                appendLog("OpenVPN", "Connection timed out (Watchdog 30s). Force stopping.")
-                forceKillOpenVpnService(getApplication())
-            }
-        }
-    }
-
-    private fun forceKillOpenVpnService(context: Context) {
-        viewModelScope.launch {
-            try {
-                android.util.Log.d("DashboardViewModel", "forceKillOpenVpnService initiated")
-                try { openVpnClientApi?.disconnect() } catch (e: Exception) {}
-                cleanupOpenVpnResources()
-                // EXPLICIT KILL: Ensure the native core retry loop is terminated
-                val stopIntent = Intent().setClassName("dev.rouzbeh.hybridvpn", "com.tim.openvpn.service.OpenVPNService")
-                context.stopService(stopIntent)
-                VpnStateManager.updateState(ConnectionState.ERROR)
-            } catch (e: Exception) {
-                android.util.Log.e("DashboardViewModel", "Failed to force kill OpenVPN", e)
-            }
-        }
-    }
-
+    /**
+     * User tapped "Disconnect" while already connecting. This is the correct
+     * behaviour: the tunnel is still being established, so we cancel the
+     * in-flight connection attempt — NOT a normal graceful disconnect from
+     * CONNECTED. The notification action currently maps to the same path
+     * (ACTION_STOP_VPN) so both UI and notification behave consistently. If in
+     * future you want notification-Disconnect to do a clean CONNECTED
+     * disconnect vs. a cancel, branch on VpnStateManager.connectionState here.
+     */
     fun cancelConnection(context: Context) {
         val current = VpnStateManager.connectionState.value
         if (current == ConnectionState.CANCELING || current == ConnectionState.DISCONNECTED) {
             android.util.Log.d("DashboardViewModel", "cancelConnection: already $current, ignoring re-entrant call")
             return
         }
+        android.util.Log.d("DashboardViewModel", "cancelConnection from $current via graceful cancel")
+        dispatchVpnStop(context)
+
         viewModelScope.launch {
             try {
                 VpnStateManager.updateState(ConnectionState.CANCELING)
-                val forceStopIntent = Intent(context, HybridVpnService::class.java).apply { action = "ACTION_FORCE_STOP" }
-                context.startService(forceStopIntent)
-                try { 
-                    openVpnClientApi?.disconnect() 
-                    cleanupOpenVpnResources()
-                    val stopOpenVpnIntent = Intent().setClassName("dev.rouzbeh.hybridvpn", "com.tim.openvpn.service.OpenVPNService")
-                    context.stopService(stopOpenVpnIntent)
-                } catch (e: Exception) {} 
                 delay(1000)
                 // Cross-session safety: a NEWER session may have already started
                 // (user hit disconnect then connect quickly). Do not clobber its
@@ -906,23 +866,24 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
         }
     }
 
-    fun initiateDisconnect(context: Context, onActualStop: (Context) -> Unit) {
-        viewModelScope.launch {
-            try {
-                VpnStateManager.updateState(ConnectionState.DISCONNECTING)
-                delay(1000)
-                try { 
-                    openVpnClientApi?.disconnect() 
-                    cleanupOpenVpnResources()
-                    val stopOpenVpnIntent = Intent().setClassName("dev.rouzbeh.hybridvpn", "com.tim.openvpn.service.OpenVPNService")
-                    context.stopService(stopOpenVpnIntent)
-                } catch (e: Exception) {} 
-                val stopIntent = Intent(context, HybridVpnService::class.java).apply { action = "ACTION_STOP_VPN" }
-                context.startService(stopIntent)
-                onActualStop(context)
-                stopUptime()
-            } catch (e: Exception) { VpnStateManager.updateState(ConnectionState.ERROR) }
-        }
+    /**
+     * User tapped "Disconnect" while CONNECTED (the normal case, both from UI
+     * and Notification). Performs a graceful disconnect: DISCONNECTING so the
+     * UI shows "Disconnecting" instead of an immediate jump to DISCONNECTED.
+     * The service's teardown path will eventually broadcast the terminal state;
+     * we do NOT force DISCONNECTED here — the explicit cancel path above does.
+     * This addresses the report that the button "immediately shuts down the
+     * VPN state as if doing a force stop".
+     */
+    fun initiateDisconnect(context: Context, onActualStop: (Context) -> Unit = {}) {
+        android.util.Log.d("DashboardViewModel", "initiateDisconnect (graceful) from ${VpnStateManager.connectionState.value}")
+        dispatchVpnStop(context)
+        onActualStop(context)
+        stopUptime()
+        VpnStateManager.updateState(ConnectionState.DISCONNECTING)
+        // No forced DISCONNECTED — the service broadcasts the final
+        // terminal state once TUN/FDs are closed. We leave the state in
+        // DISCONNECTING so the button/indicator can animate "Disconnecting".
     }
 
     fun resetState() { VpnStateManager.updateStateFromNative(0) }
@@ -980,6 +941,14 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
             try {
                 val isConnected = connectionState.value == ConnectionState.CONNECTED
                 val newProfile = dao.getProfileById(profileId)
+                // Servers that failed their ping test (ping == -1) are unreachable —
+                // don't allow them to be selected for a connection.
+                if (newProfile?.ping == -1L) {
+                    withContext(Dispatchers.Main) {
+                        showToast("This server is unreachable right now\nPick another server or retest its ping.")
+                    }
+                    return@launch
+                }
                 val currentProfile = activeProfile.value
                 if (isConnected) {
                     if (currentProfile?.protocol == newProfile?.protocol) {
@@ -1019,6 +988,9 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
         } catch (e: Exception) { null }
     }
 
+    // Legacy TCP check kept only for diagnostics; real ping must go through the
+    // full Xray stack (TLS, REALITY, XHTTP/splithttp, etc.) or we mismatch v2rayNG.
+    @Deprecated("Use measureOutboundDelay via Xray core instead")
     private suspend fun tcpPing(host: String, port: Int): Long {
         return withContext(Dispatchers.IO) {
             try {
@@ -1032,23 +1004,67 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
         }
     }
 
+    /**
+     * True v2rayNG-style "Test real delay": builds each profile's full Xray
+     * JSON (inbounds stripped internally by MeasureOutboundDelay) and dials
+     * through core.Dial. A profile with bad UUID / wrong Reality pbk / bad
+     * XHTTP path etc. will correctly return -1 even if the TCP port is open.
+     * Matches v2rayNG behavior where impossible configs show -1ms.
+     *
+     * v2rayNG runs this with limited concurrency (pref_real_ping_concurrency,
+     * default 3-5) instead of sequentially — previously each profile blocked
+     * up to ~12s, making bulk tests extremely slow. This implementation
+     * mirrors that concurrency model.
+     */
     fun testV2rayRealDelay() {
         viewModelScope.launch(Dispatchers.IO) {
-            allProfiles.value.filter { it.protocol == "v2rayNG" }.forEach { profile ->
-                val hostPort = extractHostPort(profile.serverAddress)
-                val ping = if (hostPort != null && hostPort.second > 0) tcpPing(hostPort.first, hostPort.second) else -1L
-                dao.updateProfile(profile.copy(ping = ping))
+            val targets = allProfiles.value.filter { it.protocol == "v2rayNG" && !isSubscriptionInfoName(it.name) }
+            if (targets.isEmpty()) return@launch
+            // Reset first so user sees immediate feedback
+            targets.forEach { dao.updateProfile(it.copy(ping = 0L)) }
+
+            // v2rayNG default concurrency when not configured
+            val concurrency = 5
+            val semaphore = Semaphore(concurrency)
+
+            coroutineScope {
+                targets.map { profile ->
+                    async(Dispatchers.IO) {
+                        semaphore.withPermit {
+                            val ping = measureProfileDelay(profile)
+                            dao.updateProfile(profile.copy(ping = ping))
+                        }
+                    }
+                }.awaitAll()
             }
         }
     }
 
     fun sortV2rayByTestResults() { _isV2raySorted.value = !_isV2raySorted.value }
-    fun deleteInvalidV2rayConfigs() { viewModelScope.launch(Dispatchers.IO) { allProfiles.value.filter { it.protocol == "v2rayNG" && it.ping == -1L }.forEach { dao.deleteProfile(it) } } }
+    fun deleteInvalidV2rayConfigs() { viewModelScope.launch(Dispatchers.IO) { allProfiles.value.filter { it.protocol == "v2rayNG" && !isSubscriptionInfoName(it.name) && it.ping == -1L }.forEach { dao.deleteProfile(it) } } }
+
     fun testSingleV2rayPing(profile: VpnProfile) {
+        if (isSubscriptionInfoName(profile.name)) return
         viewModelScope.launch(Dispatchers.IO) {
-            val hostPort = extractHostPort(profile.serverAddress)
-            val ping = if (hostPort != null && hostPort.second > 0) tcpPing(hostPort.first, hostPort.second) else -1L
+            val ping = measureProfileDelay(profile)
             dao.updateProfile(profile.copy(ping = ping))
+        }
+    }
+
+    private fun measureProfileDelay(profile: VpnProfile): Long {
+        return try {
+            val configJson = dev.rouzbeh.hybridvpn.core.vpn.v2ray.XrayConfigGenerator.generateConfig(profile)
+            // Must run off the main thread; blocks up to ~12s with 2 attempts internally.
+            dev.rouzbeh.hybridvpn.core.vpn.v2ray.V2RayManager.measureOutboundDelay(
+                configJson,
+                "https://www.google.com/generate_204"
+            )
+        } catch (e: Exception) {
+            android.util.Log.w("DashboardViewModel", "measureProfileDelay failed for ${profile.name}: ${e.message}")
+            -1L
+        } catch (t: Throwable) {
+            android.util.Log.w("DashboardViewModel", "measureProfileDelay throwable for ${profile.name}: ${t.message}")
+            -1L
         }
     }
 
@@ -1091,12 +1107,5 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
 
     override fun onCleared() {
         super.onCleared()
-        cleanupOpenVpnResources(releaseAnchor = true)
-    }
-
-    private fun hardenForDpi(ovpn: String): String = buildString {
-        val overridden = listOf("resolv-retry", "connect-timeout", "server-poll-timeout", "connect-retry", "connect-retry-max", "hand-window", "ping", "ping-restart", "ping-exit", "inactive")
-        ovpn.lineSequence().filterNot { line -> overridden.any { line.trimStart().startsWith(it) } }.forEach { appendLine(it) }
-        appendLine("\nresolv-retry 4\nconnect-timeout 8\nconnect-retry 2\nconnect-retry-max 2\nhand-window 20\nping 10\nping-restart 30")
     }
 }

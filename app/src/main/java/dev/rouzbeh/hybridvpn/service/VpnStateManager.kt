@@ -31,7 +31,6 @@ enum class ConnectionState {
 
 enum class VpnProtocol(val title: String) {
     OpenConnect("OpenConnect"),
-    OpenVPN("OpenVPN"),
     V2rayNG("v2rayNG")
 }
 
@@ -190,10 +189,13 @@ object VpnStateManager {
                 "hybridvpn_prefs",
                 android.content.Context.MODE_PRIVATE
             )
-            connectionStartTime = sharedPrefs?.getLong("START_TIME", 0L) ?: 0L
-            startRx = sharedPrefs?.getLong("START_RX", -1L) ?: -1L
-            startTx = sharedPrefs?.getLong("START_TX", -1L) ?: -1L
         }
+        // Always refresh cached values from disk so a recreated ViewModel/Service
+        // sees the persisted START_TIME even when the singleton already has a
+        // SharedPreferences instance (process survived while Activity died).
+        connectionStartTime = sharedPrefs?.getLong("START_TIME", 0L) ?: 0L
+        startRx = sharedPrefs?.getLong("START_RX", -1L) ?: -1L
+        startTx = sharedPrefs?.getLong("START_TX", -1L) ?: -1L
     }
 
     fun getSavedState(context: android.content.Context): Pair<ConnectionState, Long> {
@@ -294,6 +296,30 @@ object VpnStateManager {
      * JNI state transitions stay consistent.
      */
     private fun applyCommonStateSideEffects(state: ConnectionState, isNative: Boolean) {
+        if (state == ConnectionState.CONNECTED) {
+            // Persist the connection start instant exactly once per session.
+            // This is the authoritative fix for the uptime-reset-on-re-entry bug:
+            // OpenConnect's native path calls updateStateFromNative(2) without
+            // ever broadcasting DetailedState, so connectionStartTime would remain
+            // 0 and the ViewModel would compute uptime = 0 on replay.
+            val prefs = sharedPrefs
+            if (prefs != null) {
+                val existing = prefs.getLong("START_TIME", 0L)
+                if (existing == 0L) {
+                    val now = System.currentTimeMillis()
+                    connectionStartTime = now
+                    prefs.edit().putLong("START_TIME", now).apply()
+                } else {
+                    connectionStartTime = existing
+                }
+            } else {
+                if (connectionStartTime == 0L) connectionStartTime = System.currentTimeMillis()
+            }
+            _connectivityDegraded.value = false
+            // Do NOT reset usage on CONNECTED.
+            return
+        }
+
         if (state == ConnectionState.CONNECTING) {
             connectionStartTime = 0L
             sharedPrefs?.edit()?.putLong("START_TIME", 0L)?.apply()
@@ -347,6 +373,14 @@ object VpnStateManager {
     fun updateDetailedState(detailedState: DetailedState) {
         _detailedConnectionState.value = detailedState
         if (detailedState is DetailedState.Connected) {
+            // Ensure SharedPreferences handle is available (e.g. ViewModel was
+            // destroyed and recreated after process stayed alive; initPersist may
+            // not have been called on the new instance path).
+            if (sharedPrefs == null) {
+                // Fall back to reading without caching handle if no context; else
+                // this will be retried via the next broadcast with a context.
+                // Prefer no-op persistence over crash.
+            }
             val existingTime = sharedPrefs?.getLong("START_TIME", 0L) ?: 0L
             if (existingTime == 0L) {
                 val currentTime = System.currentTimeMillis()
@@ -356,6 +390,19 @@ object VpnStateManager {
                 connectionStartTime = existingTime
             }
         }
+    }
+
+    /**
+     * Refresh the in-memory connectionStartTime from persisted SharedPreferences.
+     * Used on ViewModel recreation so the uptime timer can resume without a new
+     * CONNECTED broadcast.
+     */
+    fun refreshPersistedStartTime(context: Context) {
+        try {
+            if (sharedPrefs == null) initPersist(context)
+            val t = sharedPrefs?.getLong("START_TIME", 0L) ?: 0L
+            if (t != 0L) connectionStartTime = t
+        } catch (_: Throwable) {}
     }
 }
 

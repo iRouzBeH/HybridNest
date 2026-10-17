@@ -71,7 +71,6 @@ import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.outlined.Sort
 import androidx.compose.material.icons.outlined.Sync
-import androidx.compose.material.icons.outlined.Timer
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -140,6 +139,7 @@ import dev.rouzbeh.hybridvpn.core.designsystem.TextSecondary
 import dev.rouzbeh.hybridvpn.data.local.VpnProfile
 import dev.rouzbeh.hybridvpn.service.ConnectionState
 import dev.rouzbeh.hybridvpn.service.NetworkInfo
+import dev.rouzbeh.hybridvpn.service.VpnProtocol
 import dev.rouzbeh.hybridvpn.service.VpnStateManager
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
@@ -247,7 +247,17 @@ val AsteriskVisualTransformation = androidx.compose.ui.text.input.VisualTransfor
     )
 }
 
-val SfProPlusBlack = androidx.compose.ui.text.font.FontFamily(androidx.compose.ui.text.font.Font(dev.rouzbeh.hybridvpn.R.font.sf_proplus_black))
+val SoraFamily = FontFamily(
+    androidx.compose.ui.text.font.Font(dev.rouzbeh.hybridvpn.R.font.sora_thin, FontWeight.Thin),
+    androidx.compose.ui.text.font.Font(dev.rouzbeh.hybridvpn.R.font.sora_extralight, FontWeight.ExtraLight),
+    androidx.compose.ui.text.font.Font(dev.rouzbeh.hybridvpn.R.font.sora_light, FontWeight.Light),
+    androidx.compose.ui.text.font.Font(dev.rouzbeh.hybridvpn.R.font.sora_regular, FontWeight.Normal),
+    androidx.compose.ui.text.font.Font(dev.rouzbeh.hybridvpn.R.font.sora_medium, FontWeight.Medium),
+    androidx.compose.ui.text.font.Font(dev.rouzbeh.hybridvpn.R.font.sora_semibold, FontWeight.SemiBold),
+    androidx.compose.ui.text.font.Font(dev.rouzbeh.hybridvpn.R.font.sora_bold, FontWeight.Bold),
+    androidx.compose.ui.text.font.Font(dev.rouzbeh.hybridvpn.R.font.sora_extrabold, FontWeight.ExtraBold),
+    androidx.compose.ui.text.font.Font(dev.rouzbeh.hybridvpn.R.font.sora_extrabold, FontWeight.Black),
+)
 
 @Composable
 fun Modifier.bounceClick(onLongClick: (() -> Unit)? = null, onClick: () -> Unit): Modifier {
@@ -275,7 +285,6 @@ fun Modifier.bounceClick(onLongClick: (() -> Unit)? = null, onClick: () -> Unit)
 
 enum class VpnProtocolDisplay(val title: String, val iconResId: Int) {
     OpenConnect("OpenConnect", R.drawable.ic_openconnect),
-    OpenVPN("OpenVPN", R.drawable.ic_openvpn),
     V2rayNG("v2rayNG", R.drawable.ic_v2rayng) // Ensure ic_v2rayng.png exists in res/drawable
 }
 
@@ -315,6 +324,7 @@ fun DashboardScreen(
                     color = PrimaryCyan,
                     fontSize = 24.sp,
                     fontWeight = FontWeight.Bold,
+                    fontFamily = SoraFamily,
                     modifier = Modifier.padding(16.dp)
                 )
                 androidx.compose.material3.HorizontalDivider(color = BorderGlass)
@@ -532,7 +542,8 @@ fun DashboardContent(
             onUpdateSub = onUpdateSub,
             onEdit = { profile -> editingProfile = profile },
             onNavigateBack = { showServerListSheet = false },
-            toastMessage = dashboardToastMessage
+            toastMessage = dashboardToastMessage,
+            onShowToast = onShowToast
         )
     }
 
@@ -653,7 +664,7 @@ fun DashboardContent(
                                     color = Color.Gray,
                                     fontSize = 16.sp,
                                     fontWeight = FontWeight.Bold,
-                                    fontFamily = SfProPlusBlack
+                                    fontFamily = SoraFamily
                                 )
                             } else {
                                 when (connectionState) {
@@ -662,7 +673,7 @@ fun DashboardContent(
                                         color = Color(0xFF00D8E6),
                                         fontSize = 18.sp,
                                         fontWeight = FontWeight.Black,
-                                        fontFamily = SfProPlusBlack
+                                        fontFamily = SoraFamily
                                     )
 
                                     ConnectionState.CONNECTING -> ShimmerText(
@@ -694,7 +705,7 @@ fun DashboardContent(
                                         color = Color(0xFFFF5252),
                                         fontSize = 18.sp,
                                         fontWeight = FontWeight.Black,
-                                        fontFamily = SfProPlusBlack
+                                        fontFamily = SoraFamily
                                     )
 
                                     else -> {
@@ -703,7 +714,7 @@ fun DashboardContent(
                                             color = Color.White,
                                             fontSize = 18.sp,
                                             fontWeight = FontWeight.Black,
-                                            fontFamily = SfProPlusBlack
+                                            fontFamily = SoraFamily
                                         )
                                     }
                                 }
@@ -743,7 +754,7 @@ fun DashboardContent(
                                     color = pColor,
                                     fontWeight = FontWeight.Bold,
                                     fontSize = 16.sp,
-                                    fontFamily = SfProPlusBlack
+                                    fontFamily = SoraFamily
                                 )
                             }
                         }
@@ -807,7 +818,7 @@ fun DashboardContent(
                                     text = formattedTime,
                                     fontSize = 16.sp,
                                     fontWeight = FontWeight.Bold,
-                                    fontFamily = SfProPlusBlack
+                                    fontFamily = SoraFamily
                                 )
                             }
                         }
@@ -922,7 +933,8 @@ fun DashboardContent(
                                 editingProfile = profile
                                 showServerListSheet = false
                             },
-                            onTestSinglePing = onTestSinglePing
+                            onTestSinglePing = onTestSinglePing,
+                            onShowToast = onShowToast
                         )
                     }
                 }
@@ -1078,10 +1090,10 @@ fun ServerSelectorEmojiPreview() {
             ServerSelectorButton(
                 activeProfile = VpnProfile(
                     name = "🇺🇸 US Server",
-                    protocol = "OpenVPN",
+                    protocol = "OpenConnect",
                     serverAddress = "us.server.com"
                 ),
-                selectedProtocol = VpnProtocolDisplay.OpenVPN,
+                selectedProtocol = VpnProtocolDisplay.OpenConnect,
                 hasProfiles = true,
                 isEnabled = true,
                 onClick = {},
@@ -1104,10 +1116,12 @@ fun ServerSelectorButton(
     val haptic = LocalHapticFeedback.current
     val flagRegex = remember { Regex("[\\uD83C\\uDDE6-\\uD83C\\uDDFF]{2}") }
     val serverText = when {
-        activeProfile != null && activeProfile.protocol == selectedProtocol.title -> activeProfile.name.replace(
-            flagRegex,
-            ""
-        ).trim()
+        activeProfile != null && activeProfile.protocol == selectedProtocol.title -> normalizeStyledText(
+            activeProfile.name.replace(
+                flagRegex,
+                ""
+            ).trim()
+        )
 
         !hasProfiles -> "No ${if (selectedProtocol.title == "OpenConnect") "AnyConnect" else selectedProtocol.title} Server"
         else -> "Select Server"
@@ -1141,15 +1155,16 @@ fun ServerSelectorButton(
                     text = "Server List",
                     color = TextSecondary,
                     fontSize = 10.sp,
-                    fontFamily = SfProPlusBlack
+                    fontFamily = SoraFamily
                 )
+                Spacer(modifier = Modifier.height(4.dp))
                 Text(
                     text = serverText,
                     color = if (activeProfile != null && activeProfile.protocol == selectedProtocol.title) PrimaryCyan else Color.Gray,
                     fontSize = 14.sp,
                     fontWeight = FontWeight.Bold,
                     maxLines = 1,
-                    fontFamily = SfProPlusBlack
+                    fontFamily = SoraFamily
                 )
             }
             Icon(
@@ -1191,7 +1206,8 @@ fun ServerListSheetContent(
     onSelect: (Int) -> Unit,
     onDelete: (VpnProfile) -> Unit,
     onEdit: (VpnProfile) -> Unit,
-    onTestSinglePing: (VpnProfile) -> Unit = {}
+    onTestSinglePing: (VpnProfile) -> Unit = {},
+    onShowToast: (String) -> Unit = {}
 ) {
     Column(modifier = Modifier
         .fillMaxWidth()
@@ -1212,7 +1228,7 @@ fun ServerListSheetContent(
         Text(
             text = "Saved Servers", color = TextPrimary, fontSize = 20.sp,
             fontWeight = FontWeight.Bold, modifier = Modifier.padding(horizontal = 24.dp),
-            fontFamily = SfProPlusBlack
+            fontFamily = SoraFamily
         )
         Spacer(modifier = Modifier.height(16.dp))
 
@@ -1220,7 +1236,7 @@ fun ServerListSheetContent(
             Text(
                 text = "No servers found. Tap the [+] button to add a new server.",
                 color = TextSecondary, modifier = Modifier.padding(horizontal = 24.dp),
-                fontFamily = SfProPlusBlack
+                fontFamily = SoraFamily
             )
         } else {
             LazyColumn(
@@ -1235,12 +1251,115 @@ fun ServerListSheetContent(
                         onClick = { onSelect(profile.id) },
                         onDelete = { onDelete(profile) },
                         onEdit = { onEdit(profile) },
-                        onPingClick = { onTestSinglePing(profile) }
+                        onPingClick = { onTestSinglePing(profile) },
+                        onShowToast = onShowToast
                     )
                 }
             }
         }
     }
+}
+
+// Helpers for subscription-info detection (e.g. 👤...|📊 41.79 GB / 100 GB|📆 11 Day)
+// Used to render a custom badge row and hide the raw stats from the name.
+private data class SubscriptionMeta(
+    val usedStr: String,
+    val totalStr: String,
+    val usedGb: Double?,
+    val totalGb: Double?,
+    val daysLeft: Int?,
+    val daysRaw: String?,
+    val daysNum: String?
+)
+
+private fun normalizeStyledText(input: String): String {
+    // Map mathematical alphanumeric symbols (bold/italic/script) to plain ASCII so app font applies.
+    // Covers: Mathematical Bold (1D400), Italic (1D434), Bold Italic (1D468), Sans, etc. — we collapse letters/digits.
+    val sb = StringBuilder(input.length)
+    var i = 0
+    while (i < input.length) {
+        val cp = input.codePointAt(i)
+        val mapped = when (cp) {
+            in 0x1D400..0x1D419 -> 'A'.code + (cp - 0x1D400) // Bold A-Z
+            in 0x1D41A..0x1D433 -> 'a'.code + (cp - 0x1D41A) // Bold a-z
+            in 0x1D434..0x1D44D -> 'A'.code + (cp - 0x1D434) // Italic A-Z
+            in 0x1D44E..0x1D467 -> 'a'.code + (cp - 0x1D44E) // Italic a-z
+            in 0x1D468..0x1D481 -> 'A'.code + (cp - 0x1D468) // Bold Italic A-Z
+            in 0x1D482..0x1D49B -> 'a'.code + (cp - 0x1D482)
+            in 0x1D49C..0x1D4B5 -> 'A'.code + (cp - 0x1D49C) // Script
+            in 0x1D4B6..0x1D4CF -> 'a'.code + (cp - 0x1D4B6)
+            in 0x1D4D0..0x1D4E9 -> 'A'.code + (cp - 0x1D4D0)
+            in 0x1D4EA..0x1D503 -> 'a'.code + (cp - 0x1D4EA)
+            in 0x1D504..0x1D51D -> 'A'.code + (cp - 0x1D504) // Fraktur / etc -> fallback to plain
+            in 0x1D51E..0x1D537 -> 'a'.code + (cp - 0x1D51E)
+            in 0x1D538..0x1D551 -> 'A'.code + (cp - 0x1D538)
+            in 0x1D552..0x1D56B -> 'a'.code + (cp - 0x1D552)
+            in 0x1D56C..0x1D585 -> 'A'.code + (cp - 0x1D56C)
+            in 0x1D586..0x1D59F -> 'a'.code + (cp - 0x1D586)
+            in 0x1D5A0..0x1D5B9 -> 'A'.code + (cp - 0x1D5A0)
+            in 0x1D5BA..0x1D5D3 -> 'a'.code + (cp - 0x1D5BA)
+            in 0x1D5D4..0x1D5ED -> 'A'.code + (cp - 0x1D5D4)
+            in 0x1D5EE..0x1D607 -> 'a'.code + (cp - 0x1D5EE)
+            in 0x1D608..0x1D621 -> 'A'.code + (cp - 0x1D608)
+            in 0x1D622..0x1D63B -> 'a'.code + (cp - 0x1D622)
+            in 0x1D63C..0x1D655 -> 'A'.code + (cp - 0x1D63C)
+            in 0x1D656..0x1D66F -> 'a'.code + (cp - 0x1D656)
+            in 0x1D670..0x1D689 -> 'A'.code + (cp - 0x1D670)
+            in 0x1D68A..0x1D6A3 -> 'a'.code + (cp - 0x1D68A)
+            in 0x1D7CE..0x1D7D7 -> '0'.code + (cp - 0x1D7CE) // Bold digits
+            in 0x1D7D8..0x1D7E1 -> '0'.code + (cp - 0x1D7D8)
+            in 0x1D7E2..0x1D7EB -> '0'.code + (cp - 0x1D7E2)
+            in 0x1D7EC..0x1D7F5 -> '0'.code + (cp - 0x1D7EC)
+            in 0x1D7F6..0x1D7FF -> '0'.code + (cp - 0x1D7F6)
+            else -> cp
+        }
+        sb.appendCodePoint(mapped)
+        i += Character.charCount(cp)
+    }
+    return sb.toString()
+}
+
+private val volumeRegexPrimary = Regex("""(\d+(?:\.\d+)?)\s*GB\s*/\s*(\d+(?:\.\d+)?)\s*GB""", RegexOption.IGNORE_CASE)
+private val volumeRegexAlt = Regex("""(\d+(?:\.\d+)?)\s*/\s*(\d+(?:\.\d+)?)\s*GB""", RegexOption.IGNORE_CASE)
+private val daysRegex = Regex("""(\d+)\s*Days?""", RegexOption.IGNORE_CASE)
+
+private fun parseSubscriptionMeta(name: String): SubscriptionMeta? {
+    val vol = volumeRegexPrimary.find(name) ?: volumeRegexAlt.find(name)
+    val days = daysRegex.find(name)
+    if (vol == null && days == null) return null
+    val usedStr = vol?.groupValues?.getOrNull(1) ?: ""
+    val totalStr = vol?.groupValues?.getOrNull(2) ?: ""
+    val daysStr = days?.value?.trim()
+    val daysLeft = days?.groupValues?.getOrNull(1)?.toIntOrNull()
+    return SubscriptionMeta(
+        usedStr = if (usedStr.isNotBlank()) "$usedStr GB" else "",
+        totalStr = if (totalStr.isNotBlank()) "$totalStr GB" else "",
+        usedGb = usedStr.toDoubleOrNull(),
+        totalGb = totalStr.toDoubleOrNull(),
+        daysLeft = daysLeft,
+        daysRaw = daysStr,
+        daysNum = days?.groupValues?.getOrNull(1)
+    )
+}
+
+private fun stripSubscriptionMetaFromName(name: String, meta: SubscriptionMeta?): String {
+    if (meta == null) return name
+    var out = name
+    volumeRegexPrimary.find(out)?.let { out = out.replace(it.value, "") }
+    volumeRegexAlt.find(out)?.let { out = out.replace(it.value, "") }
+    daysRegex.find(out)?.let { out = out.replace(it.value, "") }
+    // Remove common decorative tokens and separators left behind
+    out = out.replace(Regex("[👤📊📆🧑‍💼📅⏳🕒|¦—–\\[\\]]"), " ")
+    out = out.replace(Regex("\\s{2,}"), " ")
+        .replace(Regex("""^\s*[|¦-]+\s*"""), "")
+        .replace(Regex("""\s*[|¦-]+\s*$"""), "")
+        .replace(Regex("""\s*[|¦]\s*[|¦]\s*"""), " ")
+        .trim()
+        .replace(Regex("""^\s*[|¦-]+\s*"""), "")
+    // Collapse "In-629..." prefix emoji already handled
+    out = out.replace(Regex("""^\W+"""), "").trim()
+    if (out.isBlank()) out = name.substringBefore("|").substringBefore("📊").trim().ifBlank { "Subscription Info" }
+    return out
 }
 
 @Composable
@@ -1251,15 +1370,15 @@ fun ServerItemCard(
     onClick: () -> Unit,
     onDelete: (() -> Unit)? = null,
     onEdit: (() -> Unit)? = null,
-    onPingClick: () -> Unit = {}
+    onPingClick: () -> Unit = {},
+    onShowToast: (String) -> Unit = {}
 ) {
     val haptic = LocalHapticFeedback.current
     val bgColor = if (isSelected) PrimaryCyan.copy(alpha = 0.1f) else SurfaceGlass
 
     val protocolIcon = when (profile.protocol) {
-        "OpenConnect" -> R.drawable.ic_openconnect
         "v2rayNG" -> R.drawable.ic_v2rayng // Ensure this exists
-        else -> R.drawable.ic_openvpn
+        else -> R.drawable.ic_openconnect
     }
 
     val isConnectedOrConnecting =
@@ -1267,7 +1386,17 @@ fun ServerItemCard(
 
     val flagRegex = remember { Regex("[\\uD83C\\uDDE6-\\uD83C\\uDDFF]{2}") }
     val flags = remember(profile.name) { flagRegex.findAll(profile.name).map { it.value }.toList() }
-    val cleanName = remember(profile.name) { profile.name.replace(flagRegex, "").trim() }
+    val meta = remember(profile.name) { parseSubscriptionMeta(profile.name) }
+    val isSubscriptionInfoCard = meta != null && (meta.usedStr.isNotBlank() || meta.daysRaw != null)
+    val rawClean = remember(profile.name, meta) {
+        val stripped = if (isSubscriptionInfoCard) stripSubscriptionMetaFromName(profile.name, meta) else profile.name.replace(flagRegex, "").trim()
+        // Apply font normalization (optional stylized -> plain) but keep emojis
+        normalizeStyledText(stripped).trim()
+    }
+    // For subscription info cards keep the ID part if present, else fallback
+    val displayName = remember(rawClean, meta) {
+        if (isSubscriptionInfoCard && rawClean.isBlank()) "Subscription" else rawClean
+    }
 
     val countryCodes = remember(flags) {
         flags.map { emoji ->
@@ -1287,33 +1416,47 @@ fun ServerItemCard(
         verticalAlignment = Alignment.CenterVertically,
         modifier = Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(20.dp))
+            .clip(RoundedCornerShape(18.dp))
             .background(bgColor)
             .border(
                 1.dp,
                 if (isSelected) PrimaryCyan.copy(alpha = 0.5f) else BorderGlass,
-                RoundedCornerShape(20.dp)
+                RoundedCornerShape(18.dp)
             )
-            .clickable {
-                haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                onClick()
-            }
-            .padding(start = 16.dp, end = 12.dp, top = 14.dp, bottom = 14.dp)
+            .then(
+                when {
+                    // Subscription volume/time cards are informational only — never selectable.
+                    isSubscriptionInfoCard -> Modifier
+                    // Servers that failed their ping (-1) can't be selected for connecting.
+                    profile.ping == -1L -> Modifier.clickable {
+                        haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                        onShowToast("This server is unreachable right now\nPick another server or retest its ping.")
+                    }
+                    else -> Modifier.clickable {
+                        haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                        onClick()
+                    }
+                }
+            )
+            .padding(start = 16.dp, end = 10.dp, top = 18.dp, bottom = 18.dp)
     ) {
         var isPinging by remember { mutableStateOf(false) }
         LaunchedEffect(profile.ping) {
             isPinging = false
         }
 
+        // Subscription info cards (volume/time) don't show the protocol/v2rayNG logo
+        // — removing it frees up room for the meta row and keeps the card minimal.
+        if (!isSubscriptionInfoCard) {
         val hasFlag = countryCodes.isNotEmpty()
         val boxModifier = if (hasFlag) {
             Modifier
-                .size(width = 48.dp, height = 32.dp)
-                .clip(RoundedCornerShape(6.dp)) // Clean 3:2 graphic rectangle for flags
+                .size(width = 56.dp, height = 36.dp)
+                .clip(RoundedCornerShape(9.dp))
         } else {
             Modifier
-                .size(40.dp)
-                .clip(RoundedCornerShape(10.dp)) // Squarcle for pure protocol icons
+                .size(44.dp)
+                .clip(RoundedCornerShape(11.dp))
         }
 
         Box(
@@ -1394,68 +1537,79 @@ fun ServerItemCard(
                 }
             }
         }
-        Spacer(modifier = Modifier.width(12.dp))
+        Spacer(modifier = Modifier.width(14.dp))
+        }
         Column(modifier = Modifier.weight(1f)) {
-            Text(
-                text = cleanName,
-                color = TextPrimary,
-                fontSize = 15.sp,
-                fontWeight = FontWeight.Bold,
-                maxLines = 1,
-                fontFamily = SfProPlusBlack
-            )
-            val subTitle = remember(profile.serverAddress, profile.protocol) {
-                when (profile.protocol) {
-                    "v2rayNG" -> {
-                        try {
-                            val config = profile.serverAddress
-                            val protocol = config.substringBefore("://").uppercase()
-                            when (protocol.lowercase()) {
-                                "vless", "trojan" -> {
-                                    val type = Regex("type=([^&#]+)").find(config)?.groupValues?.get(1)?.uppercase() ?: "TCP"
-                                    val security = Regex("security=([^&#]+)").find(config)?.groupValues?.get(1)?.uppercase()
-                                    val secString = if (!security.isNullOrBlank() && security != "NONE") " / $security" else ""
-                                    "$protocol / $type$secString"
-                                }
-                                "vmess" -> {
-                                    val b64 = config.substringAfter("vmess://")
-                                    val decoded = String(android.util.Base64.decode(b64, android.util.Base64.DEFAULT))
-                                    val json = org.json.JSONObject(decoded)
-                                    val net = json.optString("net", "TCP").uppercase()
-                                    val tls = json.optString("tls", "").uppercase()
-                                    val tlsString = if (tls.isNotBlank() && tls != "NONE") " / $tls" else ""
-                                    "VMESS / $net$tlsString"
-                                }
-                                else -> protocol
-                            }
-                        } catch (e: Exception) {
-                            profile.serverAddress.substringBefore("://").uppercase()
-                        }
-                    }
-                    "OpenVPN" -> {
-                        val match = Regex("^remote\\s+([a-zA-Z0-9.-]+)", RegexOption.MULTILINE).find(profile.serverAddress)
-                        match?.groups?.get(1)?.value ?: "OpenVPN Config"
-                    }
-                    else -> profile.serverAddress
-                }
+            if (!isSubscriptionInfoCard) {
+                Text(
+                    text = displayName,
+                    color = TextPrimary,
+                    fontSize = 14.5.sp,
+                    fontWeight = FontWeight.Bold,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                    fontFamily = SoraFamily,
+                    lineHeight = 18.sp
+                )
             }
-            Text(
-                text = subTitle,
-                color = TextSecondary,
-                fontSize = 12.sp,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
+            // Subscription info card: only volume + time row. No name, no VLESS/TCP.
+            if (isSubscriptionInfoCard) {
+                SubscriptionMetaRow(meta = meta!!)
+            }
+            if (!isSubscriptionInfoCard) {
+                Spacer(modifier = Modifier.height(3.dp))
+                val subTitle = remember(profile.serverAddress, profile.protocol) {
+                    when (profile.protocol) {
+                        "v2rayNG" -> {
+                            try {
+                                val config = profile.serverAddress
+                                val protocol = config.substringBefore("://").uppercase()
+                                when (protocol.lowercase()) {
+                                    "vless", "trojan" -> {
+                                        val type = Regex("type=([^&#]+)").find(config)?.groupValues?.get(1)?.uppercase() ?: "TCP"
+                                        val security = Regex("security=([^&#]+)").find(config)?.groupValues?.get(1)?.uppercase()
+                                        val secString = if (!security.isNullOrBlank() && security != "NONE") " / $security" else ""
+                                        "$protocol / $type$secString"
+                                    }
+                                    "vmess" -> {
+                                        val b64 = config.substringAfter("vmess://")
+                                        val decoded = String(android.util.Base64.decode(b64, android.util.Base64.DEFAULT))
+                                        val json = org.json.JSONObject(decoded)
+                                        val net = json.optString("net", "TCP").uppercase()
+                                        val tls = json.optString("tls", "").uppercase()
+                                        val tlsString = if (tls.isNotBlank() && tls != "NONE") " / $tls" else ""
+                                        "VMESS / $net$tlsString"
+                                    }
+                                    else -> protocol
+                                }
+                            } catch (e: Exception) {
+                                profile.serverAddress.substringBefore("://").uppercase()
+                            }
+                        }
+                        else -> profile.serverAddress
+                    }
+                }
+                Text(
+                    text = subTitle,
+                    color = TextSecondary,
+                    fontSize = 12.sp,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    fontFamily = SoraFamily
+                )
+            }
         }
 
         Row(verticalAlignment = Alignment.CenterVertically) {
-            if (profile.protocol == "v2rayNG") {
+            if (profile.protocol == "v2rayNG" && !isSubscriptionInfoCard) {
                 Box(
                     modifier = Modifier
-                        .clip(RoundedCornerShape(12.dp))
-                        .background(Color.Black.copy(alpha = 0.25f))
+                        .height(32.dp)
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(Color.Black.copy(alpha = 0.30f))
+                        .border(1.dp, BorderGlass.copy(alpha = 0.18f), RoundedCornerShape(10.dp))
                         .clickable { isPinging = true; onPingClick() }
-                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                        .padding(horizontal = 14.dp, vertical = 6.dp),
                     contentAlignment = Alignment.Center
                 ) {
                     AnimatedContent(
@@ -1473,47 +1627,157 @@ fun ServerItemCard(
                                 color = PrimaryCyan
                             )
                         } else {
-                            val pText = if (profile.ping == -1L) "-1" else if (profile.ping == 0L) "Test" else "${profile.ping} ms"
-                            val pColor = if (profile.ping == -1L) Color(0xFFFF5252) else if (profile.ping == 0L) Color.Gray else PrimaryCyan
-                            Text(text = pText, color = pColor, fontSize = 12.sp, fontWeight = FontWeight.Bold, fontFamily = SfProPlusBlack)
+                            val isFailed = profile.ping == -1L
+                            val isUntested = profile.ping == 0L
+                            val pText = when {
+                                isFailed -> "-1"
+                                isUntested -> "Test"
+                                else -> "${profile.ping} ms"
+                            }
+                            val pColor = when {
+                                isFailed -> Color(0xFFFF5252)
+                                isUntested -> Color(0xFF9E9E9E)
+                                else -> PrimaryCyan
+                            }
+                            Text(
+                                text = pText,
+                                color = pColor,
+                                fontSize = 13.sp,
+                                fontWeight = FontWeight.Bold,
+                                fontFamily = SoraFamily,
+                                maxLines = 1
+                            )
                         }
                     }
                 }
-                Spacer(modifier = Modifier.width(8.dp))
+                Spacer(modifier = Modifier.width(10.dp))
             }
-            if (onEdit != null) {
+            // Subscription info card: no "Info" chip, no ping badge, no VLESS/TCP — only the volume+time row.
+            if (onEdit != null && !isSubscriptionInfoCard) {
                 IconButton(
                     onClick = { haptic.performHapticFeedback(HapticFeedbackType.LongPress); onEdit() },
                     enabled = !isConnectedOrConnecting,
-                    modifier = Modifier.size(32.dp)
+                    modifier = Modifier.size(36.dp)
                 ) {
                     Icon(
                         imageVector = Icons.Default.Edit,
                         contentDescription = "Edit",
-                        tint = if (isConnectedOrConnecting) Color.DarkGray else TextSecondary.copy(
-                            alpha = 0.6f
-                        ),
-                        modifier = Modifier.size(18.dp)
+                        tint = if (isConnectedOrConnecting) Color.DarkGray else TextSecondary.copy(alpha = 0.65f),
+                        modifier = Modifier.size(19.dp)
                     )
                 }
             }
 
-            if (onDelete != null) {
+            if (onDelete != null && !isSubscriptionInfoCard) {
                 IconButton(
                     onClick = { haptic.performHapticFeedback(HapticFeedbackType.LongPress); onDelete() },
                     enabled = !(isSelected && isConnectedOrConnecting),
-                    modifier = Modifier.size(32.dp)
+                    modifier = Modifier.size(36.dp)
                 ) {
                     Icon(
                         imageVector = Icons.Outlined.Delete,
                         contentDescription = "Delete",
-                        tint = if (isSelected && isConnectedOrConnecting) Color.DarkGray else Color(
-                            0xFFFF3B30
-                        ).copy(alpha = 0.6f),
-                        modifier = Modifier.size(18.dp)
+                        tint = if (isSelected && isConnectedOrConnecting) Color.DarkGray else Color(0xFFFF3B30).copy(alpha = 0.75f),
+                        modifier = Modifier.size(19.dp)
                     )
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun SubscriptionMetaRow(meta: SubscriptionMeta) {
+    val volumeText = when {
+        meta.usedStr.isNotBlank() && meta.totalStr.isNotBlank() -> "${meta.usedStr} / ${meta.totalStr}"
+        meta.usedStr.isNotBlank() -> meta.usedStr
+        meta.totalStr.isNotBlank() -> meta.totalStr
+        else -> null
+    }
+    val daysText = meta.daysRaw
+    // Volume + time text only, no icons. The divider sits between them with even,
+    // modest spacing — the row sizes to its content so the gap around the divider
+    // stays tight and the box grows/shrinks with how far the two texts reach.
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.Center,
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp))
+            .background(Color.Black.copy(alpha = 0.32f))
+            .border(1.dp, BorderGlass.copy(alpha = 0.18f), RoundedCornerShape(12.dp))
+            .padding(horizontal = 16.dp, vertical = 14.dp)
+    ) {
+        if (volumeText != null) {
+            val volAnnotated = buildAnnotatedString {
+                var i = 0
+                val s = volumeText
+                while (i < s.length) {
+                    // Color "GB", "MB", "TB", "KB", "B" and "." in cyan
+                    if (s.startsWith("GB", i) || s.startsWith("MB", i) || s.startsWith("TB", i) || s.startsWith("KB", i)) {
+                        withStyle(SpanStyle(color = PrimaryCyan)) { append(s.substring(i, i + 2)) }
+                        i += 2
+                    } else if (s[i] == '.') {
+                        withStyle(SpanStyle(color = PrimaryCyan)) { append(".") }
+                        i++
+                    } else {
+                        // Collect digits and other chars
+                        val start = i
+                        while (i < s.length && !s.startsWith("GB", i) && !s.startsWith("MB", i) && !s.startsWith("TB", i) && !s.startsWith("KB", i) && s[i] != '.') {
+                            i++
+                        }
+                        withStyle(SpanStyle(color = Color.White)) { append(s.substring(start, i)) }
+                    }
+                }
+            }
+            Text(
+                text = volAnnotated,
+                fontSize = 15.sp,
+                fontWeight = FontWeight.Black,
+                fontFamily = SoraFamily,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+        if (volumeText != null && daysText != null) {
+            Box(
+                modifier = Modifier
+                    .padding(horizontal = 12.dp)
+                    .width(1.dp)
+                    .height(18.dp)
+                    .background(TextSecondary.copy(alpha = 0.22f))
+            )
+        }
+        if (daysText != null) {
+            val dColor = when {
+                (meta.daysLeft ?: 99) <= 2 -> Color(0xFFFF5252)
+                (meta.daysLeft ?: 99) <= 7 -> Color(0xFFFFD54F)
+                else -> Color.White
+            }
+            // Split days text: number stays white, "Day"/"Days" goes cyan
+            val dayAnnotated = buildAnnotatedString {
+                val num = meta.daysNum ?: ""
+                val unit = daysText.removePrefix(num).trim()
+                if (num.isNotBlank()) {
+                    withStyle(SpanStyle(color = dColor)) { append(num) }
+                    if (unit.isNotBlank()) {
+                        withStyle(SpanStyle(color = PrimaryCyan)) { append(" $unit") }
+                    }
+                } else {
+                    withStyle(SpanStyle(color = dColor)) { append(daysText) }
+                }
+            }
+            Text(
+                text = dayAnnotated,
+                fontSize = 15.sp,
+                fontWeight = FontWeight.Black,
+                fontFamily = SoraFamily,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+        if (volumeText == null && daysText == null) {
+            Text("Subscription", color = TextSecondary, fontSize = 14.sp, fontFamily = SoraFamily)
         }
     }
 }
@@ -1577,7 +1841,7 @@ fun SpeedItem(
             text = label,
             color = TextSecondary,
             fontSize = 11.sp,
-            fontFamily = SfProPlusBlack
+            fontFamily = SoraFamily
         )
         Spacer(modifier = Modifier.height(4.dp))
         Row(
@@ -1611,7 +1875,7 @@ fun SpeedText(speedBytesLong: Long, tint: Color) {
         color = tint,
         fontWeight = FontWeight.Bold,
         fontSize = 12.sp,
-        fontFamily = SfProPlusBlack
+        fontFamily = SoraFamily
     )
 }
 
@@ -1685,7 +1949,7 @@ fun ProtocolSelector(
                     color = textColor,
                     fontSize = 11.sp,
                     fontWeight = FontWeight.Bold,
-                    fontFamily = SfProPlusBlack
+                    fontFamily = SoraFamily
                 )
             }
         }
@@ -1713,7 +1977,6 @@ fun AddServerSheetContent(
     var username by remember { mutableStateOf(editingProfile?.username ?: "") }
     var password by remember { mutableStateOf(editingProfile?.password ?: "") }
     var passwordVisible by remember { mutableStateOf(false) }
-    var isOvpnFileUploaded by remember { mutableStateOf(false) }
 
     val barcodeScanner = remember { com.google.mlkit.vision.barcode.BarcodeScanning.getClient() }
     val galleryLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
@@ -1756,24 +2019,9 @@ fun AddServerSheetContent(
             color = TextPrimary,
             fontSize = 20.sp,
             fontWeight = FontWeight.Bold,
-            fontFamily = SfProPlusBlack
+            fontFamily = SoraFamily
         )
         Spacer(modifier = Modifier.height(24.dp))
-
-        val filePickerLauncher = rememberLauncherForActivityResult(
-            contract = ActivityResultContracts.GetContent()
-        ) { uri: android.net.Uri? ->
-            uri?.let {
-                try {
-                    context.contentResolver.openInputStream(it)?.use { inputStream ->
-                        serverAddress = inputStream.bufferedReader().use { it.readText() }
-                        isOvpnFileUploaded = true
-                    }
-                } catch (e: Exception) {
-                    e.printStackTrace()
-                }
-            }
-        }
 
         when (currentProtocol) {
             VpnProtocolDisplay.OpenConnect -> {
@@ -1783,7 +2031,7 @@ fun AddServerSheetContent(
                         Text(
                             "Profile Name",
                             color = TextSecondary,
-                            fontFamily = SfProPlusBlack
+                            fontFamily = SoraFamily
                         )
                     },
                     colors = OutlinedTextFieldDefaults.colors(
@@ -1792,6 +2040,7 @@ fun AddServerSheetContent(
                         focusedTextColor = TextPrimary,
                         unfocusedTextColor = TextPrimary
                     ),
+                    textStyle = TextStyle(fontFamily = SoraFamily),
                     modifier = Modifier.fillMaxWidth(), singleLine = true
                 )
                 Spacer(modifier = Modifier.height(12.dp))
@@ -1801,7 +2050,7 @@ fun AddServerSheetContent(
                         Text(
                             "Server Address",
                             color = TextSecondary,
-                            fontFamily = SfProPlusBlack
+                            fontFamily = SoraFamily
                         )
                     },
                     colors = OutlinedTextFieldDefaults.colors(
@@ -1810,6 +2059,7 @@ fun AddServerSheetContent(
                         focusedTextColor = TextPrimary,
                         unfocusedTextColor = TextPrimary
                     ),
+                    textStyle = TextStyle(fontFamily = SoraFamily),
                     modifier = Modifier.fillMaxWidth(), singleLine = true
                 )
                 Spacer(modifier = Modifier.height(12.dp))
@@ -1819,7 +2069,7 @@ fun AddServerSheetContent(
                         Text(
                             "Username",
                             color = TextSecondary,
-                            fontFamily = SfProPlusBlack
+                            fontFamily = SoraFamily
                         )
                     },
                     colors = OutlinedTextFieldDefaults.colors(
@@ -1828,6 +2078,7 @@ fun AddServerSheetContent(
                         focusedTextColor = TextPrimary,
                         unfocusedTextColor = TextPrimary
                     ),
+                    textStyle = TextStyle(fontFamily = SoraFamily),
                     modifier = Modifier.fillMaxWidth(), singleLine = true
                 )
                 Spacer(modifier = Modifier.height(12.dp))
@@ -1837,7 +2088,7 @@ fun AddServerSheetContent(
                         Text(
                             "Password",
                             color = TextSecondary,
-                            fontFamily = SfProPlusBlack
+                            fontFamily = SoraFamily
                         )
                     },
                     visualTransformation = if (passwordVisible) VisualTransformation.None else AsteriskVisualTransformation,
@@ -1858,116 +2109,7 @@ fun AddServerSheetContent(
                         focusedTextColor = TextPrimary,
                         unfocusedTextColor = TextPrimary
                     ),
-                    modifier = Modifier.fillMaxWidth(), singleLine = true
-                )
-            }
-
-            VpnProtocolDisplay.OpenVPN -> {
-                OutlinedTextField(
-                    value = name, onValueChange = { name = it },
-                    label = {
-                        Text(
-                            "Profile Name",
-                            color = TextSecondary,
-                            fontFamily = SfProPlusBlack
-                        )
-                    },
-                    colors = OutlinedTextFieldDefaults.colors(
-                        focusedBorderColor = PrimaryCyan,
-                        unfocusedBorderColor = BorderGlass,
-                        focusedTextColor = TextPrimary,
-                        unfocusedTextColor = TextPrimary
-                    ),
-                    modifier = Modifier.fillMaxWidth(), singleLine = true
-                )
-                Spacer(modifier = Modifier.height(12.dp))
-                OutlinedTextField(
-                    value = if (editingProfile != null) "Config Saved (.ovpn)" else if (isOvpnFileUploaded) "File uploaded successfully" else serverAddress,
-                    onValueChange = { if (!isOvpnFileUploaded && editingProfile == null) serverAddress = it },
-                    readOnly = isOvpnFileUploaded || editingProfile != null,
-                    label = {
-                        Text(
-                            "Server Address",
-                            color = TextSecondary,
-                            fontFamily = SfProPlusBlack
-                        )
-                    },
-                    trailingIcon = if (editingProfile != null) null else {
-                        {
-                            IconButton(onClick = { filePickerLauncher.launch("*/*") }) {
-                                Icon(
-                                    Icons.Default.FileUpload,
-                                    contentDescription = "Upload .ovpn",
-                                    tint = PrimaryCyan
-                                )
-                            }
-                        }
-                    },
-                    textStyle = TextStyle(color = if (isOvpnFileUploaded || editingProfile != null) PrimaryCyan else TextPrimary),
-                    placeholder = {
-                        Text(
-                            text = "Enter Manually or Upload .ovpn File",
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                            fontSize = 13.sp,
-                            color = Color.Gray,
-                            fontFamily = SfProPlusBlack
-                        )
-                    },
-                    colors = OutlinedTextFieldDefaults.colors(
-                        focusedBorderColor = PrimaryCyan,
-                        unfocusedBorderColor = BorderGlass,
-                        focusedTextColor = TextPrimary,
-                        unfocusedTextColor = TextPrimary
-                    ),
-                    modifier = Modifier.fillMaxWidth(), singleLine = true
-                )
-                Spacer(modifier = Modifier.height(12.dp))
-                OutlinedTextField(
-                    value = username, onValueChange = { username = it.replace(" ", "") },
-                    label = {
-                        Text(
-                            "Username",
-                            color = TextSecondary,
-                            fontFamily = SfProPlusBlack
-                        )
-                    },
-                    colors = OutlinedTextFieldDefaults.colors(
-                        focusedBorderColor = PrimaryCyan,
-                        unfocusedBorderColor = BorderGlass,
-                        focusedTextColor = TextPrimary,
-                        unfocusedTextColor = TextPrimary
-                    ),
-                    modifier = Modifier.fillMaxWidth(), singleLine = true
-                )
-                Spacer(modifier = Modifier.height(12.dp))
-                OutlinedTextField(
-                    value = password, onValueChange = { password = it.replace(" ", "") },
-                    label = {
-                        Text(
-                            "Password",
-                            color = TextSecondary,
-                            fontFamily = SfProPlusBlack
-                        )
-                    },
-                    visualTransformation = if (passwordVisible) VisualTransformation.None else AsteriskVisualTransformation,
-                    trailingIcon = {
-                        val image =
-                            if (passwordVisible) Icons.Filled.Visibility else Icons.Filled.VisibilityOff
-                        IconButton(onClick = { passwordVisible = !passwordVisible }) {
-                            Icon(
-                                imageVector = image,
-                                contentDescription = null,
-                                tint = TextSecondary
-                            )
-                        }
-                    },
-                    colors = OutlinedTextFieldDefaults.colors(
-                        focusedBorderColor = PrimaryCyan,
-                        unfocusedBorderColor = BorderGlass,
-                        focusedTextColor = TextPrimary,
-                        unfocusedTextColor = TextPrimary
-                    ),
+                    textStyle = TextStyle(fontFamily = SoraFamily),
                     modifier = Modifier.fillMaxWidth(), singleLine = true
                 )
             }
@@ -1976,13 +2118,14 @@ fun AddServerSheetContent(
                 if (editingProfile != null) {
                     OutlinedTextField(
                         value = name, onValueChange = { name = it },
-                        label = { Text("Profile Name", color = TextSecondary) },
+                        label = { Text("Profile Name", color = TextSecondary, fontFamily = SoraFamily) },
                         colors = OutlinedTextFieldDefaults.colors(
                             focusedBorderColor = PrimaryCyan,
                             unfocusedBorderColor = BorderGlass,
                             focusedTextColor = TextPrimary,
                             unfocusedTextColor = TextPrimary
                         ),
+                        textStyle = TextStyle(fontFamily = SoraFamily),
                         modifier = Modifier.fillMaxWidth(), singleLine = true
                     )
                 } else {
@@ -1992,14 +2135,15 @@ fun AddServerSheetContent(
                             Text(
                                 "Config String or Subscription Link",
                                 color = TextSecondary,
-                                fontFamily = SfProPlusBlack
+                                fontFamily = SoraFamily
                             )
                         },
                         placeholder = {
                             Text(
                                 "vmess://, vless://, http://...",
                                 color = Color.Gray,
-                                fontSize = 12.sp
+                                fontSize = 12.sp,
+                                fontFamily = SoraFamily
                             )
                         },
                         colors = OutlinedTextFieldDefaults.colors(
@@ -2008,6 +2152,7 @@ fun AddServerSheetContent(
                             focusedTextColor = TextPrimary,
                             unfocusedTextColor = TextPrimary
                         ),
+                        textStyle = TextStyle(fontFamily = SoraFamily),
                         modifier = Modifier
                             .fillMaxWidth()
                             .height(140.dp),
@@ -2034,7 +2179,7 @@ fun AddServerSheetContent(
                                 tint = PrimaryCyan
                             )
                             Spacer(modifier = Modifier.width(8.dp))
-                            Text("Clipboard", color = Color.White)
+                            Text("Clipboard", color = Color.White, fontFamily = SoraFamily)
                         }
                         Button(
                             onClick = { galleryLauncher.launch("image/*") },
@@ -2050,7 +2195,7 @@ fun AddServerSheetContent(
                                 tint = PrimaryCyan
                             )
                             Spacer(modifier = Modifier.width(8.dp))
-                            Text("QR Code", color = Color.White)
+                            Text("QR Code", color = Color.White, fontFamily = SoraFamily)
                         }
                     }
                 }
@@ -2079,7 +2224,6 @@ fun AddServerSheetContent(
                         val isDuplicate = servers.any {
                             when (currentProtocol) {
                                 VpnProtocolDisplay.OpenConnect -> it.protocol == "OpenConnect" && it.serverAddress == serverAddress
-                                VpnProtocolDisplay.OpenVPN -> it.protocol == "OpenVPN" && it.serverAddress == serverAddress
                                 VpnProtocolDisplay.V2rayNG -> {
                                     val input = serverAddress.trim()
                                     if (input.startsWith("http://") || input.startsWith("https://")) {
@@ -2130,7 +2274,7 @@ fun AddServerSheetContent(
                 color = if (isButtonEnabled) BackgroundDark else TextSecondary, // TextSecondary is gray
                 fontSize = 16.sp,
                 fontWeight = FontWeight.Bold,
-                fontFamily = SfProPlusBlack
+                fontFamily = SoraFamily
             )
         }
     }
@@ -2155,7 +2299,7 @@ fun ShimmerText(text: String, baseColor: Color, shimmerColor: Color, fontSize: T
         text = text,
         fontSize = fontSize,
         fontWeight = FontWeight.Black,
-        fontFamily = SfProPlusBlack,
+        fontFamily = SoraFamily,
         style = TextStyle(brush = brush)
     )
 }
@@ -2244,11 +2388,19 @@ fun NetworkInfoCard(
     val isTransitioning =
         connectionState == ConnectionState.CONNECTING || connectionState == ConnectionState.RECONNECTING || connectionState == ConnectionState.DISCONNECTING || connectionState == ConnectionState.CANCELING
     val isConnected = connectionState == ConnectionState.CONNECTED
-    val isUnresolved = isConnected && (networkInfo.ip == "0.0.0.0" || networkInfo.ip == "127.0.0.1" || networkInfo.location == "Detecting...")
+    // Always animate ("...") during transitioning and while CONNECTED but the
+    // exit IP is still Unknown/Detecting — that includes the post-connect phase
+    // after we intentionally reset networkInfo, so the previous location is
+    // never shown as if it were the VPN exit.
+    val isUnresolved = isConnected && (networkInfo.ip == "Unknown" || networkInfo.ip == "0.0.0.0" || networkInfo.ip == "127.0.0.1" || networkInfo.location == "Detecting..." || networkInfo.location == "VPN exit unavailable")
     val showLoading = isTransitioning || isUnresolved
+    // Coarse "which flag" key: drive AnimatedContent so the new VPN flag
+    // cross-fades instead of popping instantly.
+    val flagKey = remember(networkInfo.flagCode, showLoading) {
+        if (showLoading) "__loading__" else networkInfo.flagCode.lowercase().ifBlank { "un" }
+    }
 
-    val customFont =
-        FontFamily(androidx.compose.ui.text.font.Font(dev.rouzbeh.hybridvpn.R.font.sf_proplus_black))
+    val customFont = SoraFamily
     val textShadow = TextStyle(
         fontFamily = customFont,
         shadow = Shadow(color = Color.Black, offset = Offset(2f, 3f), blurRadius = 4f)
@@ -2262,21 +2414,31 @@ fun NetworkInfoCard(
             .border(1.dp, BorderGlass, RoundedCornerShape(24.dp))
     ) {
         Box(modifier = Modifier.fillMaxSize()) {
-            val safeFlagCode = networkInfo.flagCode.lowercase()
-
-            if (safeFlagCode != "un" && safeFlagCode.isNotBlank()) {
-                AsyncImage(
-                    model = ImageRequest.Builder(LocalContext.current)
-                        .data("https://flagcdn.com/w640/$safeFlagCode.png")
-                        .crossfade(true)
-                        .build(),
-                    contentDescription = "Flag Background",
-                    contentScale = ContentScale.Crop,
-                    colorFilter = ColorFilter.colorMatrix(contrastMatrix),
-                    modifier = Modifier
-                        .matchParentSize()
-                        .alpha(0.9f)
-                )
+            AnimatedContent(
+                targetState = flagKey,
+                transitionSpec = { fadeIn(tween(380)) togetherWith fadeOut(tween(260)) },
+                label = "flag_crossfade",
+                modifier = Modifier.matchParentSize()
+            ) { key ->
+                val code = key
+                if (code != "un" && code != "__loading__" && code.isNotBlank()) {
+                    AsyncImage(
+                        model = ImageRequest.Builder(LocalContext.current)
+                            .data("https://flagcdn.com/w640/$code.png")
+                            .crossfade(true)
+                            .build(),
+                        contentDescription = "Flag Background",
+                        contentScale = ContentScale.Crop,
+                        colorFilter = ColorFilter.colorMatrix(contrastMatrix),
+                        modifier = Modifier
+                            .matchParentSize()
+                            .alpha(0.9f)
+                    )
+                } else {
+                    // No flag (loading / un) — keep a muted placeholder so the
+                    // gradient animation doesn't flash a missing image.
+                    Box(Modifier.matchParentSize().background(SurfaceDark))
+                }
             }
 
             Box(
@@ -2295,87 +2457,140 @@ fun NetworkInfoCard(
             Box(modifier = Modifier
                 .matchParentSize()
                 .padding(24.dp)) {
-                // Top Left: IP Address
-                Row(
-                    modifier = Modifier.align(Alignment.TopStart),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text(
-                        text = if (isConnected) "Virtual IP: " else "Public IP: ",
-                        color = TextSecondary,
-                        fontSize = 14.sp,
-                        style = textShadow
-                    )
-                    if (showLoading) {
-                        SmoothTypingDots(textStyle = textShadow)
-                    } else {
-                        val displayIp = if (ipVisible) networkInfo.ip else networkInfo.ip.replace(
-                            Regex("\\d"),
-                            "*"
-                        )
-                        Text(
-                            text = displayIp,
-                            color = Color.White,
-                            fontSize = 14.sp,
-                            fontWeight = FontWeight.Bold,
-                            style = textShadow
-                        )
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Icon(
-                            imageVector = if (ipVisible) Icons.Default.Visibility else Icons.Default.VisibilityOff,
-                            contentDescription = "Toggle IP",
-                            tint = PrimaryCyan,
-                            modifier = Modifier
-                                .size(20.dp)
-                                .bounceClick { ipVisible = !ipVisible }
-                        )
-                    }
-                }
-
-                // Bottom Left: Location
-                Row(
-                    modifier = Modifier.align(Alignment.BottomStart),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text(
-                        text = "Location: ",
-                        color = TextSecondary,
-                        fontSize = 14.sp,
-                        style = textShadow
-                    )
-                    if (showLoading) {
-                        SmoothTypingDots(textStyle = textShadow)
-                    } else {
-                        Text(
-                            text = networkInfo.location,
-                            color = Color.White,
-                            fontSize = 14.sp,
-                            fontWeight = FontWeight.Bold,
-                            style = textShadow
-                        )
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Icon(
-                            imageVector = androidx.compose.material.icons.Icons.Outlined.Info,
-                            contentDescription = "Info",
-                            tint = PrimaryCyan,
-                            modifier = Modifier
-                                .size(20.dp)
-                                .bounceClick { onMoreClick() }
-                        )
-                    }
-                }
-
-                // NEW: Top Right: Retry Button (Only on Error)
+                // Retry / spinner at TopEnd — computed first so IP row can reserve space.
                 val hasError = networkInfo.ip == "Error" || networkInfo.location == "Failed to fetch IP" || networkInfo.location.contains("Error")
-                if (hasError) {
+                val isExitUnavailable = networkInfo.ip == "Unknown" ||
+                    networkInfo.location == "VPN exit unavailable" ||
+                    networkInfo.location == "Unavailable" ||
+                    networkInfo.location.contains("VPN exit unavailable")
+                val showRetryIcon = isConnected && (hasError || isExitUnavailable) && !showLoading
+                val showSpinner = isConnected && showLoading && isUnresolved
+
+                // Reserve 28dp at end when retry/spinner is visible so IP row never overlaps it.
+                val ipRowEndPadding = if (showRetryIcon || showSpinner) 28.dp else 0.dp
+
+                // Top: IP Address
+                // Always keep targetState a Pair<String, Boolean> so AnimatedContent
+                // never has to reconcile two different state types during the
+                // loading<->resolved crossfade (that mismatch caused a
+                // ClassCastException crash). A sentinel first value marks loading.
+                AnimatedContent(
+                    targetState = (if (showLoading) "__loading__" else networkInfo.ip) to ipVisible,
+                    transitionSpec = { fadeIn(tween(260)) togetherWith fadeOut(tween(160)) },
+                    label = "ip_crossfade",
+                    modifier = Modifier
+                        .align(Alignment.TopStart)
+                        .fillMaxWidth()
+                        .padding(end = ipRowEndPadding)
+                ) { ipState ->
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            text = if (isConnected) "Virtual IP: " else "Public IP: ",
+                            color = TextSecondary,
+                            fontSize = 14.sp,
+                            style = textShadow
+                        )
+                        if (ipState.first == "__loading__") {
+                            SmoothTypingDots(textStyle = textShadow)
+                        } else {
+                            val ip = ipState.first
+                            val visible = ipState.second
+                            val displayIp = if (visible) ip else ip.replace(
+                                Regex("[A-Za-z0-9]"),
+                                "*"
+                            )
+                            val ipFontSize = when {
+                                ip.length > 32 -> 10.sp
+                                ip.length > 24 -> 11.sp
+                                ip.length > 18 -> 12.sp
+                                else -> 14.sp
+                            }
+                            Text(
+                                text = displayIp,
+                                color = Color.White,
+                                fontSize = ipFontSize,
+                                fontWeight = FontWeight.Bold,
+                                style = textShadow,
+                                maxLines = 1,
+                                softWrap = false,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.weight(1f, fill = false)
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Icon(
+                                imageVector = if (visible) Icons.Default.Visibility else Icons.Default.VisibilityOff,
+                                contentDescription = "Toggle IP",
+                                tint = PrimaryCyan,
+                                modifier = Modifier
+                                    .size(20.dp)
+                                    .bounceClick { ipVisible = !ipVisible }
+                            )
+                        }
+                    }
+                }
+
+                // Bottom: Location — same fix as the IP row: a stable
+                // Pair<String, Boolean> targetState (second = loading flag) so the
+                // content lambda never receives a bare String mid-crossfade.
+                AnimatedContent(
+                    targetState = networkInfo.location to showLoading,
+                    transitionSpec = { fadeIn(tween(260)) togetherWith fadeOut(tween(160)) },
+                    label = "location_crossfade",
+                    modifier = Modifier
+                        .align(Alignment.BottomStart)
+                        .fillMaxWidth()
+                ) { locState ->
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            text = "Location: ",
+                            color = TextSecondary,
+                            fontSize = 14.sp,
+                            style = textShadow
+                        )
+                        if (locState.second) {
+                            SmoothTypingDots(textStyle = textShadow)
+                        } else {
+                            Text(
+                                text = locState.first,
+                                color = Color.White,
+                                fontSize = 14.sp,
+                                fontWeight = FontWeight.Bold,
+                                style = textShadow,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.weight(1f, fill = false)
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Icon(
+                                imageVector = androidx.compose.material.icons.Icons.Outlined.Info,
+                                contentDescription = "Info",
+                                tint = PrimaryCyan,
+                                modifier = Modifier
+                                    .size(20.dp)
+                                    .bounceClick { onMoreClick() }
+                            )
+                        }
+                    }
+                }
+
+                // Top Right: Retry / Spinner
+                if (showRetryIcon) {
                     Icon(
                         imageVector = Icons.Default.Refresh,
                         contentDescription = "Retry Fetch IP",
                         tint = PrimaryCyan,
                         modifier = Modifier
                             .align(Alignment.TopEnd)
-                            .size(24.dp)
+                            .size(22.dp)
                             .bounceClick { onRetryClick() }
+                    )
+                } else if (showSpinner) {
+                    androidx.compose.material3.CircularProgressIndicator(
+                        modifier = Modifier
+                            .align(Alignment.TopEnd)
+                            .size(20.dp),
+                        color = PrimaryCyan,
+                        strokeWidth = 2.dp
                     )
                 }
             }
@@ -2417,15 +2632,16 @@ fun RoutingSelectorButton(
                 text = "Split Tunneling",
                 color = TextSecondary,
                 fontSize = 10.sp,
-                fontFamily = SfProPlusBlack
+                fontFamily = SoraFamily
             )
+            Spacer(modifier = Modifier.height(4.dp))
             Text(
                 text = currentMode,
                 color = PrimaryCyan,
                 fontSize = if (currentMode.contains("except")) 12.5.sp else 14.sp,
                 fontWeight = FontWeight.Bold,
                 maxLines = 1,
-                fontFamily = SfProPlusBlack
+                fontFamily = SoraFamily
             )
         }
         Icon(
@@ -2457,7 +2673,7 @@ fun SplitTunnelingSheetContent(isPerAppEnabled: Boolean, onEnable: () -> Unit) {
         }
         Text(
             "Split Tunneling Settings", color = Color.White, fontSize = 20.sp,
-            fontWeight = FontWeight.Bold, modifier = Modifier.padding(horizontal = 24.dp)
+            fontWeight = FontWeight.Bold, fontFamily = SoraFamily, modifier = Modifier.padding(horizontal = 24.dp)
         )
         Spacer(modifier = Modifier.height(16.dp))
         Row(
@@ -2477,7 +2693,8 @@ fun SplitTunnelingSheetContent(isPerAppEnabled: Boolean, onEnable: () -> Unit) {
                         "Per-App",
                         color = Color.White,
                         fontSize = 16.sp,
-                        fontWeight = FontWeight.Bold
+                        fontWeight = FontWeight.Bold,
+                        fontFamily = SoraFamily
                     )
                 }
             }
@@ -2555,7 +2772,8 @@ fun AppRoutingScreen(
                     "Per-App Settings",
                     color = Color.White,
                     fontSize = 20.sp,
-                    fontWeight = FontWeight.Bold
+                    fontWeight = FontWeight.Bold,
+                    fontFamily = SoraFamily
                 )
                 Spacer(modifier = Modifier.weight(1f))
 
@@ -2580,17 +2798,18 @@ fun AppRoutingScreen(
                             text = {
                                 Text(
                                     if (showSystemApps) "Hide System Apps" else "Show System Apps",
-                                    color = Color.White
+                                    color = Color.White,
+                                    fontFamily = SoraFamily
                                 )
                             },
                             onClick = { showSystemApps = !showSystemApps; showMenu = false }
                         )
                         androidx.compose.material3.DropdownMenuItem(
-                            text = { Text("Select All", color = Color.White) },
+                            text = { Text("Select All", color = Color.White, fontFamily = SoraFamily) },
                             onClick = { onSelectAllApps(); showMenu = false }
                         )
                         androidx.compose.material3.DropdownMenuItem(
-                            text = { Text("Deselect All", color = Color.White) },
+                            text = { Text("Deselect All", color = Color.White, fontFamily = SoraFamily) },
                             onClick = { onDeselectAllApps(); showMenu = false }
                         )
                     }
@@ -2615,6 +2834,7 @@ fun AppRoutingScreen(
                         color = Color(0xFFFFD700),
                         fontSize = 13.sp,
                         fontWeight = FontWeight.SemiBold,
+                        fontFamily = SoraFamily,
                         modifier = Modifier.weight(1f)
                     )
                     Text(
@@ -2622,6 +2842,7 @@ fun AppRoutingScreen(
                         color = PrimaryCyan,
                         fontSize = 13.sp,
                         fontWeight = FontWeight.Bold,
+                        fontFamily = SoraFamily,
                         modifier = Modifier
                             .clip(RoundedCornerShape(8.dp))
                             .clickable { onReconnect() }
@@ -2652,7 +2873,8 @@ fun AppRoutingScreen(
                                 "Per-App",
                                 color = Color.White,
                                 fontSize = 16.sp,
-                                fontWeight = FontWeight.Bold
+                                fontWeight = FontWeight.Bold,
+                                fontFamily = SoraFamily
                             )
                             Spacer(modifier = Modifier.width(8.dp))
                             Icon(
@@ -2695,7 +2917,8 @@ fun AppRoutingScreen(
                                 "Bypass Mode",
                                 color = Color.White,
                                 fontSize = 16.sp,
-                                fontWeight = FontWeight.Bold
+                                fontWeight = FontWeight.Bold,
+                                fontFamily = SoraFamily
                             )
                             Spacer(modifier = Modifier.width(8.dp))
                             Icon(
@@ -2732,7 +2955,8 @@ fun AppRoutingScreen(
                     onValueChange = { searchQuery = it },
                     textStyle = androidx.compose.ui.text.TextStyle(
                         color = Color.White,
-                        fontSize = 14.sp
+                        fontSize = 14.sp,
+                        fontFamily = SoraFamily
                     ),
                     cursorBrush = androidx.compose.ui.graphics.SolidColor(PrimaryCyan),
                     decorationBox = { innerTextField ->
@@ -2755,7 +2979,8 @@ fun AppRoutingScreen(
                                 if (searchQuery.isEmpty()) Text(
                                     "Search Apps",
                                     color = TextSecondary,
-                                    fontSize = 14.sp
+                                    fontSize = 14.sp,
+                                    fontFamily = SoraFamily
                                 )
                                 innerTextField()
                             }
@@ -2808,6 +3033,7 @@ fun AppRoutingScreen(
                                 color = Color.White,
                                 fontSize = 14.sp,
                                 fontWeight = FontWeight.Bold,
+                                fontFamily = SoraFamily,
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis
                             )
@@ -2815,6 +3041,7 @@ fun AppRoutingScreen(
                                 app.packageName,
                                 color = TextSecondary,
                                 fontSize = 10.sp,
+                                fontFamily = SoraFamily,
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis
                             )
@@ -2891,7 +3118,7 @@ fun TopHeader(
                     color = PrimaryCyan,
                     fontSize = 16.sp,
                     fontWeight = FontWeight.Bold,
-                    fontFamily = SfProPlusBlack
+                    fontFamily = SoraFamily
                 )
             }
 
@@ -2984,6 +3211,7 @@ fun CustomGlassToast(message: String?, modifier: Modifier = Modifier) {
                 text = message ?: "",
                 color = Color.White,
                 fontSize = 13.sp,
+                fontFamily = SoraFamily,
                 lineHeight = 20.sp,
                 textAlign = androidx.compose.ui.text.style.TextAlign.Center
             )
@@ -3008,7 +3236,8 @@ fun ServerListFullScreen(
     onUpdateSub: (String) -> Unit,
     onEdit: (VpnProfile) -> Unit,
     onNavigateBack: () -> Unit,
-    toastMessage: String? = null
+    toastMessage: String? = null,
+    onShowToast: (String) -> Unit = {}
 ) {
     val context = androidx.compose.ui.platform.LocalContext.current
     val prefs = androidx.compose.runtime.remember { context.getSharedPreferences("tab_prefs", android.content.Context.MODE_PRIVATE) }
@@ -3089,7 +3318,7 @@ fun ServerListFullScreen(
             Spacer(modifier = Modifier.width(16.dp))
 
             if (!isReorderMode) {
-                Text("Server List", color = Color.White, fontSize = 20.sp, fontWeight = FontWeight.Bold)
+                Text("Server List", color = Color.White, fontSize = 20.sp, fontWeight = FontWeight.Bold, fontFamily = SoraFamily)
                 Spacer(modifier = Modifier.weight(1f))
 
                 if (protocol == "v2rayNG") {
@@ -3107,22 +3336,22 @@ fun ServerListFullScreen(
                             modifier = Modifier.background(SurfaceDark).border(1.dp, BorderGlass, RoundedCornerShape(8.dp))
                         ) {
                             androidx.compose.material3.DropdownMenuItem(
-                                text = { Text("Sorting by test results", color = Color.White) },
+                                text = { Text("Sorting by test results", color = Color.White, fontFamily = SoraFamily) },
                                 leadingIcon = { Icon(androidx.compose.material.icons.Icons.Default.Sort, contentDescription = null, tint = Color.White) },
                                 onClick = { showV2rayMenu = false; onSortV2ray() }
                             )
                             androidx.compose.material3.DropdownMenuItem(
-                                text = { Text("Test Real delay config", color = Color.White) },
+                                text = { Text("Test Real delay config", color = Color.White, fontFamily = SoraFamily) },
                                 leadingIcon = { Icon(androidx.compose.material.icons.Icons.Default.Speed, contentDescription = null, tint = Color.White) },
                                 onClick = { showV2rayMenu = false; onTestAllV2rayPing() }
                             )
                             androidx.compose.material3.DropdownMenuItem(
-                                text = { Text("Update subscription", color = Color.White) },
+                                text = { Text("Update subscription", color = Color.White, fontFamily = SoraFamily) },
                                 leadingIcon = { Icon(androidx.compose.material.icons.Icons.Outlined.Sync, contentDescription = null, tint = Color.White) },
                                 onClick = { showV2rayMenu = false; if (selectedTab != "SingleLinks") onUpdateSub(selectedTab) }
                             )
                             androidx.compose.material3.DropdownMenuItem(
-                                text = { Text("Delete invalid config", color = Color(0xFFE53935)) },
+                                text = { Text("Delete invalid config", color = Color(0xFFE53935), fontFamily = SoraFamily) },
                                 leadingIcon = { Icon(androidx.compose.material.icons.Icons.Outlined.Delete, contentDescription = null, tint = Color(0xFFE53935)) },
                                 onClick = { showV2rayMenu = false; onDeleteInvalidV2ray() }
                             )
@@ -3164,7 +3393,7 @@ fun ServerListFullScreen(
                     }
                 }
                 Spacer(modifier = Modifier.weight(1f))
-                Text(text = "Done", color = PrimaryCyan, fontSize = 16.sp, fontWeight = FontWeight.Bold, modifier = Modifier.bounceClick { isReorderMode = false }.padding(8.dp))
+                Text(text = "Done", color = PrimaryCyan, fontSize = 16.sp, fontWeight = FontWeight.Bold, fontFamily = SoraFamily, modifier = Modifier.bounceClick { isReorderMode = false }.padding(8.dp))
             }
         }
 
@@ -3184,6 +3413,7 @@ fun ServerListFullScreen(
                             text = "$customName ($count)",
                             color = if (selectedTab == tabKey) PrimaryCyan else TextSecondary,
                             fontWeight = if (selectedTab == tabKey) FontWeight.Bold else FontWeight.Normal,
+                            fontFamily = SoraFamily,
                             modifier = Modifier
                                 .bounceClick(onLongClick = { selectedTab = tabKey; expandedTabMenu = tabKey }) { selectedTab = tabKey }
                                 .padding(8.dp)
@@ -3195,18 +3425,18 @@ fun ServerListFullScreen(
                             modifier = Modifier.background(SurfaceDark).border(1.dp, BorderGlass, RoundedCornerShape(8.dp))
                         ) {
                             androidx.compose.material3.DropdownMenuItem(
-                                text = { Text("Reorder", color = Color.White) },
+                                text = { Text("Reorder", color = Color.White, fontFamily = SoraFamily) },
                                 leadingIcon = { Icon(TelegramReorderIcon, contentDescription = null, tint = Color.White) },
                                 onClick = { expandedTabMenu = null; isReorderMode = true }
                             )
                             if (tabKey != "SingleLinks") {
                                 androidx.compose.material3.DropdownMenuItem(
-                                    text = { Text("Rename", color = Color.White) },
+                                    text = { Text("Rename", color = Color.White, fontFamily = SoraFamily) },
                                     leadingIcon = { Icon(androidx.compose.material.icons.Icons.Default.Edit, contentDescription = null, tint = Color.White) },
                                     onClick = { expandedTabMenu = null; renamingSubKey = tabKey }
                                 )
                                 androidx.compose.material3.DropdownMenuItem(
-                                    text = { Text("Delete Sub", color = Color(0xFFE53935)) },
+                                    text = { Text("Delete Sub", color = Color(0xFFE53935), fontFamily = SoraFamily) },
                                     leadingIcon = { Icon(androidx.compose.material.icons.Icons.Outlined.Delete, contentDescription = null, tint = Color(0xFFE53935)) },
                                     onClick = {
                                         expandedTabMenu = null
@@ -3235,7 +3465,8 @@ fun ServerListFullScreen(
                     onClick = { onSelect(profile.id); onNavigateBack() },
                     onDelete = if (isSub) null else { { onDelete(profile) } },
                     onEdit = if (isSub) null else { { onEdit(profile) } },
-                    onPingClick = { onTestSinglePing(profile) }
+                    onPingClick = { onTestSinglePing(profile) },
+                    onShowToast = onShowToast
                 )
             }
             item { Spacer(modifier = Modifier.height(24.dp)) }
@@ -3259,18 +3490,19 @@ fun ServerListFullScreen(
                     .padding(24.dp)
             ) {
                 Column {
-                    Text("Rename Subscription", color = Color.White, fontSize = 18.sp, fontWeight = FontWeight.Bold, fontFamily = SfProPlusBlack)
+                    Text("Rename Subscription", color = Color.White, fontSize = 18.sp, fontWeight = FontWeight.Bold, fontFamily = SoraFamily)
                     Spacer(modifier = Modifier.height(16.dp))
                     OutlinedTextField(
                         value = customName,
                         onValueChange = { customName = it },
-                        label = { Text("Subscription Name", color = TextSecondary) },
+                        label = { Text("Subscription Name", color = TextSecondary, fontFamily = SoraFamily) },
                         colors = OutlinedTextFieldDefaults.colors(
                             focusedBorderColor = PrimaryCyan,
                             unfocusedBorderColor = BorderGlass,
                             focusedTextColor = Color.White,
                             unfocusedTextColor = Color.White
                         ),
+                        textStyle = TextStyle(fontFamily = SoraFamily),
                         modifier = Modifier.fillMaxWidth(),
                         singleLine = true
                     )
@@ -3296,7 +3528,7 @@ fun ServerListFullScreen(
                             color = if (isButtonEnabled) BackgroundDark else TextSecondary, 
                             fontSize = 16.sp, 
                             fontWeight = FontWeight.Bold, 
-                            fontFamily = SfProPlusBlack
+                            fontFamily = SoraFamily
                         )
                     }
                 }
@@ -3319,6 +3551,8 @@ fun LiveLogFullScreen(
     onClear: () -> Unit,
     onNavigateBack: () -> Unit
 ) {
+    // Title: Sora font; log lines: keep Monospace (user explicitly requested).
+    val titleFont = SoraFamily
     Column(modifier = Modifier
         .fillMaxSize()
         .background(SurfaceDark)) {
@@ -3342,7 +3576,8 @@ fun LiveLogFullScreen(
                 "$displayProtocol Logs",
                 color = Color.White,
                 fontSize = 20.sp,
-                fontWeight = FontWeight.Bold
+                fontWeight = FontWeight.Bold,
+                fontFamily = titleFont
             )
             Spacer(modifier = Modifier.weight(1f))
             Icon(
@@ -3399,7 +3634,7 @@ fun LiveLogFullScreen(
                         Text(
                             "No logs available.",
                             color = TextSecondary,
-                            fontFamily = FontFamily.Monospace
+                            fontFamily = SoraFamily
                         )
                     }
                 }
