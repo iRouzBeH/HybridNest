@@ -497,11 +497,13 @@ fun DashboardContent(
 
     // The DNS method is "active" when its tab is selected OR a DNS session is
     // actually connected (detailed-state is authoritative for the latter).
-    val isDnsActive = remember(selectedProtocol, connectionState) {
-        val ds = VpnStateManager.detailedConnectionStateFlow.value
-        isDnsSelected || (ds is dev.rouzbeh.hybridvpn.service.DetailedState.Connected &&
-            ds.activeProtocol == dev.rouzbeh.hybridvpn.service.VpnProtocol.Dns)
-    }
+    // detailedConnectionStateFlow is collected as Compose state so this value
+    // recomposes the moment the connected protocol changes — reading
+    // .value inside remember{} left it stale until app re-entry.
+    val detailedState by VpnStateManager.detailedConnectionStateFlow.collectAsStateWithLifecycle()
+    val isDnsActive = isDnsSelected ||
+        ((detailedState as? dev.rouzbeh.hybridvpn.service.DetailedState.Connected)
+            ?.activeProtocol == dev.rouzbeh.hybridvpn.service.VpnProtocol.Dns)
 
     val currentActiveProfile =
         if (activeProfile?.protocol == selectedProtocol) activeProfile else null
@@ -545,7 +547,7 @@ fun DashboardContent(
             apps = installedApps,
             isPerAppEnabled = isPerAppEnabled,
             isBypassMode = isBypassMode,
-            isDnsMode = isDnsActive,
+            isDnsMode = isDnsSelected,
             isPending = isRoutingPending,
             onReconnect = { onReconnectWithLatestPolicy(context) },
             onBypassModeChange = onSetBypassMode,
@@ -658,14 +660,16 @@ fun DashboardContent(
                 )
 
                 // NEW: App Routing / Split Tunneling Button.
-                // DNS mode has no tunnel/VPN, so the labels say "this DNS".
+                // The wording follows the SELECTED protocol tab (isDnsSelected),
+                // not the connected session, so it updates the instant the user
+                // switches protocols — DNS has no tunnel/VPN, so it says "this DNS".
                 val currentMode = when {
                     !isPerAppEnabled ->
-                        if (isDnsActive) "All apps use this DNS" else "All apps use VPN"
+                        if (isDnsSelected) "All apps use this DNS" else "All apps use VPN"
                     isBypassMode ->
-                        if (isDnsActive) "All apps except those selected use this DNS" else "All apps except those selected use VPN"
+                        if (isDnsSelected) "All apps except those selected use this DNS" else "All apps except those selected use VPN"
                     else ->
-                        if (isDnsActive) "Only selected apps use this DNS" else "Only selected apps use VPN"
+                        if (isDnsSelected) "Only selected apps use this DNS" else "Only selected apps use VPN"
                 }
                 RoutingSelectorButton(
                     currentMode = currentMode,
@@ -683,33 +687,6 @@ fun DashboardContent(
                         onProtocolSelected(it.title)
                     }
                 )
-
-                // DNS-only mode: clarify that the public IP is never changed.
-                if (isDnsSelected) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clip(RoundedCornerShape(14.dp))
-                            .background(SurfaceGlass)
-                            .border(1.dp, BorderGlass, RoundedCornerShape(14.dp))
-                            .padding(horizontal = 16.dp, vertical = 10.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Dns,
-                            contentDescription = null,
-                            tint = PrimaryCyan,
-                            modifier = Modifier.size(18.dp)
-                        )
-                        Spacer(modifier = Modifier.width(10.dp))
-                        Text(
-                            "DNS only. Your IP is not changed.",
-                            color = TextSecondary,
-                            fontSize = 12.5.sp,
-                            fontFamily = SoraFamily
-                        )
-                    }
-                }
 
                 // 5. Server Selector (Using the updated signature with onAddClick)
                 if (isDnsSelected) {
