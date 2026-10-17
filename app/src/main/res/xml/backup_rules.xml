@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+   Backup rules for pre-API-31 devices.
+
+   routing_policy.json is DERIVED SESSION STATE (a cross-process snapshot the main
+   process rewrites at every connection start). It is excluded because restoring a
+   stale snapshot could make the :openvpn process apply an outdated policy if it
+   races a fresh session. Settings themselves live in SharedPreferences and remain
+   backed up.
+-->
+<full-backup-content>
+    <exclude domain="file" path="routing_policy.json" />
+    <exclude domain="file" path="routing_policy.json.tmp" />
+</full-backup-content>
