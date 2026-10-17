@@ -73,6 +73,9 @@ class HybridVpnService : VpnService() {
     private val CHANNEL_ID = "vpn_notification_channel"
     private var currentConnectedProtocol: VpnProtocol? = null
 
+    /** DNS-mode session: the forwarder thread that relays TUN DNS packets. */
+    private var dnsForwarder: dev.rouzbeh.hybridvpn.core.vpn.dns.DnsForwarder? = null
+
     /**
      * In-progress stop for the CURRENT session. Combined with [stoppingSessionId]
      * this makes [stopAllEngines] idempotent per session: duplicate stop requests
@@ -297,6 +300,7 @@ class HybridVpnService : VpnService() {
             ACTION_START_VPN -> {
                 currentConnectedProtocol = when (intent.getStringExtra(EXTRA_PROTOCOL)) {
                     VpnProtocol.V2rayNG.title -> VpnProtocol.V2rayNG
+                    VpnProtocol.Dns.title -> VpnProtocol.Dns
                     else -> VpnProtocol.OpenConnect
                 }
             }
@@ -317,7 +321,16 @@ class HybridVpnService : VpnService() {
 
         connectionJob?.cancel()
         connectionJob = serviceScope.launch {
-            establishSession(intent?.getStringExtra(EXTRA_PROTOCOL))
+            val requestedProtocol = intent?.getStringExtra(EXTRA_PROTOCOL)
+            establishSession(requestedProtocol)
+
+            // DNS mode has no Room profile — it is configured via
+            // DnsSettingsRepository and dispatched directly by the intent extra.
+            if (requestedProtocol == VpnProtocol.Dns.title) {
+                currentConnectedProtocol = VpnProtocol.Dns
+                startDnsOnly()
+                return@launch
+            }
 
             val db = AppDatabase.getDatabase(applicationContext)
             val activeProfile = db.vpnProfileDao().getActiveProfile().firstOrNull()
@@ -330,9 +343,10 @@ class HybridVpnService : VpnService() {
             }
             currentConnectedProtocol = when (activeProfile.protocol) {
                 VpnProtocol.V2rayNG.title -> VpnProtocol.V2rayNG
+                VpnProtocol.Dns.title -> VpnProtocol.Dns
                 else -> VpnProtocol.OpenConnect
             }
-            
+
             launch {
                 // Connectivity verification is now DIAGNOSTIC ONLY (see
                 // ConnectivityDiagnostics): a public-endpoint DNS/HTTP failure is
@@ -356,13 +370,155 @@ class HybridVpnService : VpnService() {
                     }
                 }
             }
-            
+
             when (activeProfile.protocol) {
                 "v2rayNG" -> startV2Ray(activeProfile)
+                "DNS" -> startDnsOnly()
                 else -> startOpenConnectPath(activeProfile)
             }
         }
         return START_STICKY
+    }
+
+    /**
+     * DNS-only connection method.
+     *
+     * Unlike the proxy protocols there is no Room VpnProfile for DNS: the
+     * selected upstream resolver comes from DnsSettingsRepository. The TUN is
+     * configured so ONLY traffic addressed to a fake resolver IP is routed into
+     * the tunnel — everything else uses the normal network, so the user's IP
+     * is never changed and nothing is proxied.
+     *
+     * netd sends the routed apps' DNS lookups to the fake resolver address;
+     * DnsForwarder reads those packets off the TUN and relays them to the
+     * chosen upstream through protect()ed sockets (no routing loop).
+     */
+    private suspend fun startDnsOnly() {
+        val server = try {
+            dev.rouzbeh.hybridvpn.data.repository.DnsSettingsRepository(applicationContext).getSelectedServer()
+        } catch (t: Throwable) {
+            emitLog("FATAL: cannot load DNS settings: ${t.message}")
+            null
+        }
+        if (server == null) {
+            emitLog("FATAL: no DNS server selected. Stopping.")
+            VpnStateManager.updateStateFromNative(3)
+            removeVpnNotification()
+            stopSelf()
+            return
+        }
+
+        val primary = try {
+            InetAddress.getByName(server.primary)
+        } catch (t: Throwable) {
+            emitLog("FATAL: invalid primary DNS address '${server.primary}': ${t.message}")
+            null
+        }
+        val secondary = server.secondary?.let {
+            try { InetAddress.getByName(it) } catch (_: Throwable) { null }
+        }
+        if (primary == null) {
+            VpnStateManager.updateStateFromNative(3)
+            removeVpnNotification()
+            stopSelf()
+            return
+        }
+        emitLog("DNS server selected: ${server.name} (primary=${server.primary}${server.secondary?.let { ", secondary=$it" } ?: ""})")
+
+        emitLog("Establishing DNS-only TUN...")
+        if (VpnService.prepare(this) != null) {
+            emitLog("FATAL: VPN consent not granted / revoked.")
+            VpnStateManager.updateStateFromNative(3)
+            removeVpnNotification()
+            stopSelf()
+            return
+        }
+
+        val launchIntent = packageManager.getLaunchIntentForPackage(packageName)
+        val pendingConfigure = android.app.PendingIntent.getActivity(
+            this, 0, launchIntent, android.app.PendingIntent.FLAG_IMMUTABLE
+        )
+        val cfg = dev.rouzbeh.hybridvpn.core.vpn.dns.DnsTunnelConfig
+        val builder = Builder()
+            .setSession("HybridNestDNS")
+            .setConfigureIntent(pendingConfigure)
+            .setMtu(1500)
+            .addAddress(cfg.TUN_ADDR_V4, 32)
+            .addAddress(cfg.TUN_ADDR_V6, 128)
+            // Advertise the fake resolver so the system DNS resolver targets it.
+            .addDnsServer(cfg.FAKE_DNS_V4)
+            .addDnsServer(cfg.FAKE_DNS_V6)
+            // Route ONLY the fake resolver addresses into the tunnel. No
+            // default route: nothing but DNS packets ever enters the TUN.
+            .addRoute(cfg.FAKE_DNS_V4, 32)
+            .addRoute(cfg.FAKE_DNS_V6, 128)
+
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) builder.setMetered(false)
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.LOLLIPOP_MR1) builder.setBlocking(false)
+
+        applyPerAppRouting(builder)
+
+        val pfd = try {
+            builder.establish()
+        } catch (e: dev.rouzbeh.hybridvpn.core.routing.RoutingRefusedException) {
+            emitLog("FATAL: Connection refused by routing policy: " + e.message)
+            VpnStateManager.updateStateFromNative(3)
+            stopSelf()
+            return
+        } catch (t: Throwable) {
+            emitLog("FATAL: establish() threw: ${t.message}")
+            null
+        } ?: run {
+            emitLog("FATAL: establish() returned null (no consent or another VPN owns the slot).")
+            VpnStateManager.updateStateFromNative(3)
+            stopSelf()
+            return
+        }
+
+        // DNS mode keeps pfd ownership in the service (no dup/detach): the
+        // forwarder reads/writes the TUN through this FileDescriptor and
+        // stopAllEngines closes vpnInterface on teardown.
+        vpnInterface = pfd
+        RoutingPolicyStatus.publish(
+            sessionId = sessionId,
+            revision = sessionRoutingPolicy?.revision ?: -1L,
+            protocol = VpnProtocol.Dns.title,
+            nowMs = System.currentTimeMillis()
+        )
+        emitLog(
+            "Routing applied: DNS tunnel established with policy r" +
+                (sessionRoutingPolicy?.revision ?: -1L) + " (session $sessionId)"
+        )
+
+        val forwarder = try {
+            dev.rouzbeh.hybridvpn.core.vpn.dns.DnsForwarder(
+                tunFd = pfd.fileDescriptor,
+                upstreamPrimary = primary,
+                upstreamSecondary = secondary,
+                mtu = 1500,
+                protectTcp = { sock -> protect(sock) },
+                protectUdp = { sock -> protect(sock) },
+                log = { msg -> emitLog(msg) }
+            )
+        } catch (t: Throwable) {
+            emitLog("FATAL: cannot create DNS forwarder: ${t.message}")
+            null
+        }
+        if (forwarder == null) {
+            VpnStateManager.updateStateFromNative(3)
+            stopSelf()
+            return
+        }
+        dnsForwarder = forwarder
+        forwarder.start()
+
+        // Tunnel + forwarder are up: mark CONNECTED immediately (tunnel-ready
+        // truth). The connectivity check is diagnostic-only and exercises the
+        // forwarder via a real DNS resolution through the tunnel.
+        VpnStateManager.updateStateFromNative(2)
+        BroadcastStateManager.broadcastConnectedStateDetailed(applicationContext, VpnProtocol.Dns)
+        emitLog("DNS forwarder running; marking CONNECTED (tunnel-ready). IP is NOT changed.")
+        launchConnectivityCheck(sessionId)
     }
 
     private fun startNotificationLoop() {
@@ -694,12 +850,16 @@ class HybridVpnService : VpnService() {
 
         when (decision) {
             is dev.rouzbeh.hybridvpn.core.routing.RoutingDecision.Global -> {
-                // Global routing. Transport exception only for V2Ray:
+                // Global routing. Transport exception for V2Ray and DNS:
                 // Xray dials the proxy server directly from this app's UID; without
                 // the exclusion its outbound traffic would loop back into its TUN.
+                // DNS runs the in-process forwarder whose upstream sockets must
+                // never enter the TUN (they use protect(), but the explicit
+                // exclusion also keeps this app's connectivity checks honest).
                 // OpenConnect uses protect() on transport sockets and stays
                 // INSIDE the tunnel for diagnostics.
-                if (currentConnectedProtocol == dev.rouzbeh.hybridvpn.service.VpnProtocol.V2rayNG) {
+                if (currentConnectedProtocol == dev.rouzbeh.hybridvpn.service.VpnProtocol.V2rayNG ||
+                    currentConnectedProtocol == dev.rouzbeh.hybridvpn.service.VpnProtocol.Dns) {
                     addDisallow(builder, packageName)
                 }
                 android.util.Log.d("PerAppDebug", "Global $currentConnectedProtocol policy=${policy.describe()}")
@@ -729,6 +889,8 @@ class HybridVpnService : VpnService() {
                 } else if (currentConnectedProtocol == dev.rouzbeh.hybridvpn.service.VpnProtocol.V2rayNG) {
                     android.util.Log.d("PerAppDebug", "Allow V2Ray: userAdded=$userPackagesAdded packages=${decision.allowedPackages.sorted()} pruned=${decision.prunedPackages.sorted()} (self NOT added to avoid Xray loop)")
                 } else {
+                    // DNS (and any other protocol): self is NOT added — the
+                    // forwarder's upstream sockets must stay outside the TUN.
                     android.util.Log.d("PerAppDebug", "Allow $currentConnectedProtocol: userAdded=$userPackagesAdded packages=${decision.allowedPackages.sorted()}")
                 }
 
@@ -746,7 +908,8 @@ class HybridVpnService : VpnService() {
                     emitLog("Routing: selected app not installed, pruned: $it")
                 }
                 decision.disallowedPackages.forEach { addDisallow(builder, it) }
-                if (currentConnectedProtocol == dev.rouzbeh.hybridvpn.service.VpnProtocol.V2rayNG) {
+                if (currentConnectedProtocol == dev.rouzbeh.hybridvpn.service.VpnProtocol.V2rayNG ||
+                    currentConnectedProtocol == dev.rouzbeh.hybridvpn.service.VpnProtocol.Dns) {
                     addDisallow(builder, packageName)
                 }
                 android.util.Log.d("PerAppDebug", "Bypass $currentConnectedProtocol policy=${policy.describe()} disallowed=${decision.disallowedPackages.sorted()} pruned=${decision.prunedPackages.sorted()}")
@@ -935,11 +1098,16 @@ class HybridVpnService : VpnService() {
 
         val fdToClose = coreTunFd
         val pfdToClose = vpnInterface
+        val dnsToStop = dnsForwarder
         coreTunFd = null
         vpnInterface = null
+        dnsForwarder = null
 
         serviceScope.launch(Dispatchers.IO) {
             try { V2RayManager.stopCore() } catch (e: Throwable) { Log.e(TAG, "V2Ray stop failed", e) }
+            // Stop the DNS packet relay before closing the TUN fd so no thread
+            // is mid-read/write on it.
+            try { dnsToStop?.stop() } catch (e: Throwable) { Log.e(TAG, "DNS forwarder stop failed", e) }
             try { fdToClose?.let { Os.close(it) } } catch (_: Throwable) {}
             try { pfdToClose?.close() } catch (_: Throwable) {}
 

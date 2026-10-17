@@ -31,7 +31,8 @@ enum class ConnectionState {
 
 enum class VpnProtocol(val title: String) {
     OpenConnect("OpenConnect"),
-    V2rayNG("v2rayNG")
+    V2rayNG("v2rayNG"),
+    Dns("DNS")
 }
 
 sealed class DetailedState {

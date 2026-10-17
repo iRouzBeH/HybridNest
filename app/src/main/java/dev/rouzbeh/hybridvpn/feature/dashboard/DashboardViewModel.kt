@@ -37,6 +37,7 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
 
     private val dao = AppDatabase.getDatabase(application).vpnProfileDao()
     private val settingsRepository = SettingsRepository(application)
+    private val dnsSettingsRepository = dev.rouzbeh.hybridvpn.data.repository.DnsSettingsRepository(application)
     private var isIntentionalReconnect = false
     private var isInitialStateEmission = true
     private var logcatJob: Job? = null
@@ -69,16 +70,99 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
     val activeProfile: StateFlow<VpnProfile?> = dao.getActiveProfile()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
 
+    // -------------------------------------------------------------- DNS mode
+
+    /** Visible DNS servers (built-ins minus hidden + customs), ping applied. */
+    private val _dnsServers = MutableStateFlow<List<dev.rouzbeh.hybridvpn.core.vpn.dns.DnsServer>>(emptyList())
+    val dnsServers: StateFlow<List<dev.rouzbeh.hybridvpn.core.vpn.dns.DnsServer>> = _dnsServers.asStateFlow()
+
+    /** The currently selected DNS server (falls back to first visible). */
+    private val _selectedDnsServer = MutableStateFlow<dev.rouzbeh.hybridvpn.core.vpn.dns.DnsServer?>(null)
+    val selectedDnsServer: StateFlow<dev.rouzbeh.hybridvpn.core.vpn.dns.DnsServer?> = _selectedDnsServer.asStateFlow()
+
+    fun refreshDnsServers() {
+        viewModelScope.launch(Dispatchers.IO) {
+            val servers = dnsSettingsRepository.getServers()
+            _dnsServers.value = servers
+            _selectedDnsServer.value = dnsSettingsRepository.getSelectedServer()
+        }
+    }
+
+    fun selectDnsServer(id: String) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val target = _dnsServers.value.firstOrNull { it.id == id }
+            // Servers that failed their ping test (-1) are unreachable — mirror
+            // the VPN server rule and refuse selection with the same toast.
+            if (target?.ping == -1L) {
+                showToast("This server is unreachable right now\nPick another server or retest its ping.")
+                return@launch
+            }
+            dnsSettingsRepository.selectServer(id)
+            _selectedDnsServer.value = dnsSettingsRepository.getSelectedServer()
+        }
+    }
+
+    fun addDnsServer(name: String, primary: String, secondary: String?) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val result = dnsSettingsRepository.addCustomServer(name, primary, secondary)
+            result.onSuccess { refreshDnsServers() }
+                .onFailure { showToast(it.message ?: "Could not add DNS server") }
+        }
+    }
+
+    fun updateDnsServer(id: String, name: String, primary: String, secondary: String?) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val result = dnsSettingsRepository.updateCustomServer(id, name, primary, secondary)
+            result.onSuccess { refreshDnsServers() }
+                .onFailure { showToast(it.message ?: "Could not update DNS server") }
+        }
+    }
+
+    fun deleteDnsServer(id: String) {
+        viewModelScope.launch(Dispatchers.IO) {
+            dnsSettingsRepository.deleteOrHide(id)
+            refreshDnsServers()
+        }
+    }
+
+    /** Ping a single DNS server via a real UDP DNS query and cache the result. */
+    fun testDnsPing(id: String) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val server = _dnsServers.value.firstOrNull { it.id == id } ?: return@launch
+            val ping = dev.rouzbeh.hybridvpn.core.vpn.dns.DnsPing.pingUdp(server.primary)
+            dnsSettingsRepository.setPing(id, ping)
+            _dnsServers.value = dnsSettingsRepository.getServers()
+        }
+    }
+
+    /** Retest ping for every visible DNS server (bounded concurrency). */
+    fun testAllDnsPing() {
+        viewModelScope.launch(Dispatchers.IO) {
+            val targets = _dnsServers.value
+            if (targets.isEmpty()) return@launch
+            coroutineScope {
+                targets.map { server ->
+                    async(Dispatchers.IO) {
+                        val ping = dev.rouzbeh.hybridvpn.core.vpn.dns.DnsPing.pingUdp(server.primary)
+                        dnsSettingsRepository.setPing(server.id, ping)
+                    }
+                }.awaitAll()
+            }
+            _dnsServers.value = dnsSettingsRepository.getServers()
+        }
+    }
+
     val connectionState: StateFlow<ConnectionState> = VpnStateManager.connectionState
     val speed: StateFlow<Pair<String, String>> = VpnStateManager.speed
     val networkInfo: StateFlow<NetworkInfo> = VpnStateManager.networkInfo
 
     /** Live Log now backed by process-scoped LogStore so it survives re-entry. */
     val currentLogs: StateFlow<List<String>> = combine(
-        selectedProtocol, LogStore.openConnectLogs, LogStore.v2rayLogs
-    ) { protocol, ocLogs, v2Logs ->
+        selectedProtocol, LogStore.openConnectLogs, LogStore.v2rayLogs, LogStore.dnsLogs
+    ) { protocol, ocLogs, v2Logs, dnsLogs ->
         when (protocol) {
             "OpenConnect" -> ocLogs
+            "DNS" -> dnsLogs
             else -> v2Logs
         }
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
@@ -95,6 +179,8 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
                 val cmd = when (protocol) {
                     "v2rayNG" ->
                         "logcat -v time HybridNestVPN:D GoLog:D libv2ray:D Go:D AndroidRuntime:E DEBUG:E libc:E System.err:W *:S"
+                    "DNS" ->
+                        "logcat -v time HybridNestVPN:D HybridVpnService:D DnsForwarder:D DnsPacket:D AndroidRuntime:E *:S"
                     else ->
                         "logcat -v time OpenConnect:D HybridNestJNI:D HybridNestVPN:D VPNService:D AndroidRuntime:E DEBUG:E libc:E *:S"
                 }
@@ -144,6 +230,20 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
     val isBypassMode: StateFlow<Boolean> = _isBypassMode.asStateFlow()
 
     private var pingJob: Job? = null
+
+    /**
+     * True when the ACTIVE connection is the DNS method. Uses the authoritative
+     * detailed-state first (set by the service broadcast), falling back to the
+     * selected protocol so the card can be labelled even on a replay where the
+     * detailed broadcast hasn't landed yet.
+     */
+    private fun isDnsActive(): Boolean {
+        val ds = VpnStateManager.detailedConnectionStateFlow.value
+        return when {
+            ds is DetailedState.Connected -> ds.activeProtocol == VpnProtocol.Dns
+            else -> _selectedProtocol.value == "DNS"
+        }
+    }
 
     // Helpers for pinning subscription info cards (names containing volume/days)
     private fun isSubscriptionInfoName(name: String): Boolean {
@@ -235,12 +335,14 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
                 // Migrate a stale selection from a removed protocol to a
                 // still-supported default so the selector lands on a real tab.
                 _selectedProtocol.value = when (active.protocol) {
-                    "OpenConnect", "v2rayNG" -> active.protocol
+                    "OpenConnect", "v2rayNG", "DNS" -> active.protocol
                     else -> "OpenConnect"
                 }
             }
         }
 
+        // DNS mode has no Room profile — seed the server list + selection.
+        refreshDnsServers()
 
         viewModelScope.launch {
             VpnStateManager.detailedConnectionStateFlow.collect { detailedState ->
@@ -389,6 +491,14 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
             _pingResult.value = "Testing..."
             if (activeProfile.value?.protocol == "v2rayNG") {
                 val rtt = V2RayManager.measureRealPing()
+                _pingResult.value = if (rtt >= 0) "$rtt ms" else "Timeout"
+                return@launch
+            }
+            if (isDnsActive()) {
+                // DNS mode: measure a real DNS query to the selected resolver
+                // through a protect()ed socket so it leaves on the raw network.
+                val target = _selectedDnsServer.value?.primary
+                val rtt = target?.let { dev.rouzbeh.hybridvpn.core.vpn.dns.DnsPing.pingUdp(it) } ?: -1L
                 _pingResult.value = if (rtt >= 0) "$rtt ms" else "Timeout"
                 return@launch
             }
@@ -581,6 +691,11 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
             } else {
                 activeProfile.value?.protocol == "v2rayNG"
             }
+            val isDns = if (detailedState is DetailedState.Connected) {
+                detailedState.activeProtocol == VpnProtocol.Dns
+            } else {
+                _selectedProtocol.value == "DNS"
+            }
             val proxy = if (isV2ray) java.net.Proxy(java.net.Proxy.Type.HTTP, java.net.InetSocketAddress("127.0.0.1", 10809)) else java.net.Proxy.NO_PROXY
 
             val cm = getApplication<Application>().getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
@@ -612,6 +727,12 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
                         val parsedUrl = URL(url)
                         val rawConnection = when {
                             isV2ray -> parsedUrl.openConnection(proxy)
+                            isDns -> {
+                                // DNS mode never tunnels: the IP shown is the
+                                // real public IP, so fetch it directly on the
+                                // default network (never bound to the VPN).
+                                parsedUrl.openConnection(java.net.Proxy.NO_PROXY)
+                            }
                             else -> {
                                 // AnyConnect: prefer binding to the VPN network
                                 // so we report the tunnel exit IP. Give the TUN a brief
@@ -801,8 +922,16 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
     }
 
     fun startVpn(context: Context) {
+        val isDns = _selectedProtocol.value == "DNS"
         val currentProfile = activeProfile.value
-        if (currentProfile == null || currentProfile.protocol != _selectedProtocol.value) return
+        // DNS mode has no Room profile; its selection lives in
+        // DnsSettingsRepository. All other protocols require a matching active
+        // profile before a session can start.
+        if (!isDns && (currentProfile == null || currentProfile.protocol != _selectedProtocol.value)) return
+        if (isDns && _selectedDnsServer.value == null) {
+            showToast("Select a DNS server first")
+            return
+        }
         routingRefusalReason()?.let { reason ->
             showToast(reason)
             VpnStateManager.updateState(ConnectionState.ERROR)
@@ -813,7 +942,10 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
             try {
                 val intent = Intent(context, HybridVpnService::class.java).apply {
                     action = HybridVpnService.ACTION_START_VPN
-                    putExtra(HybridVpnService.EXTRA_PROTOCOL, currentProfile.protocol)
+                    putExtra(
+                        HybridVpnService.EXTRA_PROTOCOL,
+                        if (isDns) "DNS" else currentProfile!!.protocol
+                    )
                 }
                 context.startService(intent)
             } catch (e: Exception) { VpnStateManager.updateState(ConnectionState.ERROR) }

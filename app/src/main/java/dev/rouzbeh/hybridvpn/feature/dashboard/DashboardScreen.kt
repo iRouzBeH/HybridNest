@@ -285,6 +285,7 @@ fun Modifier.bounceClick(onLongClick: (() -> Unit)? = null, onClick: () -> Unit)
 
 enum class VpnProtocolDisplay(val title: String, val iconResId: Int) {
     OpenConnect("OpenConnect", R.drawable.ic_openconnect),
+    Dns("DNS", R.drawable.ic_dns),
     V2rayNG("v2rayNG", R.drawable.ic_v2rayng) // Ensure ic_v2rayng.png exists in res/drawable
 }
 
@@ -305,6 +306,8 @@ fun DashboardScreen(
     val isBypassMode by viewModel.isBypassMode.collectAsStateWithLifecycle()
     val isRoutingPending by viewModel.isRoutingPending.collectAsStateWithLifecycle()
     val currentLogs by viewModel.currentLogs.collectAsStateWithLifecycle()
+    val dnsServers by viewModel.dnsServers.collectAsStateWithLifecycle()
+    val selectedDnsServer by viewModel.selectedDnsServer.collectAsStateWithLifecycle()
 
     val drawerState =
         androidx.compose.material3.rememberDrawerState(initialValue = androidx.compose.material3.DrawerValue.Closed)
@@ -381,6 +384,14 @@ fun DashboardScreen(
             onReconnectWithLatestPolicy = { context -> viewModel.reconnectWithLatestPolicy(context) },
             onOpenDrawer = { scope.launch { drawerState.open() } },
             onRetryIpFetch = { viewModel.retryFetchIp() },
+            dnsServers = dnsServers,
+            selectedDnsServer = selectedDnsServer,
+            onSelectDnsServer = { viewModel.selectDnsServer(it) },
+            onAddDnsServer = { name, primary, secondary -> viewModel.addDnsServer(name, primary, secondary) },
+            onUpdateDnsServer = { id, name, primary, secondary -> viewModel.updateDnsServer(id, name, primary, secondary) },
+            onDeleteDnsServer = { viewModel.deleteDnsServer(it) },
+            onTestDnsPing = { viewModel.testDnsPing(it) },
+            onTestAllDnsPing = { viewModel.testAllDnsPing() },
             toastFlow = viewModel.toastMessage
         )
     }
@@ -429,6 +440,14 @@ fun DashboardContent(
     onReconnectWithLatestPolicy: (android.content.Context) -> Unit,
     onOpenDrawer: () -> Unit,
     onRetryIpFetch: () -> Unit,
+    dnsServers: List<dev.rouzbeh.hybridvpn.core.vpn.dns.DnsServer> = emptyList(),
+    selectedDnsServer: dev.rouzbeh.hybridvpn.core.vpn.dns.DnsServer? = null,
+    onSelectDnsServer: (String) -> Unit = {},
+    onAddDnsServer: (String, String, String?) -> Unit = { _, _, _ -> },
+    onUpdateDnsServer: (String, String, String, String?) -> Unit = { _, _, _, _ -> },
+    onDeleteDnsServer: (String) -> Unit = {},
+    onTestDnsPing: (String) -> Unit = {},
+    onTestAllDnsPing: () -> Unit = {},
     toastFlow: kotlinx.coroutines.flow.Flow<String>
 ) {
     var showAddServerSheet by remember { mutableStateOf(false) }
@@ -438,13 +457,20 @@ fun DashboardContent(
     var showAppRoutingScreen by remember { mutableStateOf(false) }
     var showLiveLogScreen by remember { mutableStateOf(false) }
     var editingProfile by remember { mutableStateOf<VpnProfile?>(null) }
+    var editingDnsServer by remember { mutableStateOf<dev.rouzbeh.hybridvpn.core.vpn.dns.DnsServer?>(null) }
+    var showDnsAddSheet by remember { mutableStateOf(false) }
     var dashboardToastMessage by remember { mutableStateOf<String?>(null) }
     val onShowToast = { msg: String -> dashboardToastMessage = msg }
+
+    val currentProtocolDisplay = VpnProtocolDisplay.entries.find { it.title == selectedProtocol }
+        ?: VpnProtocolDisplay.OpenConnect
+
+    val isDnsSelected = currentProtocolDisplay == VpnProtocolDisplay.Dns
 
     androidx.activity.compose.BackHandler(enabled = showAppRoutingScreen) {
         showAppRoutingScreen = false
     }
-    androidx.activity.compose.BackHandler(enabled = showServerListSheet && filteredProfiles.isNotEmpty()) {
+    androidx.activity.compose.BackHandler(enabled = showServerListSheet && (isDnsSelected || filteredProfiles.isNotEmpty())) {
         showServerListSheet = false
     }
     androidx.activity.compose.BackHandler(enabled = showLiveLogScreen) {
@@ -469,11 +495,21 @@ fun DashboardContent(
         androidx.compose.material3.rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val context = LocalContext.current
 
-    val currentProtocolDisplay = VpnProtocolDisplay.entries.find { it.title == selectedProtocol }
-        ?: VpnProtocolDisplay.OpenConnect
+    // The DNS method is "active" when its tab is selected OR a DNS session is
+    // actually connected (detailed-state is authoritative for the latter).
+    val isDnsActive = remember(selectedProtocol, connectionState) {
+        val ds = VpnStateManager.detailedConnectionStateFlow.value
+        isDnsSelected || (ds is dev.rouzbeh.hybridvpn.service.DetailedState.Connected &&
+            ds.activeProtocol == dev.rouzbeh.hybridvpn.service.VpnProtocol.Dns)
+    }
 
     val currentActiveProfile =
         if (activeProfile?.protocol == selectedProtocol) activeProfile else null
+
+    // DNS mode has no VpnProfile; treat the selected DnsServer as the "active"
+    // selection so the connect button + status boxes behave like a chosen server.
+    val hasDnsSelection = isDnsSelected && selectedDnsServer != null
+    val canConnect = if (isDnsSelected) hasDnsSelection else currentActiveProfile != null
 
     val vpnPermissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.StartActivityForResult()
@@ -496,7 +532,9 @@ fun DashboardContent(
     }
 
     val isUiUnlocked = connectionState.isTerminal
-    val hasServers = filteredProfiles.isNotEmpty()
+    // DNS always has a selectable server list (built-ins), so its list opens
+    // even when there are no Room profiles for the other protocols.
+    val hasServers = if (isDnsSelected) dnsServers.isNotEmpty() else filteredProfiles.isNotEmpty()
 
     androidx.compose.animation.AnimatedVisibility(
         visible = showAppRoutingScreen,
@@ -526,25 +564,42 @@ fun DashboardContent(
         enter = androidx.compose.animation.slideInVertically(initialOffsetY = { it }) + androidx.compose.animation.fadeIn(),
         exit = androidx.compose.animation.slideOutVertically(targetOffsetY = { it }) + androidx.compose.animation.fadeOut()
     ) {
-        ServerListFullScreen(
-            protocol = selectedProtocol,
-            servers = filteredProfiles,
-            activeProfile = activeProfile,
-            connectionState = connectionState,
-            onSelect = { profileId -> onSelectServer(profileId, context) },
-            onDelete = onDeleteServer,
-            onDeleteSubGroup = onDeleteSubGroup,
-            onRenameSubGroup = onRenameSubGroup,
-            onTestSinglePing = onTestSinglePing,
-            onTestAllV2rayPing = onTestAllV2rayPing,
-            onSortV2ray = onSortV2ray,
-            onDeleteInvalidV2ray = onDeleteInvalidV2ray,
-            onUpdateSub = onUpdateSub,
-            onEdit = { profile -> editingProfile = profile },
-            onNavigateBack = { showServerListSheet = false },
-            toastMessage = dashboardToastMessage,
-            onShowToast = onShowToast
-        )
+        if (isDnsSelected) {
+            DnsServerListScreen(
+                servers = dnsServers,
+                selectedServerId = selectedDnsServer?.id,
+                connectionState = connectionState,
+                onSelect = { id -> onSelectDnsServer(id); showServerListSheet = false },
+                onDelete = { server -> onDeleteDnsServer(server.id) },
+                onEdit = { server -> editingDnsServer = server },
+                onAdd = { showDnsAddSheet = true },
+                onTestPing = { server -> onTestDnsPing(server.id) },
+                onTestAllPing = onTestAllDnsPing,
+                onNavigateBack = { showServerListSheet = false },
+                toastMessage = dashboardToastMessage,
+                onShowToast = onShowToast
+            )
+        } else {
+            ServerListFullScreen(
+                protocol = selectedProtocol,
+                servers = filteredProfiles,
+                activeProfile = activeProfile,
+                connectionState = connectionState,
+                onSelect = { profileId -> onSelectServer(profileId, context) },
+                onDelete = onDeleteServer,
+                onDeleteSubGroup = onDeleteSubGroup,
+                onRenameSubGroup = onRenameSubGroup,
+                onTestSinglePing = onTestSinglePing,
+                onTestAllV2rayPing = onTestAllV2rayPing,
+                onSortV2ray = onSortV2ray,
+                onDeleteInvalidV2ray = onDeleteInvalidV2ray,
+                onUpdateSub = onUpdateSub,
+                onEdit = { profile -> editingProfile = profile },
+                onNavigateBack = { showServerListSheet = false },
+                toastMessage = dashboardToastMessage,
+                onShowToast = onShowToast
+            )
+        }
     }
 
     androidx.compose.animation.AnimatedVisibility(
@@ -584,6 +639,7 @@ fun DashboardContent(
                     modifier = Modifier.weight(1f),
                     networkInfo = networkInfo,
                     connectionState = connectionState,
+                    isDnsMode = isDnsActive,
                     onMoreClick = {
                         val intent =
                             Intent(Intent.ACTION_VIEW, "https://browserleaks.com/ip".toUri())
@@ -626,15 +682,50 @@ fun DashboardContent(
                     }
                 )
 
+                // DNS-only mode: clarify that the public IP is never changed.
+                if (isDnsSelected) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(14.dp))
+                            .background(SurfaceGlass)
+                            .border(1.dp, BorderGlass, RoundedCornerShape(14.dp))
+                            .padding(horizontal = 16.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Dns,
+                            contentDescription = null,
+                            tint = PrimaryCyan,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(modifier = Modifier.width(10.dp))
+                        Text(
+                            "DNS only. Your IP is not changed.",
+                            color = TextSecondary,
+                            fontSize = 12.5.sp,
+                            fontFamily = SoraFamily
+                        )
+                    }
+                }
+
                 // 5. Server Selector (Using the updated signature with onAddClick)
-                ServerSelectorButton(
-                    activeProfile = activeProfile,
-                    selectedProtocol = currentProtocolDisplay,
-                    hasProfiles = filteredProfiles.isNotEmpty(),
-                    isEnabled = isUiUnlocked,
-                    onClick = { showServerListSheet = true },
-                    onAddClick = { if (isUiUnlocked) showAddServerSheet = true }
-                )
+                if (isDnsSelected) {
+                    DnsServerSelectorButton(
+                        selectedServer = selectedDnsServer,
+                        isEnabled = isUiUnlocked,
+                        onClick = { showServerListSheet = true }
+                    )
+                } else {
+                    ServerSelectorButton(
+                        activeProfile = activeProfile,
+                        selectedProtocol = currentProtocolDisplay,
+                        hasProfiles = filteredProfiles.isNotEmpty(),
+                        isEnabled = isUiUnlocked,
+                        onClick = { showServerListSheet = true },
+                        onAddClick = { if (isUiUnlocked) showAddServerSheet = true }
+                    )
+                }
 
                 // 6. Bottom Grid (4 boxes: Status, Ping, Uptime, Power)
                 Row(
@@ -658,7 +749,7 @@ fun DashboardContent(
                                 .border(1.dp, BorderGlass, RoundedCornerShape(16.dp)),
                             contentAlignment = Alignment.Center
                         ) {
-                            if (currentActiveProfile == null) {
+                            if (!canConnect) {
                                 Text(
                                     text = "Select Server",
                                     color = Color.Gray,
@@ -829,7 +920,7 @@ fun DashboardContent(
                         connectionState == ConnectionState.CONNECTING || connectionState == ConnectionState.RECONNECTING || connectionState == ConnectionState.DISCONNECTING || connectionState == ConnectionState.CANCELING
                     val selectionLocked by VpnStateManager.selectionLocked.collectAsStateWithLifecycle()
                     val isConnectEnabled =
-                        (currentActiveProfile != null && !isConnecting && !selectionLocked) || isConnected || isConnecting
+                        (canConnect && !isConnecting && !selectionLocked) || isConnected || isConnecting
 
                     val btnColor = when (connectionState) {
                         ConnectionState.DISCONNECTING -> Color(0xFFFF5252)
@@ -871,7 +962,7 @@ fun DashboardContent(
                                         context
                                     ) else onStopVpn(context)
                                 } else {
-                                    if (currentActiveProfile == null) return@clickable
+                                    if (!canConnect) return@clickable
                                     val intent = VpnService.prepare(context)
                                     if (intent != null) vpnPermissionLauncher.launch(intent) else onStartVpn(
                                         context
@@ -989,6 +1080,40 @@ fun DashboardContent(
                 onAdd = onAddServer,
                 onUpdate = onUpdateServer,
                 onClose = { editingProfile = null },
+                onShowToast = onShowToast
+            )
+        }
+    }
+
+    // DNS add / edit sheets (custom servers only; built-ins are never edited).
+    if (showDnsAddSheet) {
+        ModalBottomSheet(
+            onDismissRequest = { showDnsAddSheet = false },
+            sheetState = sheetState,
+            containerColor = SurfaceMenu,
+            dragHandle = null
+        ) {
+            DnsServerSheetContent(
+                onAdd = onAddDnsServer,
+                onUpdate = onUpdateDnsServer,
+                onClose = { showDnsAddSheet = false },
+                onShowToast = onShowToast
+            )
+        }
+    }
+
+    if (editingDnsServer != null) {
+        ModalBottomSheet(
+            onDismissRequest = { editingDnsServer = null },
+            sheetState = sheetState,
+            containerColor = SurfaceMenu,
+            dragHandle = null
+        ) {
+            DnsServerSheetContent(
+                editingServer = editingDnsServer,
+                onAdd = onAddDnsServer,
+                onUpdate = onUpdateDnsServer,
+                onClose = { editingDnsServer = null },
                 onShowToast = onShowToast
             )
         }
@@ -1193,6 +1318,71 @@ fun ServerSelectorButton(
                 imageVector = Icons.Default.Add,
                 contentDescription = "Add Server",
                 tint = if (isEnabled) PrimaryCyan else Color.Gray.copy(alpha = 0.5f)
+            )
+        }
+    }
+}
+
+/**
+ * Server-list row for the DNS method. Same chrome as [ServerSelectorButton]
+ * but driven by the selected [dev.rouzbeh.hybridvpn.core.vpn.dns.DnsServer]
+ * (no Room profile, no add button — DNS servers are managed inside the list).
+ */
+@Composable
+fun DnsServerSelectorButton(
+    modifier: Modifier = Modifier,
+    selectedServer: dev.rouzbeh.hybridvpn.core.vpn.dns.DnsServer?,
+    isEnabled: Boolean,
+    onClick: () -> Unit
+) {
+    val haptic = LocalHapticFeedback.current
+    val serverText = selectedServer?.name ?: "Select DNS Server"
+
+    Row(
+        modifier = modifier
+            .fillMaxWidth()
+            .height(64.dp),
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Row(
+            modifier = Modifier
+                .weight(1f)
+                .fillMaxHeight()
+                .alpha(if (isEnabled) 1f else 0.5f)
+                .clip(RoundedCornerShape(16.dp))
+                .background(SurfaceGlass)
+                .border(1.dp, BorderGlass, RoundedCornerShape(16.dp))
+                .clickable(enabled = isEnabled) {
+                    haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                    onClick()
+                }
+                .padding(horizontal = 16.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(verticalArrangement = Arrangement.Center) {
+                Text(
+                    text = "DNS Server",
+                    color = TextSecondary,
+                    fontSize = 10.sp,
+                    fontFamily = SoraFamily
+                )
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    text = serverText,
+                    color = if (selectedServer != null) PrimaryCyan else Color.Gray,
+                    fontSize = 14.sp,
+                    fontWeight = FontWeight.Bold,
+                    maxLines = 1,
+                    fontFamily = SoraFamily
+                )
+            }
+            Icon(
+                imageVector = Icons.Default.Dns,
+                contentDescription = "DNS Server",
+                tint = PrimaryCyan,
+                modifier = Modifier.size(24.dp)
             )
         }
     }
@@ -2200,6 +2390,18 @@ fun AddServerSheetContent(
                     }
                 }
             }
+
+            VpnProtocolDisplay.Dns -> {
+                // DNS mode has no VpnProfile fields — the add/edit form is not
+                // reachable from the DNS server list, but the branch must exist
+                // for exhaustiveness. Show a placeholder body.
+                Text(
+                    text = "DNS servers are managed from the DNS server list.",
+                    color = TextSecondary,
+                    fontFamily = SoraFamily,
+                    fontSize = 14.sp
+                )
+            }
         }
 
         Spacer(modifier = Modifier.height(24.dp))
@@ -2232,6 +2434,7 @@ fun AddServerSheetContent(
                                         it.protocol == "v2rayNG" && it.serverAddress == serverAddress
                                     }
                                 }
+                                VpnProtocolDisplay.Dns -> false
                             }
                         }
                         if (isDuplicate) {
@@ -2374,6 +2577,7 @@ fun NetworkInfoCard(
     modifier: Modifier = Modifier,
     networkInfo: NetworkInfo,
     connectionState: ConnectionState,
+    isDnsMode: Boolean = false,
     onMoreClick: () -> Unit,
     onRetryClick: () -> Unit
 ) {
@@ -2485,7 +2689,7 @@ fun NetworkInfoCard(
                 ) { ipState ->
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Text(
-                            text = if (isConnected) "Virtual IP: " else "Public IP: ",
+                            text = if (isConnected && !isDnsMode) "Virtual IP: " else "Public IP: ",
                             color = TextSecondary,
                             fontSize = 14.sp,
                             style = textShadow

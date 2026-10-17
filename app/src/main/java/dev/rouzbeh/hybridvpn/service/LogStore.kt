@@ -16,13 +16,16 @@ object LogStore {
 
     private val _openConnectLogs = MutableStateFlow<List<String>>(emptyList())
     private val _v2rayLogs = MutableStateFlow<List<String>>(emptyList())
+    private val _dnsLogs = MutableStateFlow<List<String>>(emptyList())
 
     val openConnectLogs: StateFlow<List<String>> = _openConnectLogs.asStateFlow()
     val v2rayLogs: StateFlow<List<String>> = _v2rayLogs.asStateFlow()
+    val dnsLogs: StateFlow<List<String>> = _dnsLogs.asStateFlow()
 
     fun clear(protocol: String) {
         when (protocol) {
             "OpenConnect" -> _openConnectLogs.value = emptyList()
+            "DNS" -> _dnsLogs.value = emptyList()
             else -> _v2rayLogs.value = emptyList()
         }
     }
@@ -32,6 +35,7 @@ object LogStore {
         val formatted = "[$time] ${LogRedactor.redact(rawLine)}"
         when (protocol) {
             "OpenConnect" -> _openConnectLogs.value = (_openConnectLogs.value + formatted).takeLast(MAX_LINES)
+            "DNS" -> _dnsLogs.value = (_dnsLogs.value + formatted).takeLast(MAX_LINES)
             else -> _v2rayLogs.value = (_v2rayLogs.value + formatted).takeLast(MAX_LINES)
         }
     }
