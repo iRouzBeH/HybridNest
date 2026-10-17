@@ -545,6 +545,7 @@ fun DashboardContent(
             apps = installedApps,
             isPerAppEnabled = isPerAppEnabled,
             isBypassMode = isBypassMode,
+            isDnsMode = isDnsActive,
             isPending = isRoutingPending,
             onReconnect = { onReconnectWithLatestPolicy(context) },
             onBypassModeChange = onSetBypassMode,
@@ -572,7 +573,6 @@ fun DashboardContent(
                 onSelect = { id -> onSelectDnsServer(id); showServerListSheet = false },
                 onDelete = { server -> onDeleteDnsServer(server.id) },
                 onEdit = { server -> editingDnsServer = server },
-                onAdd = { showDnsAddSheet = true },
                 onTestPing = { server -> onTestDnsPing(server.id) },
                 onTestAllPing = onTestAllDnsPing,
                 onNavigateBack = { showServerListSheet = false },
@@ -657,13 +657,15 @@ fun DashboardContent(
                     connectionState = connectionState
                 )
 
-                // NEW: App Routing / Split Tunneling Button
-                val currentMode = if (!isPerAppEnabled) {
-                    "All apps use VPN"
-                } else if (isBypassMode) {
-                    "All apps except those selected use VPN"
-                } else {
-                    "Only selected apps use VPN"
+                // NEW: App Routing / Split Tunneling Button.
+                // DNS mode has no tunnel/VPN, so the labels say "this DNS".
+                val currentMode = when {
+                    !isPerAppEnabled ->
+                        if (isDnsActive) "All apps use this DNS" else "All apps use VPN"
+                    isBypassMode ->
+                        if (isDnsActive) "All apps except those selected use this DNS" else "All apps except those selected use VPN"
+                    else ->
+                        if (isDnsActive) "Only selected apps use this DNS" else "Only selected apps use VPN"
                 }
                 RoutingSelectorButton(
                     currentMode = currentMode,
@@ -714,7 +716,8 @@ fun DashboardContent(
                     DnsServerSelectorButton(
                         selectedServer = selectedDnsServer,
                         isEnabled = isUiUnlocked,
-                        onClick = { showServerListSheet = true }
+                        onClick = { showServerListSheet = true },
+                        onAddClick = { if (isUiUnlocked) showDnsAddSheet = true }
                     )
                 } else {
                     ServerSelectorButton(
@@ -1326,14 +1329,15 @@ fun ServerSelectorButton(
 /**
  * Server-list row for the DNS method. Same chrome as [ServerSelectorButton]
  * but driven by the selected [dev.rouzbeh.hybridvpn.core.vpn.dns.DnsServer]
- * (no Room profile, no add button — DNS servers are managed inside the list).
+ * (no Room profile). The [+] box opens the add-DNS sheet.
  */
 @Composable
 fun DnsServerSelectorButton(
     modifier: Modifier = Modifier,
     selectedServer: dev.rouzbeh.hybridvpn.core.vpn.dns.DnsServer?,
     isEnabled: Boolean,
-    onClick: () -> Unit
+    onClick: () -> Unit,
+    onAddClick: () -> Unit
 ) {
     val haptic = LocalHapticFeedback.current
     val serverText = selectedServer?.name ?: "Select DNS Server"
@@ -1383,6 +1387,28 @@ fun DnsServerSelectorButton(
                 contentDescription = "DNS Server",
                 tint = PrimaryCyan,
                 modifier = Modifier.size(24.dp)
+            )
+        }
+
+        // Right: Add (+) Button Box — same chrome as the Server List "+" used
+        // by the profile protocols; opens the add-DNS sheet.
+        Box(
+            modifier = Modifier
+                .size(64.dp)
+                .alpha(if (isEnabled) 1f else 0.5f)
+                .clip(RoundedCornerShape(16.dp))
+                .background(SurfaceGlass)
+                .border(1.dp, BorderGlass, RoundedCornerShape(16.dp))
+                .clickable(enabled = isEnabled) {
+                    haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                    onAddClick()
+                },
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(
+                imageVector = Icons.Default.Add,
+                contentDescription = "Add DNS Server",
+                tint = if (isEnabled) PrimaryCyan else Color.Gray.copy(alpha = 0.5f)
             )
         }
     }
@@ -2920,6 +2946,7 @@ fun AppRoutingScreen(
     apps: List<dev.rouzbeh.hybridvpn.data.model.AppInfo>,
     isPerAppEnabled: Boolean,
     isBypassMode: Boolean,
+    isDnsMode: Boolean = false,
     isPending: Boolean,
     onReconnect: () -> Unit,
     onBypassModeChange: (Boolean) -> Unit,
@@ -3089,7 +3116,8 @@ fun AppRoutingScreen(
                                     .size(18.dp)
                                     .bounceClick {
                                         toastMessage =
-                                            "Disable this option to have\nall apps use the VPN."
+                                            if (isDnsMode) "Disable this option to have\nall apps use this DNS."
+                                            else "Disable this option to have\nall apps use the VPN."
                                     }
                             )
                         }
@@ -3133,7 +3161,13 @@ fun AppRoutingScreen(
                                     .size(18.dp)
                                     .bounceClick {
                                         toastMessage =
-                                            if (isBypassMode) "Disable this option to only allow apps you select to use the VPN." else "Enable this option to prevent apps you select from using the VPN and allow other apps you don't select to use the VPN."
+                                            if (isBypassMode) {
+                                                if (isDnsMode) "Disable this option to only allow apps you select to use this DNS."
+                                                else "Disable this option to only allow apps you select to use the VPN."
+                                            } else {
+                                                if (isDnsMode) "Enable this option to prevent apps you select from using this DNS and allow other apps you don't select to use this DNS."
+                                                else "Enable this option to prevent apps you select from using the VPN and allow other apps you don't select to use the VPN."
+                                            }
                                     }
                             )
                         }
@@ -3522,7 +3556,10 @@ fun ServerListFullScreen(
             Spacer(modifier = Modifier.width(16.dp))
 
             if (!isReorderMode) {
-                Text("Server List", color = Color.White, fontSize = 20.sp, fontWeight = FontWeight.Bold, fontFamily = SoraFamily)
+                Text(
+                    if (protocol == "v2rayNG") "v2rayNG Server List" else "AnyConnect Server List",
+                    color = Color.White, fontSize = 20.sp, fontWeight = FontWeight.Bold, fontFamily = SoraFamily
+                )
                 Spacer(modifier = Modifier.weight(1f))
 
                 if (protocol == "v2rayNG") {

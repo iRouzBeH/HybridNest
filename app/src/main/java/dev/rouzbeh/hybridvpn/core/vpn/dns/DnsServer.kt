@@ -29,7 +29,12 @@ object DnsProviders {
         DnsServer("builtin:cloudflare","Cloudflare",    "1.1.1.1",         "1.0.0.1",        isBuiltin = true),
         DnsServer("builtin:quad9",     "Quad9",         "9.9.9.9",         "149.112.112.112",isBuiltin = true),
         DnsServer("builtin:opendns",   "OpenDNS",       "208.67.222.222",  "208.67.220.220", isBuiltin = true),
-        DnsServer("builtin:adguard",   "AdGuard DNS",   "94.140.14.14",    "94.140.15.15",   isBuiltin = true)
+        DnsServer("builtin:adguard",   "AdGuard DNS",   "94.140.14.14",    "94.140.15.15",   isBuiltin = true),
+        DnsServer("builtin:alternate", "AlternateDNS",  "76.76.19.19",     "76.223.122.150", isBuiltin = true),
+        DnsServer("builtin:yandex",    "Yandex DNS",    "77.88.8.8",       "77.88.8.1",      isBuiltin = true),
+        DnsServer("builtin:dnswatch",  "DNS.Watch",     "84.200.69.80",    "84.200.70.40",   isBuiltin = true),
+        DnsServer("builtin:safedns",   "SafeDNS",       "195.46.39.39",    "195.46.39.2",    isBuiltin = true),
+        DnsServer("builtin:level3",    "Level3 DNS",    "209.244.0.3",     "209.244.0.4",    isBuiltin = true)
     )
 }
 

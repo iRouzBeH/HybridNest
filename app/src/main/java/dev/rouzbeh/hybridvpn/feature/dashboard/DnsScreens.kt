@@ -26,7 +26,6 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Dns
 import androidx.compose.material.icons.filled.Edit
@@ -89,7 +88,6 @@ fun DnsServerListScreen(
     onSelect: (String) -> Unit,
     onDelete: (DnsServer) -> Unit,
     onEdit: (DnsServer) -> Unit,
-    onAdd: () -> Unit,
     onTestPing: (DnsServer) -> Unit,
     onTestAllPing: () -> Unit,
     onNavigateBack: () -> Unit,
@@ -115,7 +113,7 @@ fun DnsServerListScreen(
                 )
                 Spacer(modifier = Modifier.width(16.dp))
                 Text(
-                    "DNS Servers",
+                    "DNS Server List",
                     color = Color.White,
                     fontSize = 20.sp,
                     fontWeight = FontWeight.Bold,
@@ -146,33 +144,6 @@ fun DnsServerListScreen(
                 }
             }
 
-            // Mode hint: DNS only, IP is not changed.
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp)
-                    .clip(RoundedCornerShape(14.dp))
-                    .background(SurfaceGlass)
-                    .border(1.dp, BorderGlass, RoundedCornerShape(14.dp))
-                    .padding(horizontal = 16.dp, vertical = 12.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Icon(
-                    imageVector = Icons.Default.Dns,
-                    contentDescription = null,
-                    tint = PrimaryCyan,
-                    modifier = Modifier.size(20.dp)
-                )
-                Spacer(modifier = Modifier.width(10.dp))
-                Text(
-                    "DNS only. Your IP is not changed.",
-                    color = TextSecondary,
-                    fontSize = 12.5.sp,
-                    fontFamily = SoraFamily
-                )
-            }
-            Spacer(modifier = Modifier.height(12.dp))
-
             LazyColumn(
                 modifier = Modifier.fillMaxSize().padding(horizontal = 16.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp)
@@ -198,24 +169,6 @@ fun DnsServerListScreen(
                 }
                 item { Spacer(modifier = Modifier.height(24.dp)) }
             }
-        }
-
-        // Floating add button (matches the dashboard's [+] styling).
-        Box(
-            modifier = Modifier
-                .align(Alignment.BottomEnd)
-                .padding(bottom = 48.dp, end = 24.dp)
-                .size(56.dp)
-                .clip(RoundedCornerShape(16.dp))
-                .background(PrimaryCyan)
-                .bounceClick { onAdd() },
-            contentAlignment = Alignment.Center
-        ) {
-            Icon(
-                imageVector = Icons.Default.Add,
-                contentDescription = "Add DNS server",
-                tint = BackgroundDark
-            )
         }
 
         CustomGlassToast(
@@ -294,25 +247,35 @@ private fun DnsServerCard(
             )
             Spacer(modifier = Modifier.height(3.dp))
             Text(
-                text = server.primary + (server.secondary?.let { "  ·  $it" } ?: ""),
+                text = server.primary,
                 color = TextSecondary,
                 fontSize = 12.sp,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
                 fontFamily = SoraFamily
             )
+            if (server.secondary != null) {
+                Text(
+                    text = server.secondary,
+                    color = TextSecondary,
+                    fontSize = 12.sp,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    fontFamily = SoraFamily
+                )
+            }
         }
 
         Row(verticalAlignment = Alignment.CenterVertically) {
-            // Ping badge (tappable to retest).
+            // Ping badge (tappable to retest). Fixed size so the address
+            // column always keeps its remaining width and never slides under it.
             Box(
                 modifier = Modifier
-                    .height(32.dp)
+                    .size(width = 64.dp, height = 32.dp)
                     .clip(RoundedCornerShape(10.dp))
                     .background(Color.Black.copy(alpha = 0.30f))
                     .border(1.dp, BorderGlass.copy(alpha = 0.18f), RoundedCornerShape(10.dp))
-                    .clickable { isPinging = true; onPingClick() }
-                    .padding(horizontal = 14.dp, vertical = 6.dp),
+                    .clickable { isPinging = true; onPingClick() },
                 contentAlignment = Alignment.Center
             ) {
                 AnimatedContent(

@@ -718,9 +718,22 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
                 "https://api-ipv4.ip.sb/geoip",
                 "https://free.freeipapi.com/api/json"
             )
+            // DNS mode never tunnels, so the card shows the real public IP. On
+            // dual-stack networks ip-api/ipwho.is may resolve the host over IPv6
+            // and return the IPv6 address while websites still see IPv4. Try the
+            // IPv4-only endpoints first so we prefer IPv4; if none answer (no
+            // IPv4 route) the fallthrough order still yields IPv6.
+            val orderedEndpoints = if (isDns) listOf(
+                "https://v4.ifconfig.co/json",
+                "https://api-ipv4.ip.sb/geoip",
+                "https://api.myip.world/json",
+                "https://free.freeipapi.com/api/json",
+                "https://ip-api.com/json",
+                "https://ipwho.is/"
+            ) else endpoints
             var successResult: IpResult? = null
 
-            for (url in endpoints) {
+            for (url in orderedEndpoints) {
                 if (!isActive || currentLookupId != ipLookupSessionId || VpnStateManager.currentSessionId != sessionAtStart) return@launch
                 successResult = withTimeoutOrNull(3500L) {
                     try {
