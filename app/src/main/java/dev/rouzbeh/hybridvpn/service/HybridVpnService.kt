@@ -760,27 +760,14 @@ class HybridVpnService : VpnService() {
             return -1
         }
 
-        // Route strategy depends on whether the VPN app itself is inside the
-        // tunnel (determined by the routing policy):
-        //
-        // Global / Bypass: the VPN app is explicitly EXCLUDED (disallowed) to
-        //   prevent Xray's transport from looping. We still need to exclude the
-        //   proxy server's IP from the route table so outbound transport traffic
-        //   isn't captured → use addIpv4DefaultRouteExcept.
-        //
-        // Allow: the VPN app is NOT in the allowed list (see applyPerAppRouting),
-        //   so its traffic never enters the TUN regardless of routes. A full
-        //   default route (0.0.0.0/0) is safe and REQUIRED — the complementary
-        //   route trick breaks DNS resolution for the allowed apps on some devices.
-        val policy = sessionRoutingPolicy
-        val isAllowMode = policy != null && policy.enabled && policy.mode == dev.rouzbeh.hybridvpn.core.routing.RoutingPolicy.Mode.ALLOW
-        if (isAllowMode) {
-            builder.addRoute("0.0.0.0", 0)
-            emitLog("V2Ray Allow mode: using full default route (app excluded from tunnel; no loop risk)")
-        } else {
-            builder.addIpv4DefaultRouteExcept(excludedServerIp)
-            emitLog("Excluded Xray server from VPN routes: ${excludedServerIp.hostAddress}")
-        }
+        // The proxy server's own IP must be excluded from the tunnel routes in
+        // EVERY mode. Xray runs in-process and dials the server on the underlying
+        // network; if the server IP were routed into the TUN, the transport would
+        // loop. Covering the whole IPv4 space EXCEPT the server also keeps the
+        // allowed apps' traffic (incl. DNS) inside the tunnel in Allow mode —
+        // a plain 0.0.0.0/0 swallows the server IP and drops their packets.
+        builder.addIpv4DefaultRouteExcept(excludedServerIp)
+        emitLog("Excluded Xray server from VPN routes: ${excludedServerIp.hostAddress}")
 
         // Xray config is pinned to IPs, so `dns` is a literal resolver address here;
         // parse defensively anyway (comma-joined list convention shared with the

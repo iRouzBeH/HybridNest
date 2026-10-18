@@ -747,20 +747,20 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
                                 parsedUrl.openConnection(java.net.Proxy.NO_PROXY)
                             }
                             else -> {
-                                // AnyConnect: prefer binding to the VPN network
-                                // so we report the tunnel exit IP. Give the TUN a brief
-                                // moment to register if it isn't up yet.
+                                // AnyConnect requires binding to the VPN network so we
+                                // report the tunnel exit IP. Never fall back to the
+                                // default network: on a per-app Allowed tunnel the app
+                                // resolves its own exit through the TUN, and a direct
+                                // connection would silently show the real ISP IP. When the
+                                // TUN isn't visible yet, fail this endpoint (retry path
+                                // re-attempts) rather than leak the real IP.
                                 var vpnNet = findVpnNetwork()
                                 if (vpnNet == null) { delay(300); vpnNet = findVpnNetwork() }
-                                if (vpnNet != null) {
-                                    vpnNet.openConnection(parsedUrl, java.net.Proxy.NO_PROXY)
-                                } else {
-                                    // TUN not yet visible to ConnectivityManager; the
-                                    // default network is the VPN in a full-tunnel setup,
-                                    // so this still returns the exit IP in most cases.
-                                    android.util.Log.w("DashboardViewModel", "vpnNetwork null for $url, falling back to default network")
-                                    parsedUrl.openConnection(java.net.Proxy.NO_PROXY)
+                                if (vpnNet == null) {
+                                    android.util.Log.w("DashboardViewModel", "vpnNetwork null for $url, skipping endpoint (no direct fallback)")
+                                    return@withTimeoutOrNull null
                                 }
+                                vpnNet.openConnection(parsedUrl, java.net.Proxy.NO_PROXY)
                             }
                         }
                         val connection = (rawConnection as java.net.HttpURLConnection).apply {
