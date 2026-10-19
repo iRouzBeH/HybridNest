@@ -760,14 +760,39 @@ class HybridVpnService : VpnService() {
             return -1
         }
 
-        // The proxy server's own IP must be excluded from the tunnel routes in
-        // EVERY mode. Xray runs in-process and dials the server on the underlying
-        // network; if the server IP were routed into the TUN, the transport would
-        // loop. Covering the whole IPv4 space EXCEPT the server also keeps the
-        // allowed apps' traffic (incl. DNS) inside the tunnel in Allow mode —
-        // a plain 0.0.0.0/0 swallows the server IP and drops their packets.
-        builder.addIpv4DefaultRouteExcept(excludedServerIp)
-        emitLog("Excluded Xray server from VPN routes: ${excludedServerIp.hostAddress}")
+        // Route strategy differs per mode:
+        //
+        // Global / Bypass: Xray runs in-process and dials the proxy server on
+        //   the underlying network. The app's UID is explicitly excluded from
+        //   the TUN (addDisallowedApplication) in Global/Bypass, so Xray's
+        //   transport sockets never enter the tunnel — the route table is only
+        //   consulted for tunneled UIDs, and the server IP exclusion is
+        //   belt-and-suspenders.
+        //
+        // Allow: the VPN app is NOT in the allowed set (see applyPerAppRouting),
+        //   so Xray's sockets are already UID-excluded. A plain 0.0.0.0/0 default
+        //   route is correct and simpler than complementary routes — the route
+        //   table does not affect the app's own traffic (no loop risk). The
+        //   complementary-route trick was added in 1fd3ac5 on an unverified
+        //   theory that a plain default route "swallows the server IP"; that
+        //   theory is wrong because Xray's transport is outside the TUN by UID.
+        //
+        // IPv6 is intentionally NOT added: the TUN is IPv4-only, and the
+        // framework's makeLinkProperties() already installs an RTN_UNREACHABLE
+        // ::/0 route, giving allowed apps fast-fallback to IPv4. Advertising a
+        // v6 address + route would attract Happy Eyeballs v6 traffic into a TUN
+        // whose DNS (queryStrategy=UseIPv4) returns no AAAA records, creating a
+        // black-hole — the very symptom this avoids.
+        val policy = sessionRoutingPolicy
+        val isAllowMode = policy != null && policy.enabled &&
+            policy.mode == dev.rouzbeh.hybridvpn.core.routing.RoutingPolicy.Mode.ALLOW
+        if (isAllowMode) {
+            builder.addRoute("0.0.0.0", 0)
+            emitLog("V2Ray Allow mode: using full default route (app excluded from tunnel; no loop risk)")
+        } else {
+            builder.addIpv4DefaultRouteExcept(excludedServerIp)
+            emitLog("Excluded Xray server from VPN routes: ${excludedServerIp.hostAddress}")
+        }
 
         // Xray config is pinned to IPs, so `dns` is a literal resolver address here;
         // parse defensively anyway (comma-joined list convention shared with the
