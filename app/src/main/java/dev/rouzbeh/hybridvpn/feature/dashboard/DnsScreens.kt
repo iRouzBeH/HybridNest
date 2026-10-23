@@ -27,7 +27,6 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Delete
-import androidx.compose.material.icons.filled.Dns
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Refresh
@@ -136,7 +135,7 @@ fun DnsServerListScreen(
                             .border(1.dp, BorderGlass, RoundedCornerShape(8.dp))
                     ) {
                         DropdownMenuItem(
-                            text = { Text("Retest all pings", color = Color.White, fontFamily = SoraFamily) },
+                            text = { Text("Ping all servers", color = Color.White, fontFamily = SoraFamily) },
                             leadingIcon = { Icon(Icons.Default.Speed, contentDescription = null, tint = Color.White) },
                             onClick = { showMenu = false; onTestAllPing() }
                         )
@@ -227,7 +226,7 @@ private fun DnsServerCard(
                 .background(if (isSelected) PrimaryCyan.copy(alpha = 0.2f) else BackgroundDark.copy(alpha = 0.3f))
         ) {
             Icon(
-                imageVector = Icons.Default.Dns,
+                painter = androidx.compose.ui.res.painterResource(id = R.drawable.ic_dns),
                 contentDescription = null,
                 tint = if (isSelected) PrimaryCyan else TextSecondary,
                 modifier = Modifier.size(22.dp)

@@ -104,12 +104,19 @@ class DnsSettingsRepository(context: Context) {
         savePingMap(pings)
     }
 
+    /**
+     * Records [ping] for [id]. The read/modify/write is serialized on a lock so
+     * concurrent "test all" workers can't each snapshot the same map and
+     * overwrite one another's results.
+     */
     fun setPing(id: String, ping: Long) {
-        val pings = getPingMap().toMutableMap().apply { put(id, ping) }
-        savePingMap(pings)
+        synchronized(PING_LOCK) {
+            val pings = getPingMap().toMutableMap().apply { put(id, ping) }
+            savePingMap(pings)
+        }
     }
 
-    fun resetPings() = savePingMap(emptyMap())
+    fun resetPings() = synchronized(PING_LOCK) { savePingMap(emptyMap()) }
 
     // ------------------------------------------------------------ internals
 
@@ -143,6 +150,8 @@ class DnsSettingsRepository(context: Context) {
         prefs.getStringSet(KEY_HIDDEN_BUILTINS, emptySet()) ?: emptySet()
 
     private fun getPingMap(): Map<String, Long> {
+        // Callers that mutate (setPing/resetPings) hold PING_LOCK; this read path
+        // is only used for display and doesn't need serialization.
         val raw = prefs.getString(KEY_PINGS, "{}") ?: "{}"
         return try {
             val o = JSONObject(raw)
@@ -157,6 +166,8 @@ class DnsSettingsRepository(context: Context) {
     }
 
     companion object {
+        /** Serializes the read/modify/write of the ping cache. */
+        private val PING_LOCK = Any()
         private const val KEY_CUSTOM_SERVERS = "custom_servers"
         private const val KEY_HIDDEN_BUILTINS = "hidden_builtins"
         private const val KEY_SELECTED_ID = "selected_id"

@@ -53,7 +53,6 @@ import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ContentPaste
 import androidx.compose.material.icons.filled.Delete
-import androidx.compose.material.icons.filled.Dns
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.FileDownload
 import androidx.compose.material.icons.filled.FileUpload
@@ -662,14 +661,14 @@ fun DashboardContent(
                 // NEW: App Routing / Split Tunneling Button.
                 // The wording follows the SELECTED protocol tab (isDnsSelected),
                 // not the connected session, so it updates the instant the user
-                // switches protocols — DNS has no tunnel/VPN, so it says "this DNS".
+                // switches protocols — DNS has no tunnel/VPN, so it says "DNS".
                 val currentMode = when {
                     !isPerAppEnabled ->
-                        if (isDnsSelected) "All apps use this DNS" else "All apps use VPN"
+                        if (isDnsSelected) "All apps use DNS" else "All apps use VPN"
                     isBypassMode ->
-                        if (isDnsSelected) "All apps except those selected use this DNS" else "All apps except those selected use VPN"
+                        if (isDnsSelected) "All apps except those selected use DNS" else "All apps except those selected use VPN"
                     else ->
-                        if (isDnsSelected) "Only selected apps use this DNS" else "Only selected apps use VPN"
+                        if (isDnsSelected) "Only selected apps use DNS" else "Only selected apps use VPN"
                 }
                 RoutingSelectorButton(
                     currentMode = currentMode,
@@ -1273,7 +1272,7 @@ fun ServerSelectorButton(
                 )
             }
             Icon(
-                imageVector = Icons.Default.Dns,
+                painter = painterResource(id = R.drawable.ic_dns),
                 contentDescription = "Server",
                 tint = PrimaryCyan,
                 modifier = Modifier.size(24.dp)
@@ -1360,7 +1359,7 @@ fun DnsServerSelectorButton(
                 )
             }
             Icon(
-                imageVector = Icons.Default.Dns,
+                painter = painterResource(id = R.drawable.ic_dns),
                 contentDescription = "DNS Server",
                 tint = PrimaryCyan,
                 modifier = Modifier.size(24.dp)
@@ -1455,7 +1454,7 @@ fun ServerListSheetContent(
 
 // Helpers for subscription-info detection (e.g. 👤...|📊 41.79 GB / 100 GB|📆 11 Day)
 // Used to render a custom badge row and hide the raw stats from the name.
-private data class SubscriptionMeta(
+data class SubscriptionMeta(
     val usedStr: String,
     val totalStr: String,
     val usedGb: Double?,
@@ -1516,9 +1515,27 @@ private val volumeRegexPrimary = Regex("""(\d+(?:\.\d+)?)\s*GB\s*/\s*(\d+(?:\.\d
 private val volumeRegexAlt = Regex("""(\d+(?:\.\d+)?)\s*/\s*(\d+(?:\.\d+)?)\s*GB""", RegexOption.IGNORE_CASE)
 private val daysRegex = Regex("""(\d+)\s*Days?""", RegexOption.IGNORE_CASE)
 
-private fun parseSubscriptionMeta(name: String): SubscriptionMeta? {
+/**
+ * True when a profile name carries subscription volume/time tokens and should be
+ * rendered as an info card (never selectable, never pinged). Shared between the
+ * UI list and the ViewModel so both agree on what counts as an info card.
+ */
+internal fun isSubscriptionInfoName(name: String): Boolean {
+    val hasVolume = volumeRegexPrimary.containsMatchIn(name) || volumeRegexAlt.containsMatchIn(name)
+    val hasDays = daysRegex.containsMatchIn(name)
+    return hasVolume || hasDays
+}
+
+fun parseSubscriptionMeta(name: String): SubscriptionMeta? {
     val vol = volumeRegexPrimary.find(name) ?: volumeRegexAlt.find(name)
     val days = daysRegex.find(name)
+    if (vol == null && days == null) return null
+    return buildSubscriptionMeta(name, vol?.value, days?.value)
+}
+
+private fun buildSubscriptionMeta(sourceName: String, volText: String?, daysText: String?): SubscriptionMeta? {
+    val vol = volumeRegexPrimary.find(volText ?: "") ?: volumeRegexAlt.find(volText ?: "")
+    val days = daysRegex.find(daysText ?: "")
     if (vol == null && days == null) return null
     val usedStr = vol?.groupValues?.getOrNull(1) ?: ""
     val totalStr = vol?.groupValues?.getOrNull(2) ?: ""
@@ -1535,8 +1552,33 @@ private fun parseSubscriptionMeta(name: String): SubscriptionMeta? {
     )
 }
 
-private fun stripSubscriptionMetaFromName(name: String, meta: SubscriptionMeta?): String {
-    if (meta == null) return name
+/**
+ * Aggregates subscription volume/time fields across one or more profile names.
+ * Some providers split the remaining-data and remaining-time tokens into
+ * separate profiles; this picks the first occurrence of each field from
+ * [names] and merges them into a single [SubscriptionMeta]. Returns null when
+ * no name carries either field.
+ */
+private fun parseSubscriptionMeta(names: List<String>): SubscriptionMeta? {
+    var volText: String? = null
+    var daysText: String? = null
+    var sourceName: String? = null
+    for (name in names) {
+        if (volText == null) {
+            val v = volumeRegexPrimary.find(name) ?: volumeRegexAlt.find(name)
+            if (v != null) { volText = v.value; if (sourceName == null) sourceName = name }
+        }
+        if (daysText == null) {
+            val d = daysRegex.find(name)
+            if (d != null) { daysText = d.value; if (sourceName == null) sourceName = name }
+        }
+        if (volText != null && daysText != null) break
+    }
+    return buildSubscriptionMeta(sourceName ?: return null, volText, daysText)
+}
+
+/** Strips the subscription volume/time tokens from [name] and returns the cleaned remainder. */
+private fun extractSubscriptionMetaFromName(name: String): String {
     var out = name
     volumeRegexPrimary.find(out)?.let { out = out.replace(it.value, "") }
     volumeRegexAlt.find(out)?.let { out = out.replace(it.value, "") }
@@ -1549,7 +1591,6 @@ private fun stripSubscriptionMetaFromName(name: String, meta: SubscriptionMeta?)
         .replace(Regex("""\s*[|¦]\s*[|¦]\s*"""), " ")
         .trim()
         .replace(Regex("""^\s*[|¦-]+\s*"""), "")
-    // Collapse "In-629..." prefix emoji already handled
     out = out.replace(Regex("""^\W+"""), "").trim()
     if (out.isBlank()) out = name.substringBefore("|").substringBefore("📊").trim().ifBlank { "Subscription Info" }
     return out
@@ -1564,7 +1605,9 @@ fun ServerItemCard(
     onDelete: (() -> Unit)? = null,
     onEdit: (() -> Unit)? = null,
     onPingClick: () -> Unit = {},
-    onShowToast: (String) -> Unit = {}
+    onShowToast: (String) -> Unit = {},
+    subscriptionMeta: SubscriptionMeta? = null,
+    subscriptionLabel: String = "Subscription"
 ) {
     val haptic = LocalHapticFeedback.current
     val bgColor = if (isSelected) PrimaryCyan.copy(alpha = 0.1f) else SurfaceGlass
@@ -1579,16 +1622,19 @@ fun ServerItemCard(
 
     val flagRegex = remember { Regex("[\\uD83C\\uDDE6-\\uD83C\\uDDFF]{2}") }
     val flags = remember(profile.name) { flagRegex.findAll(profile.name).map { it.value }.toList() }
-    val meta = remember(profile.name) { parseSubscriptionMeta(profile.name) }
+    // The caller may pass an aggregated meta (e.g. volume and time live in
+    // different profile names within the same sub group); otherwise parse the
+    // single profile name.
+    val meta = subscriptionMeta ?: remember(profile.name) { parseSubscriptionMeta(profile.name) }
     val isSubscriptionInfoCard = meta != null && (meta.usedStr.isNotBlank() || meta.daysRaw != null)
-    val rawClean = remember(profile.name, meta) {
-        val stripped = if (isSubscriptionInfoCard) stripSubscriptionMetaFromName(profile.name, meta) else profile.name.replace(flagRegex, "").trim()
+    val rawClean = remember(profile.name, isSubscriptionInfoCard) {
+        val stripped = if (isSubscriptionInfoCard) extractSubscriptionMetaFromName(profile.name) else profile.name.replace(flagRegex, "").trim()
         // Apply font normalization (optional stylized -> plain) but keep emojis
         normalizeStyledText(stripped).trim()
     }
     // For subscription info cards keep the ID part if present, else fallback
-    val displayName = remember(rawClean, meta) {
-        if (isSubscriptionInfoCard && rawClean.isBlank()) "Subscription" else rawClean
+    val displayName = remember(rawClean, isSubscriptionInfoCard, subscriptionLabel) {
+        if (isSubscriptionInfoCard && rawClean.isBlank()) subscriptionLabel else rawClean
     }
 
     val countryCodes = remember(flags) {
@@ -1942,22 +1988,17 @@ private fun SubscriptionMetaRow(meta: SubscriptionMeta) {
             )
         }
         if (daysText != null) {
-            val dColor = when {
-                (meta.daysLeft ?: 99) <= 2 -> Color(0xFFFF5252)
-                (meta.daysLeft ?: 99) <= 7 -> Color(0xFFFFD54F)
-                else -> Color.White
-            }
-            // Split days text: number stays white, "Day"/"Days" goes cyan
+            // Split days text: the number stays white, "Day"/"Days" goes cyan.
             val dayAnnotated = buildAnnotatedString {
                 val num = meta.daysNum ?: ""
                 val unit = daysText.removePrefix(num).trim()
                 if (num.isNotBlank()) {
-                    withStyle(SpanStyle(color = dColor)) { append(num) }
+                    withStyle(SpanStyle(color = Color.White)) { append(num) }
                     if (unit.isNotBlank()) {
                         withStyle(SpanStyle(color = PrimaryCyan)) { append(" $unit") }
                     }
                 } else {
-                    withStyle(SpanStyle(color = dColor)) { append(daysText) }
+                    withStyle(SpanStyle(color = Color.White)) { append(daysText) }
                 }
             }
             Text(
@@ -3093,7 +3134,7 @@ fun AppRoutingScreen(
                                     .size(18.dp)
                                     .bounceClick {
                                         toastMessage =
-                                            if (isDnsMode) "Disable this option to have\nall apps use this DNS."
+                                            if (isDnsMode) "Disable this option to have\nall apps use DNS."
                                             else "Disable this option to have\nall apps use the VPN."
                                     }
                             )
@@ -3139,10 +3180,10 @@ fun AppRoutingScreen(
                                     .bounceClick {
                                         toastMessage =
                                             if (isBypassMode) {
-                                                if (isDnsMode) "Disable this option to only allow apps you select to use this DNS."
+                                                if (isDnsMode) "Disable this option to only allow apps you select to use DNS."
                                                 else "Disable this option to only allow apps you select to use the VPN."
                                             } else {
-                                                if (isDnsMode) "Enable this option to prevent apps you select from using this DNS and allow other apps you don't select to use this DNS."
+                                                if (isDnsMode) "Enable this option to prevent apps you select from using DNS and allow other apps you don't select to use DNS."
                                                 else "Enable this option to prevent apps you select from using the VPN and allow other apps you don't select to use the VPN."
                                             }
                                     }
@@ -3673,9 +3714,21 @@ fun ServerListFullScreen(
             modifier = Modifier.fillMaxSize().padding(horizontal = 16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            items(displayServers) { profile ->
+            items(displayServers, key = { it.id }) { profile ->
                 val isSelected = profile.id == activeProfile?.id
                 val isSub = profile.username.startsWith("sub:")
+                // For subscription info cards, aggregate volume/time across the
+                // whole group — providers sometimes split those tokens into two
+                // separate profiles. Also give each info card the group's display
+                // name so it doesn't fall back to a generic "Subscription" label.
+                val isInfoCard = isSubscriptionInfoName(profile.name)
+                val groupMeta = if (isInfoCard) {
+                    remember(displayServers) { parseSubscriptionMeta(displayServers.map { it.name }) }
+                } else null
+                val groupLabel = if (isInfoCard) {
+                    (subGroups[profile.username]?.firstOrNull()?.subName?.takeIf { it.isNotBlank() })
+                        ?: "Subscription"
+                } else "Subscription"
                 ServerItemCard(
                     profile = profile,
                     isSelected = isSelected,
@@ -3684,7 +3737,9 @@ fun ServerListFullScreen(
                     onDelete = if (isSub) null else { { onDelete(profile) } },
                     onEdit = if (isSub) null else { { onEdit(profile) } },
                     onPingClick = { onTestSinglePing(profile) },
-                    onShowToast = onShowToast
+                    onShowToast = onShowToast,
+                    subscriptionMeta = groupMeta,
+                    subscriptionLabel = groupLabel
                 )
             }
             item { Spacer(modifier = Modifier.height(24.dp)) }

@@ -245,13 +245,8 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
         }
     }
 
-    // Helpers for pinning subscription info cards (names containing volume/days)
-    private fun isSubscriptionInfoName(name: String): Boolean {
-        val hasVolume = Regex("""\d+(?:\.\d+)?\s*GB\s*/\s*\d+(?:\.\d+)?\s*GB""", RegexOption.IGNORE_CASE).containsMatchIn(name) ||
-                Regex("""\d+(?:\.\d+)?\s*/\s*\d+(?:\.\d+)?\s*GB""", RegexOption.IGNORE_CASE).containsMatchIn(name)
-        val hasDays = Regex("""\d+\s*Days?""", RegexOption.IGNORE_CASE).containsMatchIn(name)
-        return hasVolume || hasDays
-    }
+    // Subscription-info detection is shared with DashboardScreen so the UI and
+    // the ViewModel agree on which profiles are informational cards.
 
     init {
         VpnStateManager.initPersist(application)
@@ -1050,9 +1045,9 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
                         if (lines.isEmpty()) { withContext(Dispatchers.Main) { showToast("Invalid subscription!") }; return@launch }
                         lines.forEachIndexed { index, config ->
                             val parsedName = extractV2rayName(config) ?: if (cName.isNotBlank()) "$cName ${index + 1}" else "V2Ray Sub ${index + 1}"
-                            dao.insertProfile(VpnProfile(name = parsedName, protocol = protocol, serverAddress = config, username = "sub:${cAddr}", password = cPass.ifBlank { cAddr }, isActive = index == 0))
+                            dao.insertProfile(VpnProfile(name = parsedName, protocol = protocol, serverAddress = config, username = "sub:${cAddr}", password = cPass.ifBlank { cAddr }, isActive = index == 0, subName = cName))
                         }
-                    } catch (e: Exception) { dao.insertProfile(VpnProfile(name = cName.ifBlank { "V2Ray Sub Link" }, protocol = protocol, serverAddress = cAddr, username = "sub:${cAddr}", password = cPass.ifBlank { cAddr }, isActive = true)) }
+                    } catch (e: Exception) { dao.insertProfile(VpnProfile(name = cName.ifBlank { "V2Ray Sub Link" }, protocol = protocol, serverAddress = cAddr, username = "sub:${cAddr}", password = cPass.ifBlank { cAddr }, isActive = true, subName = cName)) }
                 } else {
                     val lines = cAddr.lines().map { it.trim() }.filter { line -> line.isNotBlank() && validPrefixes.any { line.startsWith(it, true) } }
                     if (lines.isEmpty()) { withContext(Dispatchers.Main) { showToast("Invalid configuration!") }; return@launch }
@@ -1213,6 +1208,11 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
         }
     }
 
+    /**
+     * Refreshes exactly one subscription group (the one matching [groupName]).
+     * Only profiles in that group are deleted and re-inserted; other groups,
+     * single links, and other protocols are untouched.
+     */
     fun updateSubscription(groupName: String) {
         if (connectionState.value == ConnectionState.CONNECTED && activeProfile.value?.protocol == "v2rayNG") {
             showToast("Please disconnect V2Ray before updating subscription.")
@@ -1231,6 +1231,9 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
                 val validPrefixes = listOf("vmess://", "vless://", "trojan://", "v2ray://")
                 val lines = decoded.lines().map { it.trim() }.filter { line -> line.isNotBlank() && validPrefixes.any { line.startsWith(it, true) } }
                 if (lines.isNotEmpty()) {
+                    // Deactivate the group first so a currently-active profile in
+                    // it (possible when another protocol is connected) isn't left
+                    // dangling after the delete. New rows are inserted below.
                     existingProfiles.forEach { dao.deleteProfile(it) }
                     lines.forEachIndexed { index, config ->
                         val parsedName = extractV2rayName(config) ?: "SubLink ${index + 1}"
