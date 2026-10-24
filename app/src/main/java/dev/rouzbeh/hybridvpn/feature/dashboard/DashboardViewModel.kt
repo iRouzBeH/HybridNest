@@ -213,6 +213,15 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
     private val _toastMessage = MutableSharedFlow<String>()
     val toastMessage = _toastMessage.asSharedFlow()
 
+    /**
+     * Subscription-update results, delivered only to the v2rayNG server list.
+     * Kept off the shared [toastMessage] flow so the message doesn't surface in
+     * other methods' server lists. Emitted from the update coroutine on the main
+     * dispatcher; collected by the screen-local toast.
+     */
+    private val _subscriptionToast = MutableSharedFlow<String>(extraBufferCapacity = 4)
+    val subscriptionToast = _subscriptionToast.asSharedFlow()
+
     private fun showToast(message: String) {
         viewModelScope.launch { _toastMessage.emit(message) }
     }
@@ -1156,9 +1165,16 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
      * up to ~12s, making bulk tests extremely slow. This implementation
      * mirrors that concurrency model.
      */
-    fun testV2rayRealDelay() {
+    fun testV2rayRealDelay(groupName: String) {
         viewModelScope.launch(Dispatchers.IO) {
-            val targets = allProfiles.value.filter { it.protocol == "v2rayNG" && !isSubscriptionInfoName(it.name) }
+            // Scope to the selected tab: "SingleLinks" pings only non-subscription
+            // servers; a sub key (sub:<url>) pings only that group. This avoids
+            // grinding through every tab's configs before reaching the one shown.
+            val base = allProfiles.value.filter { it.protocol == "v2rayNG" && !isSubscriptionInfoName(it.name) }
+            val targets = when (groupName) {
+                "SingleLinks" -> base.filter { !it.username.startsWith("sub:") }
+                else -> base.filter { it.username == groupName }
+            }
             if (targets.isEmpty()) return@launch
             // Reset first so user sees immediate feedback
             targets.forEach { dao.updateProfile(it.copy(ping = 0L)) }
@@ -1215,7 +1231,7 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
      */
     fun updateSubscription(groupName: String) {
         if (connectionState.value == ConnectionState.CONNECTED && activeProfile.value?.protocol == "v2rayNG") {
-            showToast("Please disconnect V2Ray before updating subscription.")
+            viewModelScope.launch(Dispatchers.Main) { _subscriptionToast.emit("Please disconnect V2Ray before updating subscription.") }
             return
         }
         viewModelScope.launch(Dispatchers.IO) {
@@ -1239,9 +1255,9 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
                         val parsedName = extractV2rayName(config) ?: "SubLink ${index + 1}"
                         dao.insertProfile(VpnProfile(name = parsedName.trim(), protocol = "v2rayNG", serverAddress = config, username = groupName.trim(), password = url, isActive = index == 0, subName = preservedSubName))
                     }
-                    withContext(Dispatchers.Main) { showToast("Subscription Updated Successfully") }
+                    withContext(Dispatchers.Main) { _subscriptionToast.emit("Subscription Updated Successfully") }
                 }
-            } catch (e: Exception) { withContext(Dispatchers.Main) { showToast("Update Failed") } }
+            } catch (e: Exception) { withContext(Dispatchers.Main) { _subscriptionToast.emit("Update Failed") } }
         }
     }
 

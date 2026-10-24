@@ -53,6 +53,7 @@ import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ContentPaste
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Dns
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.FileDownload
 import androidx.compose.material.icons.filled.FileUpload
@@ -370,7 +371,7 @@ fun DashboardScreen(
             onDeleteSubGroup = { subKey -> viewModel.deleteSubscriptionGroup(subKey) },
             onRenameSubGroup = { subKey, newName -> viewModel.renameSubscriptionGroup(subKey, newName) },
             onTestSinglePing = { viewModel.testSingleV2rayPing(it) },
-            onTestAllV2rayPing = { viewModel.testV2rayRealDelay() },
+            onTestAllV2rayPing = { groupName -> viewModel.testV2rayRealDelay(groupName) },
             onSortV2ray = { viewModel.sortV2rayByTestResults() },
             onDeleteInvalidV2ray = { viewModel.deleteInvalidV2rayConfigs() },
             onUpdateSub = { subKey -> viewModel.updateSubscription(subKey) },
@@ -391,7 +392,8 @@ fun DashboardScreen(
             onDeleteDnsServer = { viewModel.deleteDnsServer(it) },
             onTestDnsPing = { viewModel.testDnsPing(it) },
             onTestAllDnsPing = { viewModel.testAllDnsPing() },
-            toastFlow = viewModel.toastMessage
+            toastFlow = viewModel.toastMessage,
+            subscriptionToastFlow = viewModel.subscriptionToast
         )
     }
 }
@@ -424,7 +426,7 @@ fun DashboardContent(
     onDeleteSubGroup: (String) -> Unit,
     onRenameSubGroup: (String, String) -> Unit,
     onTestSinglePing: (VpnProfile) -> Unit,
-    onTestAllV2rayPing: () -> Unit,
+    onTestAllV2rayPing: (String) -> Unit,
     onSortV2ray: () -> Unit,
     onDeleteInvalidV2ray: () -> Unit,
     onUpdateSub: (String) -> Unit,
@@ -447,7 +449,8 @@ fun DashboardContent(
     onDeleteDnsServer: (String) -> Unit = {},
     onTestDnsPing: (String) -> Unit = {},
     onTestAllDnsPing: () -> Unit = {},
-    toastFlow: kotlinx.coroutines.flow.Flow<String>
+    toastFlow: kotlinx.coroutines.flow.Flow<String>,
+    subscriptionToastFlow: kotlinx.coroutines.flow.Flow<String> = kotlinx.coroutines.flow.emptyFlow()
 ) {
     var showAddServerSheet by remember { mutableStateOf(false) }
     var showServerListSheet by remember { mutableStateOf(false) }
@@ -598,7 +601,8 @@ fun DashboardContent(
                 onEdit = { profile -> editingProfile = profile },
                 onNavigateBack = { showServerListSheet = false },
                 toastMessage = dashboardToastMessage,
-                onShowToast = onShowToast
+                onShowToast = onShowToast,
+                subscriptionToastFlow = subscriptionToastFlow
             )
         }
     }
@@ -1121,7 +1125,7 @@ fun DashboardPreview() {
             onDeleteSubGroup = {},
             onRenameSubGroup = { _, _ -> },
             onTestSinglePing = {},
-            onTestAllV2rayPing = {},
+            onTestAllV2rayPing = { _ -> },
             onSortV2ray = {},
             onDeleteInvalidV2ray = {},
             onUpdateSub = {},
@@ -1272,7 +1276,7 @@ fun ServerSelectorButton(
                 )
             }
             Icon(
-                painter = painterResource(id = R.drawable.ic_dns),
+                imageVector = Icons.Default.Dns,
                 contentDescription = "Server",
                 tint = PrimaryCyan,
                 modifier = Modifier.size(24.dp)
@@ -3486,17 +3490,34 @@ fun ServerListFullScreen(
     onDeleteSubGroup: (String) -> Unit,
     onRenameSubGroup: (String, String) -> Unit,
     onTestSinglePing: (VpnProfile) -> Unit,
-    onTestAllV2rayPing: () -> Unit,
+    onTestAllV2rayPing: (String) -> Unit,
     onSortV2ray: () -> Unit,
     onDeleteInvalidV2ray: () -> Unit,
     onUpdateSub: (String) -> Unit,
     onEdit: (VpnProfile) -> Unit,
     onNavigateBack: () -> Unit,
     toastMessage: String? = null,
-    onShowToast: (String) -> Unit = {}
+    onShowToast: (String) -> Unit = {},
+    subscriptionToastFlow: kotlinx.coroutines.flow.Flow<String> = kotlinx.coroutines.flow.emptyFlow()
 ) {
     val context = androidx.compose.ui.platform.LocalContext.current
     val prefs = androidx.compose.runtime.remember { context.getSharedPreferences("tab_prefs", android.content.Context.MODE_PRIVATE) }
+
+    // Local toast scoped to THIS server-list screen. Subscription-update and
+    // other messages surface here and self-clear, instead of relying on the
+    // shared dashboardToastMessage which leaks into other methods' lists.
+    var localToast by androidx.compose.runtime.remember { mutableStateOf<String?>(null) }
+    androidx.compose.runtime.LaunchedEffect(localToast) {
+        if (localToast != null) {
+            kotlinx.coroutines.delay(4000)
+            localToast = null
+        }
+    }
+    // Subscription-update results arrive on their own flow so they only render
+    // here — never in the shared toast that other methods' lists also show.
+    androidx.compose.runtime.LaunchedEffect(subscriptionToastFlow) {
+        subscriptionToastFlow.collect { localToast = it }
+    }
 
     val v2rayServers = androidx.compose.runtime.remember(servers) { servers.filter { it.protocol == "v2rayNG" } }
     val singleLinks = androidx.compose.runtime.remember(v2rayServers) { v2rayServers.filter { !it.username.startsWith("sub:") } }
@@ -3602,7 +3623,7 @@ fun ServerListFullScreen(
                             androidx.compose.material3.DropdownMenuItem(
                                 text = { Text("Test Real delay config", color = Color.White, fontFamily = SoraFamily) },
                                 leadingIcon = { Icon(androidx.compose.material.icons.Icons.Default.Speed, contentDescription = null, tint = Color.White) },
-                                onClick = { showV2rayMenu = false; onTestAllV2rayPing() }
+                                onClick = { showV2rayMenu = false; onTestAllV2rayPing(selectedTab) }
                             )
                             androidx.compose.material3.DropdownMenuItem(
                                 text = { Text("Update subscription", color = Color.White, fontFamily = SoraFamily) },
@@ -3809,9 +3830,10 @@ fun ServerListFullScreen(
         }
     }
 
-    // NEW: Render the custom toast over the server list
+    // NEW: Render the custom toast over the server list. Uses the screen-local
+    // toast so messages don't bleed into other protocol server lists.
     CustomGlassToast(
-        message = toastMessage,
+        message = localToast ?: toastMessage,
         modifier = Modifier.align(Alignment.BottomCenter)
     )
 }
