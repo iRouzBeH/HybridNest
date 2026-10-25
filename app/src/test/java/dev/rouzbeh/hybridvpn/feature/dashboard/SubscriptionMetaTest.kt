@@ -1,77 +1,130 @@
 package dev.rouzbeh.hybridvpn.feature.dashboard
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * Pure-JVM tests for subscription-meta parsing. These exercise the same regexes
- * as the Compose UI but are packaged under feature/dashboard to live beside the
- * code under test. They do not touch Android APIs.
+ * Pure-JVM tests for subscription-meta parsing. These exercise the real
+ * [isSubscriptionInfoName] and [leadingSubscriptionInfoNames] helpers from
+ * DashboardScreen.kt (internal, same package) so the detection contract is
+ * locked against the production implementation, not a copy.
  *
- * Because the parse helpers in DashboardScreen.kt are file-private, these tests
- * duplicate the regexes to lock in the detection contract: data and time tokens
- * may appear in the same profile name OR split across separate profiles.
+ * Contract under test:
+ *  - Volume token: "<num> <unit> <sep> <num> <unit>" (unit B/KB/MB/GB/TB,
+ *    separator "/" or "|", ASCII or Persian/Arabic-Indic digits).
+ *  - Time token: "<num> Day|Days|Hour|روز|ساعت" OR a bare number right after
+ *    a ⏳/⌛/📅 emoji.
+ *  - Only the contiguous LEADING run of info names is consumed; a real server
+ *    such as "Germany 5 GB" (single volume, no pair) is never an info card.
  */
 class SubscriptionMetaTest {
 
-    private val volumePrimary = Regex("""(\d+(?:\.\d+)?)\s*GB\s*/\s*(\d+(?:\.\d+)?)\s*GB""", RegexOption.IGNORE_CASE)
-    private val volumeAlt = Regex("""(\d+(?:\.\d+)?)\s*/\s*(\d+(?:\.\d+)?)\s*GB""", RegexOption.IGNORE_CASE)
-    private val days = Regex("""(\d+)\s*Days?""", RegexOption.IGNORE_CASE)
-
-    private fun isInfoName(name: String): Boolean =
-        volumePrimary.containsMatchIn(name) || volumeAlt.containsMatchIn(name) || days.containsMatchIn(name)
+    // ---------- detection ----------
 
     @Test
-    fun `info-card detection matches single profile with both volume and days`() {
-        assertTrue(isInfoName("Plan | 10 GB / 100 GB | 5 Days"))
+    fun `info-card detection matches single name with volume and days`() {
+        assertTrue(isSubscriptionInfoName("Plan | 10 GB / 100 GB | 5 Days"))
     }
 
     @Test
-    fun `info-card detection matches volume-only name`() {
-        assertTrue(isInfoName("Data remaining 25.5 GB / 50 GB"))
-        assertTrue(isInfoName("25 / 50 GB"))
+    fun `info-card detection matches volume-only names`() {
+        assertTrue(isSubscriptionInfoName("Data 25.5 GB / 50 GB"))
+        assertTrue(isSubscriptionInfoName("25 / 50 GB"))
+        assertTrue(isSubscriptionInfoName("10 GB | 100 GB"))
+        assertTrue(isSubscriptionInfoName("512 MB / 1 GB"))
     }
 
     @Test
-    fun `info-card detection matches days-only name`() {
-        assertTrue(isInfoName("Expires in 3 Days"))
-        assertTrue(isInfoName("1 Day left"))
+    fun `info-card detection matches days-only names`() {
+        assertTrue(isSubscriptionInfoName("Expires in 3 Days"))
+        assertTrue(isSubscriptionInfoName("1 Day left"))
+        assertTrue(isSubscriptionInfoName("12 Hour"))
+        assertTrue(isSubscriptionInfoName("۳۰ روز"))
+        assertTrue(isSubscriptionInfoName("24 ساعت"))
+        assertTrue(isSubscriptionInfoName("⏳ 17"))
+        assertTrue(isSubscriptionInfoName("📅 9"))
+    }
+
+    @Test
+    fun `info-card detection matches persian-digit volume pair`() {
+        assertTrue(isSubscriptionInfoName("۵۰ GB / ۱۰۰ GB"))
+        assertTrue(isSubscriptionInfoName("۴۱٫۷۹ GB / ۱۰۰ GB"))
     }
 
     @Test
     fun `info-card detection rejects plain server names`() {
-        assertNull(volumePrimary.find("VLESS TCP TLS"))
-        assertNull(volumeAlt.find("VLESS TCP TLS"))
-        assertNull(days.find("VLESS TCP TLS"))
-        assertNull(days.find("Trojan WS"))
+        assertFalse(isSubscriptionInfoName("VLESS TCP TLS"))
+        assertFalse(isSubscriptionInfoName("Trojan WS"))
+        assertFalse(isSubscriptionInfoName("🇩🇪 Germany | Premium"))
     }
 
     @Test
-    fun `data and time split across separate profiles are both detected`() {
-        val names = listOf("Plan A 10 GB / 40 GB", "Plan A 7 Days", "Plan A vless server")
-        // Simulate aggregation: first name yields volume, second yields days.
-        var vol: String? = null
-        var day: String? = null
-        for (n in names) {
-            if (vol == null) vol = (volumePrimary.find(n) ?: volumeAlt.find(n))?.value
-            if (day == null) day = days.find(n)?.value
-        }
-        assertEquals("10 GB / 40 GB", vol)
-        assertEquals("7 Days", day)
+    fun `single volume without a pair is NOT an info card`() {
+        // "Germany 5 GB" has one volume token but no "<v>/<v>" pair — a real server.
+        assertFalse(isSubscriptionInfoName("Germany 5 GB"))
+        assertFalse(isSubscriptionInfoName("Server 10 GB speed"))
+    }
+
+    // ---------- leading-scope ----------
+
+    @Test
+    fun `leading info run consumes only the contiguous top block`() {
+        val names = listOf(
+            "📊 10 GB / 100 GB",
+            "⏳ 7 Days",
+            "Germany 5 GB",       // real server — stops the run
+            "20 GB / 40 GB"       // info-looking but NOT leading — ignored
+        )
+        val leading = leadingSubscriptionInfoNames(names)
+        assertEquals(listOf("📊 10 GB / 100 GB", "⏳ 7 Days"), leading)
     }
 
     @Test
-    fun `regex captures numeric groups for aggregation`() {
-        val vol = volumePrimary.find("41.79 GB / 100 GB")
-        assertNotNull(vol)
-        assertEquals("41.79", vol!!.groupValues[1])
-        assertEquals("100", vol.groupValues[2])
+    fun `leading info run is empty when the first entry is a real server`() {
+        val names = listOf("Germany 5 GB", "10 GB / 20 GB")
+        assertTrue(leadingSubscriptionInfoNames(names).isEmpty())
+    }
 
-        val d = days.find("11 Day")
-        assertNotNull(d)
-        assertEquals("11", d!!.groupValues[1])
+    @Test
+    fun `leading info run stops at first non-info entry`() {
+        val names = listOf("5 Days", "vless tcp", "3 Days")
+        assertEquals(listOf("5 Days"), leadingSubscriptionInfoNames(names))
+    }
+
+    @Test
+    fun `leading info run handles all-info and empty lists`() {
+        assertEquals(2, leadingSubscriptionInfoNames(listOf("1 Day", "2 GB / 4 GB")).size)
+        assertTrue(leadingSubscriptionInfoNames(emptyList()).isEmpty())
+    }
+
+    // ---------- meta parsing ----------
+
+    @Test
+    fun `parseSubscriptionMeta extracts volume and days`() {
+        val meta = parseSubscriptionMeta("Plan | 41.79 GB / 100 GB | 11 Days")
+        assertNotNull(meta)
+        assertEquals("41.79 GB", meta!!.usedStr)
+        assertEquals("100 GB", meta.totalStr)
+        assertEquals(41.79, meta.usedGb!!, 0.001)
+        assertEquals(100.0, meta.totalGb!!, 0.001)
+        assertEquals(11, meta.daysLeft)
+    }
+
+    @Test
+    fun `parseSubscriptionMeta returns null for a real server name`() {
+        assertNull(parseSubscriptionMeta("Germany 5 GB"))
+        assertNull(parseSubscriptionMeta("VLESS TCP TLS"))
+    }
+
+    @Test
+    fun `parseSubscriptionMeta normalizes persian digits`() {
+        val meta = parseSubscriptionMeta("۴۱٫۷۹ GB / ۱۰۰ GB")
+        assertNotNull(meta)
+        assertEquals("41.79 GB", meta!!.usedStr)
+        assertEquals(41.79, meta.usedGb!!, 0.001)
     }
 }

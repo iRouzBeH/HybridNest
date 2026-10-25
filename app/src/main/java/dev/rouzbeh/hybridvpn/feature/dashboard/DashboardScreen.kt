@@ -1546,9 +1546,16 @@ private fun normalizeStyledText(input: String): String {
     return sb.toString()
 }
 
-private val volumeRegexPrimary = Regex("""(\d+(?:\.\d+)?)\s*GB\s*/\s*(\d+(?:\.\d+)?)\s*GB""", RegexOption.IGNORE_CASE)
-private val volumeRegexAlt = Regex("""(\d+(?:\.\d+)?)\s*/\s*(\d+(?:\.\d+)?)\s*GB""", RegexOption.IGNORE_CASE)
-private val daysRegex = Regex("""(\d+)\s*Days?""", RegexOption.IGNORE_CASE)
+// Volume pattern: "<num> <unit> <sep> <num> <unit>" where the separator is "/"
+// or "|" and the unit is B/KB/MB/GB/TB. Digits may be ASCII or Persian/
+// Arabic-Indic (۰-۹ / ٠-٩). This is intentionally strict so a real server like
+// "Germany 5 GB" (no second volume) is NOT swallowed.
+private val volumeRegexPrimary = Regex("""([0-9۰-۹٠-٩]+(?:[.\.٫][0-9۰-۹٠-٩]+)?)\s*(GB|MB|TB|KB|B)\s*[/|]\s*([0-9۰-۹٠-٩]+(?:[.\.٫][0-9۰-۹٠-٩]+)?)\s*(GB|MB|TB|KB|B)""", RegexOption.IGNORE_CASE)
+private val volumeRegexAlt = Regex("""([0-9۰-۹٠-٩]+(?:[.\.٫][0-9۰-۹٠-٩]+)?)\s*[/|]\s*([0-9۰-۹٠-٩]+(?:[.\.٫][0-9۰-۹٠-٩]+)?)\s*(GB|MB|TB|KB|B)""", RegexOption.IGNORE_CASE)
+
+// Time pattern: an explicit unit ("Day", "Days", "Hour", "روز", "ساعت") OR a
+// bare number immediately after a ⏳/⌛/📅 emoji. ASCII + Persian/Arabic-Indic digits.
+private val daysRegex = Regex("""(?:([0-9۰-۹٠-٩]+)\s*(Days?|Hour|روز|ساعت))|(?:[⏳⌛📅]\s*([0-9۰-۹٠-٩]+))""", RegexOption.IGNORE_CASE)
 
 /**
  * True when a profile name carries subscription volume/time tokens and should be
@@ -1568,37 +1575,86 @@ fun parseSubscriptionMeta(name: String): SubscriptionMeta? {
     return buildSubscriptionMeta(name, vol?.value, days?.value)
 }
 
+/** Convert Persian/Arabic-Indic digits to ASCII so numeric parsing/formatting works. */
+private fun normalizeDigits(s: String): String {
+    val sb = StringBuilder(s.length)
+    for (c in s) {
+        sb.append(
+            when (c) {
+                in '۰'..'۹' -> '0' + (c - '۰')
+                in '٠'..'٩' -> '0' + (c - '٠')
+                '٫', '،' -> '.'
+                else -> c
+            }
+        )
+    }
+    return sb.toString()
+}
+
 private fun buildSubscriptionMeta(sourceName: String, volText: String?, daysText: String?): SubscriptionMeta? {
     val vol = volumeRegexPrimary.find(volText ?: "") ?: volumeRegexAlt.find(volText ?: "")
     val days = daysRegex.find(daysText ?: "")
     if (vol == null && days == null) return null
-    val usedStr = vol?.groupValues?.getOrNull(1) ?: ""
-    val totalStr = vol?.groupValues?.getOrNull(2) ?: ""
+    val usedStr = vol?.groupValues?.getOrNull(1)?.let { normalizeDigits(it) } ?: ""
+    val usedUnit = vol?.groupValues?.getOrNull(2) ?: "GB"
+    val totalStr = vol?.groupValues?.getOrNull(3)?.let { normalizeDigits(it) } ?: ""
+    val totalUnit = vol?.groupValues?.getOrNull(4) ?: usedUnit
     val daysStr = days?.value?.trim()
-    val daysLeft = days?.groupValues?.getOrNull(1)?.toIntOrNull()
+    val daysNumRaw = days?.let { it.groupValues.getOrNull(1)?.takeIf { g -> g.isNotBlank() } ?: it.groupValues.getOrNull(3) }
+    val daysNum = daysNumRaw?.let { normalizeDigits(it) }
+    val daysLeft = daysNum?.toIntOrNull()
     return SubscriptionMeta(
-        usedStr = if (usedStr.isNotBlank()) "$usedStr GB" else "",
-        totalStr = if (totalStr.isNotBlank()) "$totalStr GB" else "",
+        usedStr = if (usedStr.isNotBlank()) "$usedStr $usedUnit" else "",
+        totalStr = if (totalStr.isNotBlank()) "$totalStr $totalUnit" else "",
         usedGb = usedStr.toDoubleOrNull(),
         totalGb = totalStr.toDoubleOrNull(),
         daysLeft = daysLeft,
         daysRaw = daysStr,
-        daysNum = days?.groupValues?.getOrNull(1)
+        daysNum = daysNum
     )
 }
 
 /**
- * Aggregates subscription volume/time fields across one or more profile names.
- * Some providers split the remaining-data and remaining-time tokens into
- * separate profiles; this picks the first occurrence of each field from
- * [names] and merges them into a single [SubscriptionMeta]. Returns null when
- * no name carries either field.
+ * Leading info-entry scan: subscription providers push fake "info" configs to the
+ * top of a subscription. We conservatively consume ONLY the contiguous leading
+ * run of clearly-informational names (volume + time, or a dedicated info marker),
+ * stopping at the first name that doesn't match. This guarantees a real server
+ * named e.g. "Germany 5 GB" further down the list is never swallowed.
+ *
+ * Returns the names classified as info cards (in source order), or empty when
+ * the subscription has no leading info block.
+ */
+internal fun leadingSubscriptionInfoNames(names: List<String>): List<String> {
+    if (names.isEmpty()) return emptyList()
+    val info = mutableListOf<String>()
+    var sawAny = false
+    for (name in names) {
+        if (isSubscriptionInfoName(name)) {
+            info.add(name)
+            sawAny = true
+        } else {
+            // Stop at the first non-info entry — info cards only live at the top.
+            break
+        }
+    }
+    return if (sawAny) info else emptyList()
+}
+
+/**
+ * Aggregates subscription volume/time fields across the *leading* info block of
+ * a subscription. Some providers split the remaining-data and remaining-time
+ * tokens into separate fake configs at the top; this merges the first occurrence
+ * of each field into a single [SubscriptionMeta]. Conservative: only the
+ * contiguous leading run of info names (see [leadingSubscriptionInfoNames]) is
+ * consulted, so a real server further down is never folded into the meta.
+ * Returns null when there is no leading info block.
  */
 private fun parseSubscriptionMeta(names: List<String>): SubscriptionMeta? {
+    val infoNames = leadingSubscriptionInfoNames(names)
     var volText: String? = null
     var daysText: String? = null
     var sourceName: String? = null
-    for (name in names) {
+    for (name in infoNames) {
         if (volText == null) {
             val v = volumeRegexPrimary.find(name) ?: volumeRegexAlt.find(name)
             if (v != null) { volText = v.value; if (sourceName == null) sourceName = name }
@@ -3612,6 +3668,18 @@ fun ServerListFullScreen(
         servers
     }
 
+    // Leading subscription-info block for the visible tab: only the contiguous
+    // run of info entries at the very top is consumed and merged into ONE pinned
+    // box (the first entry renders it; the rest are hidden from the list).
+    val leadingInfoProfiles = androidx.compose.runtime.remember(displayServers) {
+        val infoNames = leadingSubscriptionInfoNames(displayServers.map { it.name })
+        displayServers.take(infoNames.size).filter { isSubscriptionInfoName(it.name) }
+    }
+    val leadingInfoIds = leadingInfoProfiles.map { it.id }.toSet()
+    val mergedSubMeta = androidx.compose.runtime.remember(displayServers) {
+        parseSubscriptionMeta(displayServers.map { it.name })
+    }
+
     Box(modifier = Modifier.fillMaxSize()) {
         Column(modifier = Modifier.fillMaxSize().background(SurfaceDark)) {
         Row(
@@ -3718,7 +3786,14 @@ fun ServerListFullScreen(
             ) {
                 // CRITICAL FIX: key = { it } prevents the visual state inversion bug
                 items(sortedTabs, key = { it }) { tabKey ->
-                    val count = if (tabKey == "SingleLinks") singleLinks.size else (subGroups[tabKey]?.size ?: 0)
+                    // Server count excludes consumed leading info entries — only
+                    // real selectable/connectable servers are counted.
+                    val count = if (tabKey == "SingleLinks") {
+                        singleLinks.size - leadingSubscriptionInfoNames(singleLinks.map { it.name }).size
+                    } else {
+                        val group = subGroups[tabKey] ?: emptyList()
+                        group.size - leadingSubscriptionInfoNames(group.map { it.name }).size
+                    }
                     val customName = if (tabKey == "SingleLinks") "SingleLinks"
                         else subGroups[tabKey]?.firstOrNull()?.subName?.takeIf { it.isNotBlank() } ?: "SubLink ${subKeys.indexOf(tabKey) + 1}"
                     val isTabPinging = v2rayPingTabs.contains(tabKey)
@@ -3780,17 +3855,21 @@ fun ServerListFullScreen(
             modifier = Modifier.fillMaxSize().padding(horizontal = 16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
+            // The leading info block merges into a single pinned box: render only
+            // its first entry (carrying the merged meta); the remaining info
+            // entries are hidden entirely — not selectable, connectable, pingable,
+            // or counted. Info ids are also excluded from the list below.
             items(displayServers, key = { it.id }) { profile ->
+                val isInfoEntry = leadingInfoIds.contains(profile.id)
+                // Non-first info entries are fully hidden (consumed into the box).
+                if (isInfoEntry && profile.id != leadingInfoProfiles.firstOrNull()?.id) {
+                    return@items
+                }
                 val isSelected = profile.id == activeProfile?.id
                 val isSub = profile.username.startsWith("sub:")
-                // For subscription info cards, aggregate volume/time across the
-                // whole group — providers sometimes split those tokens into two
-                // separate profiles. Also give each info card the group's display
-                // name so it doesn't fall back to a generic "Subscription" label.
-                val isInfoCard = isSubscriptionInfoName(profile.name)
-                val groupMeta = if (isInfoCard) {
-                    remember(displayServers) { parseSubscriptionMeta(displayServers.map { it.name }) }
-                } else null
+                // Only the first leading info entry renders the merged box; a
+                // non-leading info-looking name (a real server) is left alone.
+                val isInfoCard = isInfoEntry && profile.id == leadingInfoProfiles.firstOrNull()?.id
                 val groupLabel = if (isInfoCard) {
                     (subGroups[profile.username]?.firstOrNull()?.subName?.takeIf { it.isNotBlank() })
                         ?: "Subscription"
@@ -3804,7 +3883,7 @@ fun ServerListFullScreen(
                     onEdit = if (isSub) null else { { onEdit(profile) } },
                     onPingClick = { onTestSinglePing(profile) },
                     onShowToast = onShowToast,
-                    subscriptionMeta = groupMeta,
+                    subscriptionMeta = if (isInfoCard) mergedSubMeta else null,
                     subscriptionLabel = groupLabel
                 )
             }
