@@ -1258,7 +1258,10 @@ fun ServerSelectorButton(
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Column(verticalArrangement = Arrangement.Center) {
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.Center
+            ) {
                 Text(
                     text = "Server List",
                     color = TextSecondary,
@@ -1266,15 +1269,25 @@ fun ServerSelectorButton(
                     fontFamily = SoraFamily
                 )
                 Spacer(modifier = Modifier.height(4.dp))
+                var nameFontSize by remember(serverText) { mutableStateOf(14.sp) }
                 Text(
                     text = serverText,
                     color = if (activeProfile != null && activeProfile.protocol == selectedProtocol.title) PrimaryCyan else Color.Gray,
-                    fontSize = 14.sp,
+                    fontSize = nameFontSize,
                     fontWeight = FontWeight.Bold,
                     maxLines = 1,
+                    softWrap = false,
+                    overflow = TextOverflow.Ellipsis,
+                    onTextLayout = { result ->
+                        val minFontSize = 10.sp
+                        if (result.hasVisualOverflow && nameFontSize.value > minFontSize.value) {
+                            nameFontSize = (nameFontSize.value - 1f).coerceAtLeast(minFontSize.value).sp
+                        }
+                    },
                     fontFamily = SoraFamily
                 )
             }
+            Spacer(modifier = Modifier.width(12.dp))
             Icon(
                 imageVector = Icons.Default.Dns,
                 contentDescription = "Server",
@@ -1345,7 +1358,10 @@ fun DnsServerSelectorButton(
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Column(verticalArrangement = Arrangement.Center) {
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.Center
+            ) {
                 Text(
                     text = "DNS Server",
                     color = TextSecondary,
@@ -1353,18 +1369,28 @@ fun DnsServerSelectorButton(
                     fontFamily = SoraFamily
                 )
                 Spacer(modifier = Modifier.height(4.dp))
+                var nameFontSize by remember(serverText) { mutableStateOf(14.sp) }
                 Text(
                     text = serverText,
                     color = if (selectedServer != null) PrimaryCyan else Color.Gray,
-                    fontSize = 14.sp,
+                    fontSize = nameFontSize,
                     fontWeight = FontWeight.Bold,
                     maxLines = 1,
+                    softWrap = false,
+                    overflow = TextOverflow.Ellipsis,
+                    onTextLayout = { result ->
+                        val minFontSize = 10.sp
+                        if (result.hasVisualOverflow && nameFontSize.value > minFontSize.value) {
+                            nameFontSize = (nameFontSize.value - 1f).coerceAtLeast(minFontSize.value).sp
+                        }
+                    },
                     fontFamily = SoraFamily
                 )
             }
+            Spacer(modifier = Modifier.width(12.dp))
             Icon(
-                painter = painterResource(id = R.drawable.ic_dns),
-                contentDescription = "DNS Server",
+                imageVector = Icons.Default.Dns,
+                contentDescription = "Server",
                 tint = PrimaryCyan,
                 modifier = Modifier.size(24.dp)
             )
