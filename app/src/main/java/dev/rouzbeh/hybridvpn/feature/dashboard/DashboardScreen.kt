@@ -308,6 +308,7 @@ fun DashboardScreen(
     val currentLogs by viewModel.currentLogs.collectAsStateWithLifecycle()
     val dnsServers by viewModel.dnsServers.collectAsStateWithLifecycle()
     val selectedDnsServer by viewModel.selectedDnsServer.collectAsStateWithLifecycle()
+    val v2rayPingTabs by viewModel.v2rayPingTabs.collectAsStateWithLifecycle()
 
     val drawerState =
         androidx.compose.material3.rememberDrawerState(initialValue = androidx.compose.material3.DrawerValue.Closed)
@@ -372,9 +373,10 @@ fun DashboardScreen(
             onRenameSubGroup = { subKey, newName -> viewModel.renameSubscriptionGroup(subKey, newName) },
             onTestSinglePing = { viewModel.testSingleV2rayPing(it) },
             onTestAllV2rayPing = { groupName -> viewModel.testV2rayRealDelay(groupName) },
-            onSortV2ray = { viewModel.sortV2rayByTestResults() },
-            onDeleteInvalidV2ray = { viewModel.deleteInvalidV2rayConfigs() },
+            onSortV2ray = { groupName -> viewModel.sortV2rayByTestResults(groupName) },
+            onDeleteInvalidV2ray = { groupName -> viewModel.deleteInvalidV2rayConfigs(groupName) },
             onUpdateSub = { subKey -> viewModel.updateSubscription(subKey) },
+            v2rayPingTabs = v2rayPingTabs,
             onTestPing = { viewModel.testPing() },
             onToggleAppSelection = { viewModel.toggleAppSelection(it) },
             onSetPerAppEnabled = { viewModel.setPerAppEnabled(it) },
@@ -427,9 +429,10 @@ fun DashboardContent(
     onRenameSubGroup: (String, String) -> Unit,
     onTestSinglePing: (VpnProfile) -> Unit,
     onTestAllV2rayPing: (String) -> Unit,
-    onSortV2ray: () -> Unit,
-    onDeleteInvalidV2ray: () -> Unit,
+    onSortV2ray: (String) -> Unit,
+    onDeleteInvalidV2ray: (String) -> Unit,
     onUpdateSub: (String) -> Unit,
+    v2rayPingTabs: Set<String>,
     onAddServer: (String, String, String, String, String) -> Unit,
     onUpdateServer: (VpnProfile) -> Unit,
     onTestPing: () -> Unit,
@@ -598,6 +601,7 @@ fun DashboardContent(
                 onSortV2ray = onSortV2ray,
                 onDeleteInvalidV2ray = onDeleteInvalidV2ray,
                 onUpdateSub = onUpdateSub,
+                v2rayPingTabs = v2rayPingTabs,
                 onEdit = { profile -> editingProfile = profile },
                 onNavigateBack = { showServerListSheet = false },
                 toastMessage = dashboardToastMessage,
@@ -1126,9 +1130,10 @@ fun DashboardPreview() {
             onRenameSubGroup = { _, _ -> },
             onTestSinglePing = {},
             onTestAllV2rayPing = { _ -> },
-            onSortV2ray = {},
-            onDeleteInvalidV2ray = {},
+            onSortV2ray = { _ -> },
+            onDeleteInvalidV2ray = { _ -> },
             onUpdateSub = {},
+            v2rayPingTabs = emptySet(),
             onAddServer = { _, _, _, _, _ -> },
             onUpdateServer = {},
             onTestPing = {},
@@ -3517,9 +3522,10 @@ fun ServerListFullScreen(
     onRenameSubGroup: (String, String) -> Unit,
     onTestSinglePing: (VpnProfile) -> Unit,
     onTestAllV2rayPing: (String) -> Unit,
-    onSortV2ray: () -> Unit,
-    onDeleteInvalidV2ray: () -> Unit,
+    onSortV2ray: (String) -> Unit,
+    onDeleteInvalidV2ray: (String) -> Unit,
     onUpdateSub: (String) -> Unit,
+    v2rayPingTabs: Set<String> = emptySet(),
     onEdit: (VpnProfile) -> Unit,
     onNavigateBack: () -> Unit,
     toastMessage: String? = null,
@@ -3641,25 +3647,27 @@ fun ServerListFullScreen(
                             onDismissRequest = { showV2rayMenu = false },
                             modifier = Modifier.background(SurfaceDark).border(1.dp, BorderGlass, RoundedCornerShape(8.dp))
                         ) {
+                            // Every action captures the currently-selected tab at tap time
+                            // so a mid-operation tab switch can't redirect it elsewhere.
                             androidx.compose.material3.DropdownMenuItem(
                                 text = { Text("Sorting by test results", color = Color.White, fontFamily = SoraFamily) },
                                 leadingIcon = { Icon(androidx.compose.material.icons.Icons.Default.Sort, contentDescription = null, tint = Color.White) },
-                                onClick = { showV2rayMenu = false; onSortV2ray() }
+                                onClick = { val tab = selectedTab; showV2rayMenu = false; onSortV2ray(tab) }
                             )
                             androidx.compose.material3.DropdownMenuItem(
                                 text = { Text("Test Real delay config", color = Color.White, fontFamily = SoraFamily) },
                                 leadingIcon = { Icon(androidx.compose.material.icons.Icons.Default.Speed, contentDescription = null, tint = Color.White) },
-                                onClick = { showV2rayMenu = false; onTestAllV2rayPing(selectedTab) }
+                                onClick = { val tab = selectedTab; showV2rayMenu = false; onTestAllV2rayPing(tab) }
                             )
                             androidx.compose.material3.DropdownMenuItem(
                                 text = { Text("Update subscription", color = Color.White, fontFamily = SoraFamily) },
                                 leadingIcon = { Icon(androidx.compose.material.icons.Icons.Outlined.Sync, contentDescription = null, tint = Color.White) },
-                                onClick = { showV2rayMenu = false; if (selectedTab != "SingleLinks") onUpdateSub(selectedTab) }
+                                onClick = { val tab = selectedTab; showV2rayMenu = false; if (tab != "SingleLinks") onUpdateSub(tab) }
                             )
                             androidx.compose.material3.DropdownMenuItem(
                                 text = { Text("Delete invalid config", color = Color(0xFFE53935), fontFamily = SoraFamily) },
                                 leadingIcon = { Icon(androidx.compose.material.icons.Icons.Outlined.Delete, contentDescription = null, tint = Color(0xFFE53935)) },
-                                onClick = { showV2rayMenu = false; onDeleteInvalidV2ray() }
+                                onClick = { val tab = selectedTab; showV2rayMenu = false; onDeleteInvalidV2ray(tab) }
                             )
                         }
                     }
@@ -3711,19 +3719,30 @@ fun ServerListFullScreen(
                 // CRITICAL FIX: key = { it } prevents the visual state inversion bug
                 items(sortedTabs, key = { it }) { tabKey ->
                     val count = if (tabKey == "SingleLinks") singleLinks.size else (subGroups[tabKey]?.size ?: 0)
-                    val customName = if (tabKey == "SingleLinks") "SingleLinks" 
+                    val customName = if (tabKey == "SingleLinks") "SingleLinks"
                         else subGroups[tabKey]?.firstOrNull()?.subName?.takeIf { it.isNotBlank() } ?: "SubLink ${subKeys.indexOf(tabKey) + 1}"
+                    val isTabPinging = v2rayPingTabs.contains(tabKey)
 
                     Box {
-                        Text(
-                            text = "$customName ($count)",
-                            color = if (selectedTab == tabKey) PrimaryCyan else TextSecondary,
-                            fontWeight = if (selectedTab == tabKey) FontWeight.Bold else FontWeight.Normal,
-                            fontFamily = SoraFamily,
-                            modifier = Modifier
-                                .bounceClick(onLongClick = { selectedTab = tabKey; expandedTabMenu = tabKey }) { selectedTab = tabKey }
-                                .padding(8.dp)
-                        )
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            if (isTabPinging) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(11.dp),
+                                    strokeWidth = 1.5.dp,
+                                    color = PrimaryCyan
+                                )
+                                Spacer(modifier = Modifier.width(5.dp))
+                            }
+                            Text(
+                                text = "$customName ($count)",
+                                color = if (selectedTab == tabKey) PrimaryCyan else TextSecondary,
+                                fontWeight = if (selectedTab == tabKey) FontWeight.Bold else FontWeight.Normal,
+                                fontFamily = SoraFamily,
+                                modifier = Modifier
+                                    .bounceClick(onLongClick = { selectedTab = tabKey; expandedTabMenu = tabKey }) { selectedTab = tabKey }
+                                    .padding(8.dp)
+                            )
+                        }
 
                         androidx.compose.material3.DropdownMenu(
                             expanded = expandedTabMenu == tabKey,

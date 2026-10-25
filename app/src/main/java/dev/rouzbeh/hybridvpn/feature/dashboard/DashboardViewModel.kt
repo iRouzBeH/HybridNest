@@ -42,7 +42,10 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
     private var isInitialStateEmission = true
     private var logcatJob: Job? = null
     private var networkFetchJob: Job? = null
-    private val _isV2raySorted = MutableStateFlow(false)
+    private val _sortedV2rayTabs = MutableStateFlow<Set<String>>(emptySet())
+    val sortedV2rayTabs: StateFlow<Set<String>> = _sortedV2rayTabs.asStateFlow()
+    private val _v2rayPingTabs = MutableStateFlow<Set<String>>(emptySet())
+    val v2rayPingTabs: StateFlow<Set<String>> = _v2rayPingTabs.asStateFlow()
 
     val allProfiles: StateFlow<List<VpnProfile>> = dao.getAllProfiles()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
@@ -51,17 +54,22 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
     val selectedProtocol: StateFlow<String> = _selectedProtocol.asStateFlow()
 
     val filteredProfiles: StateFlow<List<VpnProfile>> = combine(
-        allProfiles, _selectedProtocol, _isV2raySorted
-    ) { profiles, protocol, isSorted ->
+        allProfiles, _selectedProtocol, _sortedV2rayTabs
+    ) { profiles, protocol, sortedTabs ->
         val filtered = profiles.filter { it.protocol == protocol }
-        if (protocol == "v2rayNG" && isSorted) {
-            // Keep subscription info cards pinned at top regardless of sort / ping.
-            val (infoCards, regular) = filtered.partition { isSubscriptionInfoName(it.name) }
-            val sortedRegular = regular.sortedBy { if (it.ping > 0) it.ping else Long.MAX_VALUE }
-            infoCards + sortedRegular
-        } else if (protocol == "v2rayNG") {
-            val (infoCards, regular) = filtered.partition { isSubscriptionInfoName(it.name) }
-            infoCards + regular
+        if (protocol == "v2rayNG") {
+            // Keep subscription info cards pinned within their tab regardless of sort / ping.
+            filtered.groupBy { if (it.username.startsWith("sub:")) it.username else "SingleLinks" }
+                .values
+                .flatMap { group ->
+                    val groupKey = if (group.first().username.startsWith("sub:")) group.first().username else "SingleLinks"
+                    val (infoCards, regular) = group.partition { isSubscriptionInfoName(it.name) }
+                    infoCards + if (sortedTabs.contains(groupKey)) {
+                        regular.sortedBy { if (it.ping > 0) it.ping else Long.MAX_VALUE }
+                    } else {
+                        regular
+                    }
+                }
         } else {
             filtered
         }
@@ -1176,6 +1184,8 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
                 else -> base.filter { it.username == groupName }
             }
             if (targets.isEmpty()) return@launch
+            // Mark this tab as pinging so only its UI shows the loading state.
+            _v2rayPingTabs.value = _v2rayPingTabs.value + groupName
             // Reset first so user sees immediate feedback
             targets.forEach { dao.updateProfile(it.copy(ping = 0L)) }
 
@@ -1183,21 +1193,50 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
             val concurrency = 5
             val semaphore = Semaphore(concurrency)
 
-            coroutineScope {
-                targets.map { profile ->
-                    async(Dispatchers.IO) {
-                        semaphore.withPermit {
-                            val ping = measureProfileDelay(profile)
-                            dao.updateProfile(profile.copy(ping = ping))
+            try {
+                coroutineScope {
+                    targets.map { profile ->
+                        async(Dispatchers.IO) {
+                            semaphore.withPermit {
+                                val ping = measureProfileDelay(profile)
+                                dao.updateProfile(profile.copy(ping = ping))
+                            }
                         }
-                    }
-                }.awaitAll()
+                    }.awaitAll()
+                }
+            } finally {
+                // Always clear this tab's loading flag, even if the test errors out.
+                _v2rayPingTabs.value = _v2rayPingTabs.value - groupName
             }
         }
     }
 
-    fun sortV2rayByTestResults() { _isV2raySorted.value = !_isV2raySorted.value }
-    fun deleteInvalidV2rayConfigs() { viewModelScope.launch(Dispatchers.IO) { allProfiles.value.filter { it.protocol == "v2rayNG" && !isSubscriptionInfoName(it.name) && it.ping == -1L }.forEach { dao.deleteProfile(it) } } }
+    /**
+     * Toggle sorted-by-test-results for exactly one tab ([groupName]). The tab key
+     * is captured at tap time so switching tabs mid-operation can't redirect it.
+     */
+    fun sortV2rayByTestResults(groupName: String) {
+        _sortedV2rayTabs.value =
+            if (_sortedV2rayTabs.value.contains(groupName)) _sortedV2rayTabs.value - groupName
+            else _sortedV2rayTabs.value + groupName
+    }
+
+    /**
+     * Delete invalid (-1 ping) configs within exactly one tab ([groupName]). Other
+     * tabs are untouched. Info cards are never treated as deletable configs.
+     */
+    fun deleteInvalidV2rayConfigs(groupName: String) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val base = allProfiles.value.filter {
+                it.protocol == "v2rayNG" && !isSubscriptionInfoName(it.name) && it.ping == -1L
+            }
+            val targets = when (groupName) {
+                "SingleLinks" -> base.filter { !it.username.startsWith("sub:") }
+                else -> base.filter { it.username == groupName }
+            }
+            targets.forEach { dao.deleteProfile(it) }
+        }
+    }
 
     fun testSingleV2rayPing(profile: VpnProfile) {
         if (isSubscriptionInfoName(profile.name)) return
