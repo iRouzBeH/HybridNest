@@ -259,6 +259,29 @@ val SoraFamily = FontFamily(
     androidx.compose.ui.text.font.Font(dev.rouzbeh.hybridvpn.R.font.sora_extrabold, FontWeight.Black),
 )
 
+/**
+ * Strips emoji and emoji-modifier code points while preserving everything else
+ * (letters, digits, Persian/Arabic text, ZWNJ, punctuation). Used to keep
+ * AnyConnect username/password fields emoji-free for both keyboard and paste.
+ */
+object EmojiFilter {
+    fun strip(input: String): String {
+        val sb = StringBuilder(input.length)
+        var i = 0
+        while (i < input.length) {
+            val cp = input.codePointAt(i)
+            if (!isEmoji(cp)) sb.appendCodePoint(cp)
+            i += Character.charCount(cp)
+        }
+        return sb.toString()
+    }
+
+    private fun isEmoji(cp: Int) =
+        cp in 0x1F000..0x1FAFF || cp in 0x2600..0x27BF || cp in 0x2300..0x23FF ||
+        cp in 0x2B00..0x2BFF || cp in 0x2194..0x21AA || cp in 0xE0020..0xE007F ||
+        cp == 0xFE0F || cp == 0xFE0E || cp == 0x200D || cp == 0x20E3
+}
+
 @Composable
 fun Modifier.bounceClick(onLongClick: (() -> Unit)? = null, onClick: () -> Unit): Modifier {
     val interactionSource = remember { MutableInteractionSource() }
@@ -2389,7 +2412,7 @@ fun AddServerSheetContent(
                 )
                 Spacer(modifier = Modifier.height(12.dp))
                 OutlinedTextField(
-                    value = username, onValueChange = { username = it.replace(" ", "") },
+                    value = username, onValueChange = { username = EmojiFilter.strip(it).replace(" ", "") },
                     label = {
                         Text(
                             "Username",
@@ -2408,7 +2431,7 @@ fun AddServerSheetContent(
                 )
                 Spacer(modifier = Modifier.height(12.dp))
                 OutlinedTextField(
-                    value = password, onValueChange = { password = it.replace(" ", "") },
+                    value = password, onValueChange = { password = EmojiFilter.strip(it).replace(" ", "") },
                     label = {
                         Text(
                             "Password",
@@ -2576,15 +2599,15 @@ fun AddServerSheetContent(
                             onShowToast("This configuration already exists!")
                             return@Button
                         }
-                        val finalPassword = if (currentProtocol == VpnProtocolDisplay.V2rayNG && (serverAddress.startsWith("http://") || serverAddress.startsWith("https://"))) serverAddress else password
-                        onAdd(name, serverAddress, username, finalPassword, currentProtocol.title)
+                        val finalPassword = if (currentProtocol == VpnProtocolDisplay.V2rayNG && (serverAddress.startsWith("http://") || serverAddress.startsWith("https://"))) serverAddress else EmojiFilter.strip(password)
+                        onAdd(name, serverAddress, EmojiFilter.strip(username), finalPassword, currentProtocol.title)
                     } else {
                         onUpdate(
                             editingProfile.copy(
                                 name = name,
                                 serverAddress = serverAddress,
-                                username = username,
-                                password = password,
+                                username = if (currentProtocol == VpnProtocolDisplay.OpenConnect) EmojiFilter.strip(username) else username,
+                                password = if (currentProtocol == VpnProtocolDisplay.OpenConnect) EmojiFilter.strip(password) else password,
                                 protocol = currentProtocol.title
                             )
                         )
