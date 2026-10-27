@@ -67,6 +67,12 @@ class HybridVpnService : VpnService() {
             stopSelf()
         }
     )
+    private val stopScope = CoroutineScope(
+        Dispatchers.IO + SupervisorJob() +
+        CoroutineExceptionHandler { _, t ->
+            Log.e(TAG, "Unhandled stopScope failure", t)
+        }
+    )
     private var notificationJob: Job? = null
     private var connectionJob: Job? = null
     private var checkJob: Job? = null
@@ -270,13 +276,32 @@ class HybridVpnService : VpnService() {
         settingsRepository = SettingsRepository(this)
     }
 
+    private fun startForegroundCompat(notification: android.app.Notification) {
+        try {
+            if (Build.VERSION.SDK_INT >= 34) {
+                @Suppress("InlinedApi")
+                startForeground(NOTIFICATION_ID, notification, android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
+            } else {
+                startForeground(NOTIFICATION_ID, notification)
+            }
+        } catch (t: Throwable) {
+            Log.e(TAG, "startForegroundCompat failed", t)
+        }
+    }
+
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        val initialNotification = when (intent?.action) {
+            "STOP_SERVICE", "ACTION_STOP_VPN", "ACTION_FORCE_STOP" -> createNotification("HybridNest", "Disconnecting...")
+            else -> createNotification("HybridNest", "Connecting...")
+        }
+        startForegroundCompat(initialNotification)
+
         if (intent == null) {
             val state = VpnStateManager.connectionState.value
             val isOcOrV2ray = currentConnectedProtocol == VpnProtocol.V2rayNG || currentConnectedProtocol == VpnProtocol.OpenConnect
             if (state != ConnectionState.CONNECTED || !isOcOrV2ray) {
                 emitLog("Restarted with null intent but state is $state. Stopping.")
-                stopSelf()
+                stopAllEngines(reason = "null intent restart", intentional = true, startId = startId)
                 return START_NOT_STICKY
             }
         }
@@ -306,14 +331,6 @@ class HybridVpnService : VpnService() {
             }
         }
 
-        val notification = createNotification("HybridNest", "Connecting...")
-        if (Build.VERSION.SDK_INT >= 34) {
-            @Suppress("InlinedApi")
-            startForeground(NOTIFICATION_ID, notification, android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
-        } else {
-            startForeground(NOTIFICATION_ID, notification)
-        }
-        
         emitLog("VpnService started.")
         VpnStateManager.updateStateFromNative(1)
         
@@ -535,20 +552,26 @@ class HybridVpnService : VpnService() {
                 }
 
                 if (state == ConnectionState.CONNECTING || state == ConnectionState.RECONNECTING) {
-                    (getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager)
-                        .notify(NOTIFICATION_ID, createNotification("HybridNest", "Connecting..."))
+                    try {
+                        (getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager)
+                            ?.notify(NOTIFICATION_ID, createNotification("HybridNest", "Connecting..."))
+                    } catch (_: Throwable) {}
                 } else if (state == ConnectionState.DISCONNECTING) {
-                    (getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager)
-                        .notify(NOTIFICATION_ID, createNotification("HybridNest", "Disconnecting..."))
+                    try {
+                        (getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager)
+                            ?.notify(NOTIFICATION_ID, createNotification("HybridNest", "Disconnecting..."))
+                    } catch (_: Throwable) {}
                 } else if (state == ConnectionState.CONNECTED) {
                     while (coroutineContext.isActive && VpnStateManager.connectionState.value == ConnectionState.CONNECTED) {
-                        val dlVolume = formatVolume(VpnStateManager.rawSpeed.value.first)
-                        val ulVolume = formatVolume(VpnStateManager.rawSpeed.value.second)
-                        val netInfo = VpnStateManager.networkInfo.value
-                        val isDetecting = netInfo.location == "Detecting..." || netInfo.location.isBlank()
-                        val title = if (isDetecting) "🌐 ${netInfo.location}" else "${getFlagEmoji(netInfo.flagCode)} ${netInfo.location}"
-                        (getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager)
-                            .notify(NOTIFICATION_ID, createNotification(title, "DL ↓ $dlVolume - UL ↑ $ulVolume"))
+                        try {
+                            val dlVolume = formatVolume(VpnStateManager.rawSpeed.value.first)
+                            val ulVolume = formatVolume(VpnStateManager.rawSpeed.value.second)
+                            val netInfo = VpnStateManager.networkInfo.value
+                            val isDetecting = netInfo.location == "Detecting..." || netInfo.location.isBlank()
+                            val title = if (isDetecting) "🌐 ${netInfo.location}" else "${getFlagEmoji(netInfo.flagCode)} ${netInfo.location}"
+                            (getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager)
+                                ?.notify(NOTIFICATION_ID, createNotification(title, "DL ↓ $dlVolume - UL ↑ $ulVolume"))
+                        } catch (_: Throwable) {}
                         delay(1000)
                     }
                 }
@@ -558,13 +581,15 @@ class HybridVpnService : VpnService() {
 
     /** Removes the foreground and visible notification. Safe to call multiple times. */
     private fun removeVpnNotification() {
-        (getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager).cancel(NOTIFICATION_ID)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-            stopForeground(STOP_FOREGROUND_REMOVE)
-        } else {
-            @Suppress("DEPRECATION")
-            stopForeground(true)
-        }
+        try {
+            (getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager)?.cancel(NOTIFICATION_ID)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                stopForeground(STOP_FOREGROUND_REMOVE)
+            } else {
+                @Suppress("DEPRECATION")
+                stopForeground(true)
+            }
+        } catch (_: Throwable) {}
     }
 
     /**
@@ -1109,9 +1134,6 @@ class HybridVpnService : VpnService() {
         sessionRoutingPolicy = null
         RoutingPolicyStatus.clearActive(forSession, intentional, reason)
 
-        // Synchronously send cancellation signals to native engines to begin teardown immediately
-        try { stopOpenConnectNative() } catch (e: Throwable) { Log.e(TAG, "stopOpenConnectNative failed", e) }
-
         val fdToClose = coreTunFd
         val pfdToClose = vpnInterface
         val dnsToStop = dnsForwarder
@@ -1119,7 +1141,8 @@ class HybridVpnService : VpnService() {
         vpnInterface = null
         dnsForwarder = null
 
-        serviceScope.launch(Dispatchers.IO) {
+        stopScope.launch {
+            try { stopOpenConnectNative() } catch (e: Throwable) { Log.e(TAG, "stopOpenConnectNative failed", e) }
             try { V2RayManager.stopCore() } catch (e: Throwable) { Log.e(TAG, "V2Ray stop failed", e) }
             // Stop the DNS packet relay before closing the TUN fd so no thread
             // is mid-read/write on it.
@@ -1139,17 +1162,21 @@ class HybridVpnService : VpnService() {
 
             if (forSession == sessionId || sessionId == 0L) {
                 VpnStateManager.updateStateFromNative(0)
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-                    stopForeground(STOP_FOREGROUND_REMOVE)
-                } else {
-                    @Suppress("DEPRECATION")
-                    stopForeground(true)
-                }
-                getSystemService(NotificationManager::class.java)?.cancel(NOTIFICATION_ID)
-                if (startId != -1) {
-                    stopSelfResult(startId)
-                } else {
-                    stopSelf()
+                withContext(Dispatchers.Main) {
+                    try {
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                            stopForeground(STOP_FOREGROUND_REMOVE)
+                        } else {
+                            @Suppress("DEPRECATION")
+                            stopForeground(true)
+                        }
+                        getSystemService(NotificationManager::class.java)?.cancel(NOTIFICATION_ID)
+                    } catch (_: Throwable) {}
+                    if (startId != -1) {
+                        stopSelfResult(startId)
+                    } else {
+                        stopSelf()
+                    }
                 }
             }
             Log.d(TAG, "Teardown of session $forSession complete (reason=$reason).")
@@ -1181,11 +1208,11 @@ class HybridVpnService : VpnService() {
 
     override fun onRevoke() {
         stopAllEngines(reason = "VPN revoked by system/user (onRevoke)", intentional = true)
-        stopSelf()
         super.onRevoke()
     }
 
     override fun onDestroy() {
+        serviceScope.cancel()
         stopAllEngines(reason = "service destroyed", intentional = true)
         super.onDestroy()
     }

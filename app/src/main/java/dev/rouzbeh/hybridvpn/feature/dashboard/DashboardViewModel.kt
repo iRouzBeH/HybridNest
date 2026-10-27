@@ -7,6 +7,7 @@ import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
+import android.os.Build
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import dev.rouzbeh.hybridvpn.data.local.AppDatabase
@@ -937,7 +938,17 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
                 // requests per session, so re-sending FORCE_STOP later would be a no-op
                 // at best and a fresh-service-spawn at worst — do not do it.
                 val forceStopIntent = Intent(context, HybridVpnService::class.java).apply { action = "ACTION_FORCE_STOP" }
-                context.startService(forceStopIntent)
+                try {
+                    context.startService(forceStopIntent)
+                } catch (_: Throwable) {
+                    try {
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                            context.startForegroundService(forceStopIntent)
+                        } else {
+                            context.startService(forceStopIntent)
+                        }
+                    } catch (_: Throwable) {}
+                }
 
                 // Await REAL teardown completion (native cancel signals + FD close),
                 // not merely a DISCONNECTED state flag: VpnActionBus.teardownComplete
@@ -1002,7 +1013,17 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
         val intent = Intent(appContext, HybridVpnService::class.java).apply {
             action = "ACTION_STOP_VPN"
         }
-        appContext.startService(intent)
+        try {
+            appContext.startService(intent)
+        } catch (_: Throwable) {
+            try {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    appContext.startForegroundService(intent)
+                } else {
+                    appContext.startService(intent)
+                }
+            } catch (_: Throwable) {}
+        }
     }
 
     /**
