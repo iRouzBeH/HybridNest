@@ -298,6 +298,9 @@ object VpnStateManager {
      */
     private fun applyCommonStateSideEffects(state: ConnectionState, isNative: Boolean) {
         if (state == ConnectionState.CONNECTED) {
+            if (_detailedConnectionState.value !is DetailedState.Connected) {
+                _detailedConnectionState.value = DetailedState.Connected(VpnProtocol.OpenConnect)
+            }
             // Persist the connection start instant exactly once per session.
             // This is the authoritative fix for the uptime-reset-on-re-entry bug:
             // OpenConnect's native path calls updateStateFromNative(2) without
@@ -329,6 +332,7 @@ object VpnStateManager {
         }
 
         if (state.isTerminal) {
+            _detailedConnectionState.value = DetailedState.Ready
             connectionStartTime = 0L
             sharedPrefs?.edit()?.putLong("START_TIME", 0L)?.apply()
             _selectionLocked.value = false

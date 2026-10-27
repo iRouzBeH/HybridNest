@@ -361,12 +361,16 @@ class HybridVpnService : VpnService() {
                         android.util.Log.d(TAG, "Observer for superseded session $observedSessionId ignored state $state")
                         return@collect
                     }
-                    if (state == ConnectionState.CONNECTED &&
-                        !checkedForThisSession &&
-                        currentConnectedProtocol != VpnProtocol.V2rayNG
-                    ) {
-                        checkedForThisSession = true
-                        launchConnectivityCheck(observedSessionId)
+                    if (state == ConnectionState.CONNECTED) {
+                        currentConnectedProtocol?.let { proto ->
+                            BroadcastStateManager.broadcastConnectedStateDetailed(applicationContext, proto)
+                        }
+                        if (!checkedForThisSession &&
+                            currentConnectedProtocol != VpnProtocol.V2rayNG
+                        ) {
+                            checkedForThisSession = true
+                            launchConnectivityCheck(observedSessionId)
+                        }
                     }
                 }
             }
@@ -1122,6 +1126,16 @@ class HybridVpnService : VpnService() {
             try { dnsToStop?.stop() } catch (e: Throwable) { Log.e(TAG, "DNS forwarder stop failed", e) }
             try { fdToClose?.let { Os.close(it) } } catch (_: Throwable) {}
             try { pfdToClose?.close() } catch (_: Throwable) {}
+
+            try {
+                System.clearProperty("socksProxyHost"); System.clearProperty("socksProxyPort")
+                System.clearProperty("http.proxyHost"); System.clearProperty("http.proxyPort")
+                System.clearProperty("https.proxyHost"); System.clearProperty("https.proxyPort")
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                    (getSystemService(Context.CONNECTIVITY_SERVICE) as? android.net.ConnectivityManager)?.bindProcessToNetwork(null)
+                }
+            } catch (_: Throwable) {}
+            BroadcastStateManager.broadcastReadyState(applicationContext)
 
             if (forSession == sessionId || sessionId == 0L) {
                 VpnStateManager.updateStateFromNative(0)

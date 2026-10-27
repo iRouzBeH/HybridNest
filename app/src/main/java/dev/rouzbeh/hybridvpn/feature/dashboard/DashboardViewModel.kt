@@ -718,16 +718,11 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
             VpnStateManager.updateNetworkInfo("Unknown", "Detecting...", "un")
 
             val detailedState = VpnStateManager.detailedConnectionStateFlow.value
-            val isV2ray = if (detailedState is DetailedState.Connected) {
-                detailedState.activeProtocol == VpnProtocol.V2rayNG
-            } else {
-                activeProfile.value?.protocol == "v2rayNG"
-            }
-            val isDns = if (detailedState is DetailedState.Connected) {
-                detailedState.activeProtocol == VpnProtocol.Dns
-            } else {
-                _selectedProtocol.value == "DNS"
-            }
+            val activeProto = (detailedState as? DetailedState.Connected)?.activeProtocol?.title
+                ?: activeProfile.value?.protocol
+                ?: _selectedProtocol.value
+            val isV2ray = activeProto == "v2rayNG"
+            val isDns = activeProto == "DNS"
             val proxy = if (isV2ray) java.net.Proxy(java.net.Proxy.Type.HTTP, java.net.InetSocketAddress("127.0.0.1", 10809)) else java.net.Proxy.NO_PROXY
 
             val cm = getApplication<Application>().getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
@@ -787,7 +782,12 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
                                 // TUN isn't visible yet, fail this endpoint (retry path
                                 // re-attempts) rather than leak the real IP.
                                 var vpnNet = findVpnNetwork()
-                                if (vpnNet == null) { delay(300); vpnNet = findVpnNetwork() }
+                                var waitCount = 0
+                                while (vpnNet == null && waitCount < 5 && isActive && connectionState.value == ConnectionState.CONNECTED) {
+                                    delay(400)
+                                    vpnNet = findVpnNetwork()
+                                    waitCount++
+                                }
                                 if (vpnNet == null) {
                                     android.util.Log.w("DashboardViewModel", "vpnNetwork null for $url, skipping endpoint (no direct fallback)")
                                     return@withTimeoutOrNull null
