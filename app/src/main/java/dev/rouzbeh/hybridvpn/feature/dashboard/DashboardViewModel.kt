@@ -63,7 +63,9 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
                 .values
                 .flatMap { group ->
                     val groupKey = if (group.first().username.startsWith("sub:")) group.first().username else "SingleLinks"
-                    val (infoCards, regular) = group.partition { isSubscriptionInfoName(it.name) }
+                    val (consumed, _) = mergeLeadingInfo(group.map { it.name })
+                    val infoCards = group.take(consumed)
+                    val regular = group.drop(consumed)
                     infoCards + if (sortedTabs.contains(groupKey)) {
                         regular.sortedBy { if (it.ping > 0) it.ping else Long.MAX_VALUE }
                     } else {
@@ -287,6 +289,24 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
 
         viewModelScope.launch {
             VpnStateManager.vpnLogs.collect { (protocol, msg) -> appendLog(protocol, msg) }
+        }
+
+        viewModelScope.launch(Dispatchers.IO) {
+            combine(activeProfile, allProfiles) { active, profiles ->
+                active to profiles
+            }.collect { (active, profiles) ->
+                if (active != null && isSubscriptionInfoName(active.name) && profiles.isNotEmpty()) {
+                    val realProfile = profiles.firstOrNull {
+                        it.protocol == active.protocol &&
+                        it.username == active.username &&
+                        !isSubscriptionInfoName(it.name)
+                    }
+                    dao.deactivateAll()
+                    if (realProfile != null) {
+                        dao.setActiveProfile(realProfile.id)
+                    }
+                }
+            }
         }
 
         viewModelScope.launch {
@@ -952,7 +972,7 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
         // DNS mode has no Room profile; its selection lives in
         // DnsSettingsRepository. All other protocols require a matching active
         // profile before a session can start.
-        if (!isDns && (currentProfile == null || currentProfile.protocol != _selectedProtocol.value)) return
+        if (!isDns && (currentProfile == null || currentProfile.protocol != _selectedProtocol.value || isSubscriptionInfoName(currentProfile.name))) return
         if (isDns && _selectedDnsServer.value == null) {
             showToast("Select a DNS server first")
             return
@@ -1060,9 +1080,13 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
                         val decoded = try { String(android.util.Base64.decode(response, android.util.Base64.DEFAULT)) } catch (e: Exception) { response }
                         val lines = decoded.lines().map { it.trim() }.filter { line -> line.isNotBlank() && validPrefixes.any { line.startsWith(it, true) } }
                         if (lines.isEmpty()) { withContext(Dispatchers.Main) { showToast("Invalid subscription!") }; return@launch }
+                        val firstRealIndex = lines.indexOfFirst {
+                            val name = extractV2rayName(it) ?: ""
+                            !isSubscriptionInfoName(name)
+                        }.let { if (it >= 0) it else 0 }
                         lines.forEachIndexed { index, config ->
                             val parsedName = extractV2rayName(config) ?: if (cName.isNotBlank()) "$cName ${index + 1}" else "V2Ray Sub ${index + 1}"
-                            dao.insertProfile(VpnProfile(name = parsedName, protocol = protocol, serverAddress = config, username = "sub:${cAddr}", password = cPass.ifBlank { cAddr }, isActive = index == 0, subName = cName))
+                            dao.insertProfile(VpnProfile(name = parsedName, protocol = protocol, serverAddress = config, username = "sub:${cAddr}", password = cPass.ifBlank { cAddr }, isActive = index == firstRealIndex, subName = cName))
                         }
                     } catch (e: Exception) { dao.insertProfile(VpnProfile(name = cName.ifBlank { "V2Ray Sub Link" }, protocol = protocol, serverAddress = cAddr, username = "sub:${cAddr}", password = cPass.ifBlank { cAddr }, isActive = true, subName = cName)) }
                 } else {
@@ -1098,6 +1122,7 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
             try {
                 val isConnected = connectionState.value == ConnectionState.CONNECTED
                 val newProfile = dao.getProfileById(profileId)
+                if (newProfile == null || isSubscriptionInfoName(newProfile.name)) return@launch
                 // Servers that failed their ping test (ping == -1) are unreachable —
                 // don't allow them to be selected for a connection.
                 if (newProfile?.ping == -1L) {
@@ -1290,9 +1315,13 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
                     // it (possible when another protocol is connected) isn't left
                     // dangling after the delete. New rows are inserted below.
                     existingProfiles.forEach { dao.deleteProfile(it) }
+                    val firstRealIndex = lines.indexOfFirst {
+                        val name = extractV2rayName(it) ?: ""
+                        !isSubscriptionInfoName(name)
+                    }.let { if (it >= 0) it else 0 }
                     lines.forEachIndexed { index, config ->
                         val parsedName = extractV2rayName(config) ?: "SubLink ${index + 1}"
-                        dao.insertProfile(VpnProfile(name = parsedName.trim(), protocol = "v2rayNG", serverAddress = config, username = groupName.trim(), password = url, isActive = index == 0, subName = preservedSubName))
+                        dao.insertProfile(VpnProfile(name = parsedName.trim(), protocol = "v2rayNG", serverAddress = config, username = groupName.trim(), password = url, isActive = index == firstRealIndex, subName = preservedSubName))
                     }
                     withContext(Dispatchers.Main) { _subscriptionToast.emit("Subscription Updated Successfully") }
                 }

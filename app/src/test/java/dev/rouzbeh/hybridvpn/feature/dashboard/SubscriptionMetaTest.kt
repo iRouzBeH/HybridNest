@@ -8,123 +8,145 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * Pure-JVM tests for subscription-meta parsing. These exercise the real
- * [isSubscriptionInfoName] and [leadingSubscriptionInfoNames] helpers from
- * DashboardScreen.kt (internal, same package) so the detection contract is
- * locked against the production implementation, not a copy.
- *
- * Contract under test:
- *  - Volume token: "<num> <unit> <sep> <num> <unit>" (unit B/KB/MB/GB/TB,
- *    separator "/" or "|", ASCII or Persian/Arabic-Indic digits).
- *  - Time token: "<num> Day|Days|Hour|روز|ساعت" OR a bare number right after
- *    a ⏳/⌛/📅 emoji.
- *  - Only the contiguous LEADING run of info names is consumed; a real server
- *    such as "Germany 5 GB" (single volume, no pair) is never an info card.
+ * Pure-JVM tests for subscription-meta parsing and leading-run merging.
+ * Verifies [InfoRemarkClassifier], [mergeLeadingInfo], and backward-compatible helpers.
  */
 class SubscriptionMetaTest {
 
-    // ---------- detection ----------
+    private val timeEntry = "👤VIP-6293392523-94328 | ⏳ 24"
+    private val volumeEntry = "🔋5.40 GB | 🪫10.00 GB"
 
     @Test
-    fun `info-card detection matches single name with volume and days`() {
-        assertTrue(isSubscriptionInfoName("Plan | 10 GB / 100 GB | 5 Days"))
+    fun `time entry with user id extracts time 24 day without volume`() {
+        val piece = InfoRemarkClassifier.classify("👤VIP-6293392523-94328 | ⏳ 24")
+        assertNotNull(piece)
+        assertEquals(emptyList<String>(), piece!!.volumeValues)
+        assertEquals(24, piece.timeAmount)
+        assertEquals("day", piece.timeUnit)
     }
 
     @Test
-    fun `info-card detection matches volume-only names`() {
-        assertTrue(isSubscriptionInfoName("Data 25.5 GB / 50 GB"))
-        assertTrue(isSubscriptionInfoName("25 / 50 GB"))
-        assertTrue(isSubscriptionInfoName("10 GB | 100 GB"))
-        assertTrue(isSubscriptionInfoName("512 MB / 1 GB"))
+    fun `time entry with variation selector extracts time 24 day`() {
+        val piece = InfoRemarkClassifier.classify("👤\uFE0FVIP-6293392523-94328 | ⏳\uFE0F 24")
+        assertNotNull(piece)
+        assertEquals(emptyList<String>(), piece!!.volumeValues)
+        assertEquals(24, piece.timeAmount)
+        assertEquals("day", piece.timeUnit)
     }
 
     @Test
-    fun `info-card detection matches days-only names`() {
-        assertTrue(isSubscriptionInfoName("Expires in 3 Days"))
-        assertTrue(isSubscriptionInfoName("1 Day left"))
-        assertTrue(isSubscriptionInfoName("12 Hour"))
-        assertTrue(isSubscriptionInfoName("۳۰ روز"))
-        assertTrue(isSubscriptionInfoName("24 ساعت"))
-        assertTrue(isSubscriptionInfoName("⏳ 17"))
-        assertTrue(isSubscriptionInfoName("📅 9"))
+    fun `time entry with bidi marker at start extracts time 24 day`() {
+        val piece = InfoRemarkClassifier.classify("\u200E👤VIP-6293392523-94328 | ⏳ 24")
+        assertNotNull(piece)
+        assertEquals(emptyList<String>(), piece!!.volumeValues)
+        assertEquals(24, piece.timeAmount)
+        assertEquals("day", piece.timeUnit)
     }
 
     @Test
-    fun `info-card detection matches persian-digit volume pair`() {
-        assertTrue(isSubscriptionInfoName("۵۰ GB / ۱۰۰ GB"))
-        assertTrue(isSubscriptionInfoName("۴۱٫۷۹ GB / ۱۰۰ GB"))
+    fun `volume entry extracts volume pair without time`() {
+        val piece = InfoRemarkClassifier.classify("🔋5.40 GB | 🪫10.00 GB")
+        assertNotNull(piece)
+        assertEquals(listOf("5.40 GB", "10.00 GB"), piece!!.volumeValues)
+        assertNull(piece.timeAmount)
+        assertNull(piece.timeUnit)
     }
 
     @Test
-    fun `info-card detection rejects plain server names`() {
-        assertFalse(isSubscriptionInfoName("VLESS TCP TLS"))
-        assertFalse(isSubscriptionInfoName("Trojan WS"))
-        assertFalse(isSubscriptionInfoName("🇩🇪 Germany | Premium"))
+    fun `volume entry with variation selector extracts volume pair`() {
+        val piece = InfoRemarkClassifier.classify("🔋\uFE0F5.40 GB | 🪫\uFE0F10.00 GB")
+        assertNotNull(piece)
+        assertEquals(listOf("5.40 GB", "10.00 GB"), piece!!.volumeValues)
+        assertNull(piece.timeAmount)
+        assertNull(piece.timeUnit)
     }
 
     @Test
-    fun `single volume without a pair is NOT an info card`() {
-        // "Germany 5 GB" has one volume token but no "<v>/<v>" pair — a real server.
+    fun `volume entry with persian digits extracts normalized volume pair`() {
+        val piece = InfoRemarkClassifier.classify("🔋۵٫۴۰ GB | 🪫۱۰٫۰۰ GB")
+        assertNotNull(piece)
+        assertEquals(listOf("5.40 GB", "10.00 GB"), piece!!.volumeValues)
+        assertNull(piece.timeAmount)
+        assertNull(piece.timeUnit)
+    }
+
+    @Test
+    fun `single entry with volume and day extracts both`() {
+        val piece = InfoRemarkClassifier.classify("47.48 GB / 100.0 GB | 1 Day")
+        assertNotNull(piece)
+        assertEquals(listOf("47.48 GB", "100.0 GB"), piece!!.volumeValues)
+        assertEquals(1, piece.timeAmount)
+        assertEquals("day", piece.timeUnit)
+    }
+
+    @Test
+    fun `real server with single volume returns null`() {
+        assertNull(InfoRemarkClassifier.classify("Germany 5 GB"))
         assertFalse(isSubscriptionInfoName("Germany 5 GB"))
-        assertFalse(isSubscriptionInfoName("Server 10 GB speed"))
-    }
-
-    // ---------- leading-scope ----------
-
-    @Test
-    fun `leading info run consumes only the contiguous top block`() {
-        val names = listOf(
-            "📊 10 GB / 100 GB",
-            "⏳ 7 Days",
-            "Germany 5 GB",       // real server — stops the run
-            "20 GB / 40 GB"       // info-looking but NOT leading — ignored
-        )
-        val leading = leadingSubscriptionInfoNames(names)
-        assertEquals(listOf("📊 10 GB / 100 GB", "⏳ 7 Days"), leading)
     }
 
     @Test
-    fun `leading info run is empty when the first entry is a real server`() {
-        val names = listOf("Germany 5 GB", "10 GB / 20 GB")
-        assertTrue(leadingSubscriptionInfoNames(names).isEmpty())
+    fun `real servers and noise return null`() {
+        assertNull(InfoRemarkClassifier.classify("▪Frankfurt"))
+        assertNull(InfoRemarkClassifier.classify("TUNNEL- 1/2"))
+        assertNull(InfoRemarkClassifier.classify("⚡ Germany | همراه اول"))
+
+        assertFalse(isSubscriptionInfoName("▪Frankfurt"))
+        assertFalse(isSubscriptionInfoName("TUNNEL- 1/2"))
+        assertFalse(isSubscriptionInfoName("⚡ Germany | همراه اول"))
     }
 
     @Test
-    fun `leading info run stops at first non-info entry`() {
-        val names = listOf("5 Days", "vless tcp", "3 Days")
-        assertEquals(listOf("5 Days"), leadingSubscriptionInfoNames(names))
+    fun `mergeLeadingInfo with time then volume consumes 2 with both parts`() {
+        val list = listOf(timeEntry, volumeEntry, "▪Frankfurt", "▪Berlin")
+        val (consumed, piece) = mergeLeadingInfo(list)
+        assertEquals(2, consumed)
+        assertNotNull(piece)
+        assertEquals(listOf("5.40 GB", "10.00 GB"), piece!!.volumeValues)
+        assertEquals(24, piece.timeAmount)
+        assertEquals("day", piece.timeUnit)
+
+        val meta = piece.toSubscriptionMeta()
+        assertEquals("5.40 GB", meta.usedStr)
+        assertEquals("10.00 GB", meta.totalStr)
+        assertEquals(24, meta.daysLeft)
+        assertEquals("24 Days", meta.daysRaw)
     }
 
     @Test
-    fun `leading info run handles all-info and empty lists`() {
-        assertEquals(2, leadingSubscriptionInfoNames(listOf("1 Day", "2 GB / 4 GB")).size)
-        assertTrue(leadingSubscriptionInfoNames(emptyList()).isEmpty())
-    }
-
-    // ---------- meta parsing ----------
-
-    @Test
-    fun `parseSubscriptionMeta extracts volume and days`() {
-        val meta = parseSubscriptionMeta("Plan | 41.79 GB / 100 GB | 11 Days")
-        assertNotNull(meta)
-        assertEquals("41.79 GB", meta!!.usedStr)
-        assertEquals("100 GB", meta.totalStr)
-        assertEquals(41.79, meta.usedGb!!, 0.001)
-        assertEquals(100.0, meta.totalGb!!, 0.001)
-        assertEquals(11, meta.daysLeft)
+    fun `mergeLeadingInfo with volume then time consumes 2 with both parts`() {
+        val list = listOf(volumeEntry, timeEntry, "Germany")
+        val (consumed, piece) = mergeLeadingInfo(list)
+        assertEquals(2, consumed)
+        assertNotNull(piece)
+        assertEquals(listOf("5.40 GB", "10.00 GB"), piece!!.volumeValues)
+        assertEquals(24, piece.timeAmount)
+        assertEquals("day", piece.timeUnit)
     }
 
     @Test
-    fun `parseSubscriptionMeta returns null for a real server name`() {
+    fun `mergeLeadingInfo starting with real server consumes 0`() {
+        val list = listOf("Frankfurt", volumeEntry)
+        val (consumed, piece) = mergeLeadingInfo(list)
+        assertEquals(0, consumed)
+        assertNull(piece)
+    }
+
+    @Test
+    fun `parseSubscriptionMeta compatibility helper`() {
+        val metaSingle = parseSubscriptionMeta("47.48 GB / 100.0 GB | 1 Day")
+        assertNotNull(metaSingle)
+        assertEquals("47.48 GB", metaSingle!!.usedStr)
+        assertEquals("100.0 GB", metaSingle.totalStr)
+        assertEquals(1, metaSingle.daysLeft)
+
         assertNull(parseSubscriptionMeta("Germany 5 GB"))
-        assertNull(parseSubscriptionMeta("VLESS TCP TLS"))
-    }
 
-    @Test
-    fun `parseSubscriptionMeta normalizes persian digits`() {
-        val meta = parseSubscriptionMeta("۴۱٫۷۹ GB / ۱۰۰ GB")
-        assertNotNull(meta)
-        assertEquals("41.79 GB", meta!!.usedStr)
-        assertEquals(41.79, meta.usedGb!!, 0.001)
+        val metaList = parseSubscriptionMeta(listOf(timeEntry, volumeEntry, "Frankfurt"))
+        assertNotNull(metaList)
+        assertEquals("5.40 GB", metaList!!.usedStr)
+        assertEquals("10.00 GB", metaList.totalStr)
+        assertEquals(24, metaList.daysLeft)
+        assertEquals("24 Days", metaList.daysRaw)
     }
 }
