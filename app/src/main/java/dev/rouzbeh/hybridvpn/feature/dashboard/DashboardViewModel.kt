@@ -859,45 +859,67 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
                 return if (cleaned.isNotBlank()) cleaned else "Unknown"
             }
 
+            fun resolveCountryCode(rawCode: String, countryName: String): String {
+                val code = rawCode.trim().lowercase()
+                if (code.length == 2 && code != "un" && code.all { it in 'a'..'z' }) {
+                    return code
+                }
+                if (countryName.isNotBlank() && countryName != "Unknown") {
+                    val match = java.util.Locale.getISOCountries().firstOrNull { iso ->
+                        val loc = java.util.Locale("", iso)
+                        loc.displayCountry.equals(countryName, ignoreCase = true) ||
+                        loc.getDisplayCountry(java.util.Locale.ENGLISH).equals(countryName, ignoreCase = true)
+                    }
+                    if (match != null) return match.lowercase()
+                }
+                return "un"
+            }
+
             when {
                 url.contains("ip-api.com") -> {
                     // ip-api returns {"status":"fail"...} when queried without required fields
                     if (json.optString("status", "success") == "fail") return null
                     val ip = json.optString("query", "0.0.0.0")
-                    val countryCode = json.optString("countryCode", "un").lowercase()
-                    val country = json.optString("country", java.util.Locale("", countryCode).displayCountry)
-                    IpResult(ip, cleanCountryName(country), countryCode)
+                    val rawCode = json.optString("countryCode", "un")
+                    val country = cleanCountryName(json.optString("country", java.util.Locale("", rawCode).displayCountry))
+                    val countryCode = resolveCountryCode(rawCode, country)
+                    IpResult(ip, country, countryCode)
                 }
                 url.contains("ipwho.is") -> {
                     if (json.optBoolean("success", true) == false) return null
                     val ip = json.optString("ip", "0.0.0.0")
-                    val countryCode = json.optString("country_code", "un").lowercase()
-                    val country = json.optString("country", java.util.Locale("", countryCode).displayCountry)
-                    IpResult(ip, cleanCountryName(country), countryCode)
+                    val rawCode = json.optString("country_code", "un")
+                    val country = cleanCountryName(json.optString("country", java.util.Locale("", rawCode).displayCountry))
+                    val countryCode = resolveCountryCode(rawCode, country)
+                    IpResult(ip, country, countryCode)
                 }
                 url.contains("ip.sb") -> {
                     val ip = json.optString("ip", "0.0.0.0")
-                    val countryCode = json.optString("country_code", "un").lowercase()
-                    val country = json.optString("country", java.util.Locale("", countryCode).displayCountry)
-                    IpResult(ip, cleanCountryName(country), countryCode)
+                    val rawCode = json.optString("country_code", "un")
+                    val country = cleanCountryName(json.optString("country", java.util.Locale("", rawCode).displayCountry))
+                    val countryCode = resolveCountryCode(rawCode, country)
+                    IpResult(ip, country, countryCode)
                 }
                 url.contains("myip.world") -> {
                     val ip = json.optString("ip", "0.0.0.0")
-                    val countryCode = json.optString("country_code", "un").lowercase()
-                    val country = json.optString("country", java.util.Locale("", countryCode).displayCountry)
-                    IpResult(ip, cleanCountryName(country), countryCode)
+                    val rawCode = json.optString("country_code", "un")
+                    val country = cleanCountryName(json.optString("country", java.util.Locale("", rawCode).displayCountry))
+                    val countryCode = resolveCountryCode(rawCode, country)
+                    IpResult(ip, country, countryCode)
                 }
                 url.contains("ifconfig.co") -> {
                     val ip = json.optString("ip", "0.0.0.0")
-                    val countryCode = json.optString("country_iso", "un").lowercase()
-                    val country = json.optString("country", java.util.Locale("", countryCode).displayCountry)
-                    IpResult(ip, cleanCountryName(country), countryCode)
+                    val rawCode = json.optString("country_iso", json.optString("country_code", "un"))
+                    val country = cleanCountryName(json.optString("country", java.util.Locale("", rawCode).displayCountry))
+                    val countryCode = resolveCountryCode(rawCode, country)
+                    IpResult(ip, country, countryCode)
                 }
                 url.contains("freeipapi.com") -> {
                     val ip = json.optString("ipAddress", "0.0.0.0")
-                    val countryCode = json.optString("countryCode", "un").lowercase()
-                    val country = json.optString("countryName", java.util.Locale("", countryCode).displayCountry)
-                    IpResult(ip, cleanCountryName(country), countryCode)
+                    val rawCode = json.optString("countryCode", json.optString("country_code", "un"))
+                    val country = cleanCountryName(json.optString("countryName", java.util.Locale("", rawCode).displayCountry))
+                    val countryCode = resolveCountryCode(rawCode, country)
+                    IpResult(ip, country, countryCode)
                 }
                 else -> null
             }

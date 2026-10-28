@@ -2655,8 +2655,23 @@ fun NetworkInfoCard(
     val showLoading = isTransitioning || isUnresolved
     // Coarse "which flag" key: drive AnimatedContent so the new VPN flag
     // cross-fades instead of popping instantly.
-    val flagKey = remember(networkInfo.flagCode, showLoading) {
-        if (showLoading) "__loading__" else networkInfo.flagCode.lowercase().ifBlank { "un" }
+    val effectiveFlagCode = remember(networkInfo.flagCode, networkInfo.location) {
+        val code = networkInfo.flagCode.lowercase().trim()
+        if (code.length == 2 && code != "un" && code.all { it in 'a'..'z' }) {
+            code
+        } else if (networkInfo.location.isNotBlank() && networkInfo.location != "Unknown" && networkInfo.location != "Detecting..." && !networkInfo.location.contains("Unavailable")) {
+            val locName = networkInfo.location
+            java.util.Locale.getISOCountries().firstOrNull { iso ->
+                val loc = java.util.Locale("", iso)
+                loc.displayCountry.equals(locName, ignoreCase = true) ||
+                loc.getDisplayCountry(java.util.Locale.ENGLISH).equals(locName, ignoreCase = true)
+            }?.lowercase() ?: "un"
+        } else {
+            "un"
+        }
+    }
+    val flagKey = remember(effectiveFlagCode, showLoading) {
+        if (showLoading) "__loading__" else effectiveFlagCode
     }
 
     val customFont = SoraFamily
@@ -2681,18 +2696,40 @@ fun NetworkInfoCard(
             ) { key ->
                 val code = key
                 if (code != "un" && code != "__loading__" && code.isNotBlank()) {
-                    AsyncImage(
-                        model = ImageRequest.Builder(LocalContext.current)
-                            .data("https://flagcdn.com/w640/$code.png")
-                            .crossfade(true)
-                            .build(),
-                        contentDescription = "Flag Background",
-                        contentScale = ContentScale.Crop,
-                        colorFilter = ColorFilter.colorMatrix(contrastMatrix),
-                        modifier = Modifier
-                            .matchParentSize()
-                            .alpha(0.9f)
-                    )
+                    var retryAttempt by remember(code) { mutableStateOf(0) }
+                    var loadFailed by remember(code) { mutableStateOf(false) }
+
+                    LaunchedEffect(code, loadFailed) {
+                        if (loadFailed && retryAttempt < 2) {
+                            delay(1500L)
+                            loadFailed = false
+                            retryAttempt++
+                        }
+                    }
+
+                    Box(modifier = Modifier.matchParentSize()) {
+                        Box(Modifier.matchParentSize().background(SurfaceDark))
+                        AsyncImage(
+                            model = ImageRequest.Builder(LocalContext.current)
+                                .data("https://flagcdn.com/w640/$code.png")
+                                .setParameter("retry", retryAttempt)
+                                .crossfade(true)
+                                .build(),
+                            contentDescription = "Flag Background",
+                            contentScale = ContentScale.Crop,
+                            colorFilter = ColorFilter.colorMatrix(contrastMatrix),
+                            onState = { state ->
+                                if (state is coil.compose.AsyncImagePainter.State.Error) {
+                                    loadFailed = true
+                                } else if (state is coil.compose.AsyncImagePainter.State.Success) {
+                                    loadFailed = false
+                                }
+                            },
+                            modifier = Modifier
+                                .matchParentSize()
+                                .alpha(0.9f)
+                        )
+                    }
                 } else {
                     // No flag (loading / un) — keep a muted placeholder so the
                     // gradient animation doesn't flash a missing image.
