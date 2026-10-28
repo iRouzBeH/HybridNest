@@ -10,7 +10,7 @@ internal object InfoRemarkClassifier {
     // invisible chars: zero-width, bidi marks/controls, variation selectors (U+FE0F after emoji), NBSP, BOM
     private val INVISIBLE = Regex("[\u200B-\u200F\u202A-\u202E\u2066-\u2069\uFE00-\uFE0F\u00A0\uFEFF]")
     private val VOLUME = Regex("""(\d+(?:\.\d+)?)\s*(TB|GB|MB|KB|B)(?![A-Za-z])""", RegexOption.IGNORE_CASE)
-    private val TIME_MARKED = Regex("""(?:⏳|⌛|📅|⏰)\s*(\d+)""")
+    private val TIME_MARKED = Regex("""(?:⏳|⌛|📅|📆|🗓|⏰)\s*(\d+)""")
     private val TIME_WORD = Regex("""(\d+)\s*(days?|hours?|روز|ساعت)""", RegexOption.IGNORE_CASE)
     private val SPACES = Regex("\\s+")
     private val NON_WORD = Regex("[^\\p{L}\\p{N}_-]+")
@@ -52,13 +52,18 @@ internal object InfoRemarkClassifier {
         if (volumes.isEmpty() && time == null) return null
 
         // What is left after removing every recognised token. Letters/digits left over mean "real server name",
-        // except a lone id-like word (contains a digit, e.g. VIP-6293392523-94328) next to an explicit time marker.
-        val residue = text.replace(VOLUME, " ").replace(TIME_MARKED, " ").replace(TIME_WORD, " ")
+        // except a lone id-like word (contains a digit, e.g. VIP-6293392523-94328) next to an explicit time marker
+        // or when volume and time are both present in the same remark.
+        val residue = text.replace(VOLUME, " ")
+            .replace(TIME_MARKED, " ")
+            .replace(TIME_WORD, " ")
+            .let { if (time != null) it.replace(Regex("""\b(?:days?|hours?|روز|ساعت)\b""", RegexOption.IGNORE_CASE), " ") else it }
         val hasResidue = residue.any { it.isLetterOrDigit() }
         val residueWords = residue.split(NON_WORD).filter { it.isNotEmpty() }
         val residueLooksLikeId = residueWords.size <= 1 && residueWords.all { w -> w.any { it.isDigit() } }
 
-        val isInfo = !hasResidue || (marked != null && residueLooksLikeId)
+        val idResidueAllowed = residueLooksLikeId && (marked != null || (volumes.isNotEmpty() && time != null))
+        val isInfo = !hasResidue || idResidueAllowed
         if (!isInfo) return null
 
         return InfoPiece(volumes, time?.first, time?.second)
