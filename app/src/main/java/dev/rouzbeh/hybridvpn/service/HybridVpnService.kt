@@ -90,6 +90,15 @@ class HybridVpnService : VpnService() {
      */
     private val stopLock = Any()
     private var stoppingSessionId: Long? = null
+    /**
+     * Handle to the in-flight async teardown launched by [stopAllEngines]. A new
+     * session join()s this before starting so the prior session's engine stop
+     * (which clears the shared V2Ray running flag / native OpenConnect state)
+     * always completes before a new core is started. Without this, a late
+     * teardown could leave V2RayManager.running==true, making the next
+     * startCore() silently skip startLoop -> TUN up but nothing forwarded.
+     */
+    private var stopJob: Job? = null
 
     /** Diagnostic/failure reason preserved from the stop trigger through teardown. */
     @Volatile
@@ -606,6 +615,19 @@ class HybridVpnService : VpnService() {
             awaitTeardownCompletion(deadlineMs = 5_000, expectSessionId = sessionId)
             VpnStateManager.clearIntentionalCancel()
         }
+        // Hard serialization of stop-then-start: even if the state-based wait
+        // above was skipped (handles already cleared) or timed out, the prior
+        // async teardown job must finish before a new core is started. This
+        // guarantees V2RayManager.stopCore() has cleared the shared `running`
+        // flag so the new startCore() actually launches startLoop instead of
+        // early-returning on a stale "running" flag (the connected-but-no-
+        // traffic bug). join() is a no-op when no teardown is in flight.
+        try {
+            stopJob?.join()
+        } catch (t: Throwable) {
+            Log.w(TAG, "stopJob join failed", t)
+        }
+        stopJob = null
 
         sessionId = System.currentTimeMillis()
         VpnStateManager.setCurrentSessionId(sessionId)
@@ -1141,7 +1163,7 @@ class HybridVpnService : VpnService() {
         vpnInterface = null
         dnsForwarder = null
 
-        stopScope.launch {
+        stopJob = stopScope.launch {
             try { stopOpenConnectNative() } catch (e: Throwable) { Log.e(TAG, "stopOpenConnectNative failed", e) }
             try { V2RayManager.stopCore() } catch (e: Throwable) { Log.e(TAG, "V2Ray stop failed", e) }
             // Stop the DNS packet relay before closing the TUN fd so no thread
@@ -1150,15 +1172,21 @@ class HybridVpnService : VpnService() {
             try { fdToClose?.let { Os.close(it) } } catch (_: Throwable) {}
             try { pfdToClose?.close() } catch (_: Throwable) {}
 
-            try {
-                System.clearProperty("socksProxyHost"); System.clearProperty("socksProxyPort")
-                System.clearProperty("http.proxyHost"); System.clearProperty("http.proxyPort")
-                System.clearProperty("https.proxyHost"); System.clearProperty("https.proxyPort")
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                    (getSystemService(Context.CONNECTIVITY_SERVICE) as? android.net.ConnectivityManager)?.bindProcessToNetwork(null)
-                }
-            } catch (_: Throwable) {}
-            BroadcastStateManager.broadcastReadyState(applicationContext)
+            // These mutate GLOBAL process state (system proxy props, process
+            // network binding, the broadcast "Ready" detailed-state). A stale
+            // teardown from a SUPERSEDED session must not apply them while a
+            // newer session is live -> gate by session like the stopSelf path.
+            if (forSession == sessionId || sessionId == 0L) {
+                try {
+                    System.clearProperty("socksProxyHost"); System.clearProperty("socksProxyPort")
+                    System.clearProperty("http.proxyHost"); System.clearProperty("http.proxyPort")
+                    System.clearProperty("https.proxyHost"); System.clearProperty("https.proxyPort")
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                        (getSystemService(Context.CONNECTIVITY_SERVICE) as? android.net.ConnectivityManager)?.bindProcessToNetwork(null)
+                    }
+                } catch (_: Throwable) {}
+                BroadcastStateManager.broadcastReadyState(applicationContext)
+            }
 
             if (forSession == sessionId || sessionId == 0L) {
                 VpnStateManager.updateStateFromNative(0)
