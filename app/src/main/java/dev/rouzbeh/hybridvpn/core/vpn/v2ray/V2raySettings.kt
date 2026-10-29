@@ -28,7 +28,7 @@ object V2raySettings {
     const val DOMESTIC_DNS = "178.22.122.100"
 
     /** Mux on the proxy outbound (v2rayNG "Enable mux"). dns-step-2 flips on. */
-    const val MUX_ENABLED = false
+    const val MUX_ENABLED = true
     const val MUX_CONCURRENCY = 10
     const val MUX_XUDP_CONCURRENCY = 13
 
