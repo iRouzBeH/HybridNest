@@ -693,6 +693,10 @@ class HybridVpnService : VpnService() {
             return
         }
 
+        // Diagnostics for field verification: echo the effective v2rayNG
+        // DNS/mux values taken from the generated config. Never-throwing.
+        logV2rayEffectiveConfig(preparedConfig.json)
+
         emitLog("Starting Xray core with tun fd=$fd...")
         val ok = dev.rouzbeh.hybridvpn.core.vpn.v2ray.V2RayManager.startCore(applicationContext, preparedConfig.json, fd, v2rayCallbacks)
 
@@ -720,6 +724,43 @@ class HybridVpnService : VpnService() {
         BroadcastStateManager.broadcastConnectedStateDetailed(applicationContext, VpnProtocol.V2rayNG)
         emitLog("Xray core started; marking CONNECTED (tunnel-ready). Running diagnostic connectivity check via local proxy.")
         launchConnectivityCheck(sessionId)
+    }
+
+    /**
+     * Field-verification diagnostics: parses the already-generated Xray JSON and
+     * echoes the values that decided the previous bug — VPN DNS, remote/domestic
+     * resolvers, mux on/off + values, and the UDP mode the proxy outbound will
+     * use. Fully defensive: any parse issue just logs a fallback, never throws.
+     */
+    private fun logV2rayEffectiveConfig(configJson: String) {
+        try {
+            val s = dev.rouzbeh.hybridvpn.core.vpn.v2ray.V2raySettings
+            emitLog("V2Ray VPN DNS (addDnsServer): ${s.VPN_DNS}")
+            emitLog("V2Ray DNS: remote=${s.REMOTE_DNS} (via proxy), domestic=${s.DOMESTIC_DNS} (direct)")
+            val root = JSONObject(configJson)
+            val outbounds = root.optJSONArray("outbounds")
+            val proxy = if (outbounds != null) (0 until outbounds.length())
+                .map { outbounds.optJSONObject(it) }
+                .firstOrNull { it?.optString("tag") == "proxy" } else null
+            val mux = proxy?.optJSONObject("mux")
+            if (mux != null) {
+                val enabled = mux.optBoolean("enabled", false)
+                val conc = mux.optInt("concurrency", -1)
+                val xudp = mux.optInt("xudpConcurrency", -1)
+                val quic = mux.optString("xudpProxyUDP443", "")
+                emitLog("V2Ray mux: enabled=$enabled concurrency=$conc xudpConcurrency=$xudp xudpProxyUDP443=$quic")
+            } else {
+                emitLog("V2Ray mux: <absent in outbound>")
+            }
+            // UDP mode: with mux+xudp enabled the outbound relays UDP via XUDP
+            // inside the tunnel; otherwise UDP only reaches the proxy if the
+            // transport supports it. Report the effective relay path.
+            val udpMode = if (mux?.optBoolean("enabled") == true &&
+                mux.optInt("xudpConcurrency", -1) > 0) "XUDP via proxy" else "direct/best-effort"
+            emitLog("V2Ray UDP mode: $udpMode")
+        } catch (t: Throwable) {
+            emitLog("V2Ray diagnostics parse failed (non-fatal): ${t.message}")
+        }
     }
 
     @androidx.annotation.Keep
