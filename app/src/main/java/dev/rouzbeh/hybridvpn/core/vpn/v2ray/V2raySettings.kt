@@ -15,7 +15,7 @@ object V2raySettings {
      * DNS the Android system is told to use inside the TUN (addDnsServer).
      * dns-step-1 flips this from the previous 1.1.1.1 to 9.9.9.9.
      */
-    const val VPN_DNS = "1.1.1.1"
+    const val VPN_DNS = "9.9.9.9"
 
     /** Remote DNS the Xray built-in DNS module forwards to THROUGH the proxy. */
     const val REMOTE_DNS = "9.9.9.9"
