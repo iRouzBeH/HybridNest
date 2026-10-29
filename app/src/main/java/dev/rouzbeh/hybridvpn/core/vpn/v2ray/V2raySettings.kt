@@ -11,8 +11,11 @@ package dev.rouzbeh.hybridvpn.core.vpn.v2ray
  * generator or the service.
  */
 object V2raySettings {
-    /** DNS the Android system is told to use inside the TUN (addDnsServer). */
-    const val VPN_DNS = "9.9.9.9"
+    /**
+     * DNS the Android system is told to use inside the TUN (addDnsServer).
+     * dns-step-1 flips this from the previous 1.1.1.1 to 9.9.9.9.
+     */
+    const val VPN_DNS = "1.1.1.1"
 
     /** Remote DNS the Xray built-in DNS module forwards to THROUGH the proxy. */
     const val REMOTE_DNS = "9.9.9.9"
@@ -24,8 +27,8 @@ object V2raySettings {
      */
     const val DOMESTIC_DNS = "178.22.122.100"
 
-    /** Mux on the proxy outbound (v2rayNG "Enable mux"). */
-    const val MUX_ENABLED = true
+    /** Mux on the proxy outbound (v2rayNG "Enable mux"). dns-step-2 flips on. */
+    const val MUX_ENABLED = false
     const val MUX_CONCURRENCY = 10
     const val MUX_XUDP_CONCURRENCY = 13
 
@@ -36,8 +39,12 @@ object V2raySettings {
      */
     const val MUX_XUDP_QUIC = "reject"
 
-    /** True-delay test URL (matches v2rayNG DELAY_TEST_URL the author set). */
-    const val DELAY_TEST_URL = "https://www.gstatic.com/generate_204"
+    /**
+     * Whether the real session config gets the built-in DNS module +
+     * "dns-module"/"domestic-dns" routing rules (dns-step-3). The ping/test
+     * path never uses this — see XrayConfigGenerator.generatePingConfig.
+     */
+    const val SESSION_DNS_MODULE = false
 
     // Xray routing/dns tags (mirror AppConfig TAG_DNS / TAG_DOMESTIC_DNS).
     const val TAG_DNS = "dns-module"

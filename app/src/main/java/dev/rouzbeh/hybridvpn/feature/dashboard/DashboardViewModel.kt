@@ -1316,11 +1316,13 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
 
     private fun measureProfileDelay(profile: VpnProfile): Long {
         return try {
-            val configJson = dev.rouzbeh.hybridvpn.core.vpn.v2ray.XrayConfigGenerator.generateConfig(profile)
-            // Must run off the main thread; blocks up to ~12s with 2 attempts internally.
+            // Dedicated test config: no session DNS module / mux (see
+            // XrayConfigGenerator.generatePingConfig). Must run off the main
+            // thread; blocks up to ~12s with 2 attempts internally.
+            val configJson = dev.rouzbeh.hybridvpn.core.vpn.v2ray.XrayConfigGenerator.generatePingConfig(profile)
             dev.rouzbeh.hybridvpn.core.vpn.v2ray.V2RayManager.measureOutboundDelay(
                 configJson,
-                dev.rouzbeh.hybridvpn.core.vpn.v2ray.V2raySettings.DELAY_TEST_URL
+                "https://www.google.com/generate_204"
             )
         } catch (e: Exception) {
             android.util.Log.w("DashboardViewModel", "measureProfileDelay failed for ${profile.name}: ${e.message}")

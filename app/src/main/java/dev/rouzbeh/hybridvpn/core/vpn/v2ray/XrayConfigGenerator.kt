@@ -11,33 +11,29 @@ object XrayConfigGenerator {
     const val SOCKS_PORT = 10808
     const val HTTP_PORT = 10809
 
+    /**
+     * Config for a REAL VPN session only. The ping/delay-test path must use
+     * [generatePingConfig] instead — mirroring upstream v2rayNG, which builds a
+     * separate trimmed config for speed tests (its postProcessForSpeedtest
+     * clears inbounds, routing rules, dns and mux). Feeding this full session
+     * config to Libv2ray.measureOutboundDelay routes the core's own DNS lookups
+     * back through the proxy under test, which broke ping entirely.
+     */
     fun generateConfig(profile: VpnProfile): String {
         val root = JSONObject()
 
         root.put("log", JSONObject().apply { put("loglevel", "warning") })
 
-        // Built-in DNS module, mirroring v2rayNG's getDns():
-        //  - tag = "dns-module" so the module's own upstream queries can be
-        //    routed (inboundTag "dns-module" -> proxy, "domestic-dns" -> direct).
-        //  - the remote resolver is queried THROUGH the proxy (encrypted inside
-        //    the VLESS tunnel) so ISP plaintext-UDP/53 interception cannot poison
-        //    it — this is the difference that makes browsers work where the old
-        //    "forward raw 53 to 1.1.1.1 over the direct net" approach failed.
-        //  - domestic resolver for direct domains, skipFallback like v2rayNG.
-        root.put("dns", JSONObject().apply {
-            put("servers", JSONArray().apply {
-                put(V2raySettings.REMOTE_DNS)
-                put(JSONObject().apply {
-                    put("address", V2raySettings.DOMESTIC_DNS)
-                    put("domains", JSONArray().apply { put("geosite:private") })
-                    put("skipFallback", true)
-                    put("tag", V2raySettings.TAG_DOMESTIC_DNS)
-                })
+        if (V2raySettings.SESSION_DNS_MODULE) {
+            putSessionDns(root)
+        } else {
+            // Pre-dns-fix behaviour: flat system DNS, used until dns-step-3.
+            root.put("dns", JSONObject().apply {
+                put("servers", JSONArray().apply { put("8.8.8.8"); put("1.1.1.1") })
+                put("queryStrategy", "UseIPv4")
+                put("disableCache", false)
             })
-            put("queryStrategy", "UseIPv4")
-            put("disableCache", false)
-            put("tag", V2raySettings.TAG_DNS)
-        })
+        }
 
         val inbounds = JSONArray()
 
@@ -86,7 +82,7 @@ object XrayConfigGenerator {
         root.put("inbounds", inbounds)
 
         val outbounds = JSONArray()
-        outbounds.put(buildProxyOutbound(profile).apply { put("tag", "proxy") })
+        outbounds.put(buildProxyOutbound(profile, forSession = true).apply { put("tag", "proxy") })
         outbounds.put(JSONObject().apply {
             put("tag", "direct"); put("protocol", "freedom")
             put("settings", JSONObject().put("domainStrategy", "UseIP"))
@@ -104,19 +100,9 @@ object XrayConfigGenerator {
         root.put("routing", JSONObject().apply {
             put("domainStrategy", "AsIs")
             put("rules", JSONArray().apply {
-                // DNS-module upstream queries: domestic -> direct, remote -> proxy.
-                // The dns-out outbound hijacks A/AAAA into the built-in module,
-                // whose outgoing queries carry inboundTag "dns-module"/"domestic-dns".
-                put(JSONObject().apply {
-                    put("type", "field")
-                    put("inboundTag", JSONArray().apply { put(V2raySettings.TAG_DOMESTIC_DNS) })
-                    put("outboundTag", "direct")
-                })
-                put(JSONObject().apply {
-                    put("type", "field")
-                    put("inboundTag", JSONArray().apply { put(V2raySettings.TAG_DNS) })
-                    put("outboundTag", "proxy")
-                })
+                if (V2raySettings.SESSION_DNS_MODULE) {
+                    putSessionDnsRoutingRules(this)
+                }
                 put(JSONObject().apply {
                     put("type", "field"); put("port", "53")
                     put("network", "udp,tcp"); put("outboundTag", "dns-out")
@@ -132,10 +118,10 @@ object XrayConfigGenerator {
                 })
                 put(org.json.JSONObject().apply {
                     put("type", "field")
-                    put("inboundTag", org.json.JSONArray().apply { 
+                    put("inboundTag", org.json.JSONArray().apply {
                         put("tun-in")
                         put("socks-in")
-                        put("http-in") 
+                        put("http-in")
                     })
                     put("outboundTag", "proxy")
                 })
@@ -145,12 +131,174 @@ object XrayConfigGenerator {
         return root.toString()
     }
 
-    private fun buildProxyOutbound(profile: VpnProfile): JSONObject {
+    /**
+     * Built-in DNS module, mirroring v2rayNG's getDns() — real sessions only.
+     *  - tag = "dns-module" so the module's own upstream queries can be
+     *    routed (inboundTag "dns-module" -> proxy, "domestic-dns" -> direct).
+     *  - the remote resolver is queried THROUGH the proxy (encrypted inside
+     *    the VLESS tunnel) so ISP plaintext-UDP/53 interception cannot poison
+     *    it — this is the difference that makes browsers work where the old
+     *    "forward raw 53 to 1.1.1.1 over the direct net" approach failed.
+     *  - domestic resolver for direct domains, skipFallback like v2rayNG.
+     */
+    private fun putSessionDns(root: JSONObject) {
+        root.put("dns", JSONObject().apply {
+            put("servers", JSONArray().apply {
+                put(V2raySettings.REMOTE_DNS)
+                put(JSONObject().apply {
+                    put("address", V2raySettings.DOMESTIC_DNS)
+                    put("domains", JSONArray().apply { put("geosite:private") })
+                    put("skipFallback", true)
+                    put("tag", V2raySettings.TAG_DOMESTIC_DNS)
+                })
+            })
+            put("queryStrategy", "UseIPv4")
+            put("disableCache", false)
+            put("tag", V2raySettings.TAG_DNS)
+        })
+    }
+
+    /**
+     * DNS-module upstream routing — real sessions only. The dns-out outbound
+     * hijacks A/AAAA into the built-in module, whose outgoing queries carry
+     * inboundTag "dns-module"/"domestic-dns".
+     */
+    private fun putSessionDnsRoutingRules(rules: JSONArray) {
+        rules.put(JSONObject().apply {
+            put("type", "field")
+            put("inboundTag", JSONArray().apply { put(V2raySettings.TAG_DOMESTIC_DNS) })
+            put("outboundTag", "direct")
+        })
+        rules.put(JSONObject().apply {
+            put("type", "field")
+            put("inboundTag", JSONArray().apply { put(V2raySettings.TAG_DNS) })
+            put("outboundTag", "proxy")
+        })
+    }
+
+    /**
+     * Config for the ping/delay-test path (Libv2ray.measureOutboundDelay).
+     *
+     * Mirrors upstream v2rayNG's getV2rayConfig4Speedtest, whose
+     * postProcessForSpeedtest strips everything the delay test does not need:
+     * inbounds.clear(), routing.rules.clear(), dns = null, mux = null. Our
+     * equivalent keeps the same outbounds (proxy/direct/block/dns-out are
+     * harmless without rules referencing them) but produces the pre-DNS-fix
+     * structure exactly: flat system DNS, no "dns-module"/"domestic-dns"
+     * routing rules, mux disabled. Feeding the session config here routed the
+     * core's own upstream DNS through the proxy under test — a deadlock that
+     * made every profile measure -1.
+     */
+    fun generatePingConfig(profile: VpnProfile): String {
+        val root = JSONObject()
+
+        root.put("log", JSONObject().apply { put("loglevel", "warning") })
+
+        // Flat system DNS, identical to pre-dns-fix: the ephemeral test core
+        // resolves the (domain) server address via the device resolver.
+        root.put("dns", JSONObject().apply {
+            put("servers", JSONArray().apply { put("8.8.8.8"); put("1.1.1.1") })
+            put("queryStrategy", "UseIPv4")
+            put("disableCache", false)
+        })
+
+        // Same inbounds the session builder emits; Libv2ray ignores them for
+        // delay tests (it dials through the proxy outbound directly).
+        val inbounds = JSONArray()
+        inbounds.put(JSONObject().apply {
+            put("tag", "tun-in")
+            put("protocol", "tun")
+            put("settings", JSONObject().apply {
+                put("mtu", 1400)
+                put("userLevel", 8)
+            })
+            put("sniffing", JSONObject().apply {
+                put("enabled", true)
+                put("destOverride", JSONArray().apply { put("http"); put("tls") })
+                put("routeOnly", false)
+            })
+        })
+        inbounds.put(JSONObject().apply {
+            put("tag", "socks-in")
+            put("protocol", "socks")
+            put("listen", "127.0.0.1")
+            put("port", SOCKS_PORT)
+            put("settings", JSONObject().apply {
+                put("auth", "noauth")
+                put("udp", true)
+                put("userLevel", 8)
+            })
+            put("sniffing", JSONObject().apply {
+                put("enabled", true)
+                put("destOverride", JSONArray().apply { put("http"); put("tls") })
+                put("routeOnly", false)
+            })
+        })
+        inbounds.put(JSONObject().apply {
+            put("tag", "http-in")
+            put("protocol", "http")
+            put("listen", "127.0.0.1")
+            put("port", HTTP_PORT)
+            put("settings", JSONObject().apply {
+                put("allowTransparent", false)
+                put("userLevel", 8)
+            })
+        })
+        root.put("inbounds", inbounds)
+
+        val outbounds = JSONArray()
+        outbounds.put(buildProxyOutbound(profile, forSession = false).apply { put("tag", "proxy") })
+        outbounds.put(JSONObject().apply {
+            put("tag", "direct"); put("protocol", "freedom")
+            put("settings", JSONObject().put("domainStrategy", "UseIP"))
+        })
+        outbounds.put(JSONObject().apply {
+            put("tag", "block"); put("protocol", "blackhole")
+            put("settings", JSONObject())
+        })
+        outbounds.put(JSONObject().apply {
+            put("tag", "dns-out"); put("protocol", "dns")
+            put("settings", JSONObject())
+        })
+        root.put("outbounds", outbounds)
+
+        root.put("routing", JSONObject().apply {
+            put("domainStrategy", "AsIs")
+            put("rules", JSONArray().apply {
+                put(JSONObject().apply {
+                    put("type", "field"); put("port", "53")
+                    put("network", "udp,tcp"); put("outboundTag", "dns-out")
+                })
+                put(JSONObject().apply {
+                    put("type", "field")
+                    put("ip", JSONArray().apply {
+                        put("10.0.0.0/8"); put("172.16.0.0/12")
+                        put("192.168.0.0/16"); put("127.0.0.0/8")
+                        put("169.254.0.0/16")
+                    })
+                    put("outboundTag", "direct")
+                })
+                put(JSONObject().apply {
+                    put("type", "field")
+                    put("inboundTag", JSONArray().apply {
+                        put("tun-in")
+                        put("socks-in")
+                        put("http-in")
+                    })
+                    put("outboundTag", "proxy")
+                })
+            })
+        })
+
+        return root.toString()
+    }
+
+    private fun buildProxyOutbound(profile: VpnProfile, forSession: Boolean): JSONObject {
         val address = profile.serverAddress.trim()
         return when {
             address.startsWith("vless://", true) ||
-            address.startsWith("trojan://", true) -> buildVlessOrTrojanOutbound(address)
-            address.startsWith("vmess://", true)  -> buildVmessOutbound(address)
+            address.startsWith("trojan://", true) -> buildVlessOrTrojanOutbound(address, forSession)
+            address.startsWith("vmess://", true)  -> buildVmessOutbound(address, forSession)
             else -> error("Unsupported config scheme: ${address.substringBefore("://")}")
         }
     }
@@ -195,7 +343,7 @@ object XrayConfigGenerator {
         return ShareLink(credential, host, portStr.toIntOrNull() ?: 443, params)
     }
 
-    private fun buildVlessOrTrojanOutbound(uriStr: String): JSONObject {
+    private fun buildVlessOrTrojanOutbound(uriStr: String, forSession: Boolean): JSONObject {
         val isTrojan = uriStr.startsWith("trojan://", true)
         val link = parseShareLink(uriStr)
 
@@ -221,7 +369,7 @@ object XrayConfigGenerator {
                 })))
             }
             put("streamSettings", buildStreamSettings(link))
-            put("mux", buildMux(isTrojan = isTrojan, normalizedNet = normalizedNetworkOf(link), hasVlessFlow = !isTrojan && hasVlessFlow(link)))
+            put("mux", buildMux(forSession = forSession, isTrojan = isTrojan, normalizedNet = normalizedNetworkOf(link), hasVlessFlow = !isTrojan && hasVlessFlow(link)))
         }
     }
 
@@ -239,7 +387,11 @@ object XrayConfigGenerator {
     private fun hasVlessFlow(link: ShareLink): Boolean =
         !link.params["flow"].isNullOrBlank()
 
-    private fun buildMux(isTrojan: Boolean, normalizedNet: String, hasVlessFlow: Boolean): JSONObject {
+    private fun buildMux(forSession: Boolean, isTrojan: Boolean, normalizedNet: String, hasVlessFlow: Boolean): JSONObject {
+        // Ping/test outbounds never get mux — identical to pre-dns-fix, where
+        // every outbound carried {"enabled": false} and nothing else.
+        if (!forSession) return JSONObject().put("enabled", false)
+
         val enabled = V2raySettings.MUX_ENABLED && !isTrojan && normalizedNet != "xhttp"
         return JSONObject().apply {
             if (enabled) {
@@ -476,7 +628,7 @@ object XrayConfigGenerator {
         return v.contains(':') && Regex("^[0-9a-fA-F:]+$").matches(v)
     }
 
-    private fun buildVmessOutbound(vmess: String): JSONObject {
+    private fun buildVmessOutbound(vmess: String, forSession: Boolean): JSONObject {
         val b64 = vmess.substringAfter("://").substringBefore('#')
         val decoded = String(Base64.decode(b64, Base64.DEFAULT or Base64.URL_SAFE))
         val json = JSONObject(decoded)
@@ -506,7 +658,7 @@ object XrayConfigGenerator {
                 }))
             })))
             put("streamSettings", buildStreamSettings(ShareLink("", add, port, fakeParams)))
-            put("mux", buildMux(isTrojan = false, normalizedNet = normalizedNetworkOf(ShareLink("", add, port, fakeParams)), hasVlessFlow = false))
+            put("mux", buildMux(forSession = forSession, isTrojan = false, normalizedNet = normalizedNetworkOf(ShareLink("", add, port, fakeParams)), hasVlessFlow = false))
         }
     }
 }
