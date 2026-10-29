@@ -669,7 +669,7 @@ class HybridVpnService : VpnService() {
 
         emitLog("Establishing TUN...")
         val fd = try {
-            establishTunNative(ip = "172.19.0.1", dns = "1.1.1.1", excludedServerIp = preparedConfig.serverIp)
+            establishTunNative(ip = "172.19.0.1", dns = dev.rouzbeh.hybridvpn.core.vpn.v2ray.V2raySettings.VPN_DNS, excludedServerIp = preparedConfig.serverIp)
         } catch (e: dev.rouzbeh.hybridvpn.core.routing.RoutingRefusedException) {
             emitLog("FATAL: Connection refused by routing policy: " + e.message)
             VpnStateManager.updateStateFromNative(3)

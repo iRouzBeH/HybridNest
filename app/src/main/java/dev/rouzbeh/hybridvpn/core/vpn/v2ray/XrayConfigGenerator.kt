@@ -16,10 +16,27 @@ object XrayConfigGenerator {
 
         root.put("log", JSONObject().apply { put("loglevel", "warning") })
 
+        // Built-in DNS module, mirroring v2rayNG's getDns():
+        //  - tag = "dns-module" so the module's own upstream queries can be
+        //    routed (inboundTag "dns-module" -> proxy, "domestic-dns" -> direct).
+        //  - the remote resolver is queried THROUGH the proxy (encrypted inside
+        //    the VLESS tunnel) so ISP plaintext-UDP/53 interception cannot poison
+        //    it — this is the difference that makes browsers work where the old
+        //    "forward raw 53 to 1.1.1.1 over the direct net" approach failed.
+        //  - domestic resolver for direct domains, skipFallback like v2rayNG.
         root.put("dns", JSONObject().apply {
-            put("servers", JSONArray().apply { put("8.8.8.8"); put("1.1.1.1") })
+            put("servers", JSONArray().apply {
+                put(V2raySettings.REMOTE_DNS)
+                put(JSONObject().apply {
+                    put("address", V2raySettings.DOMESTIC_DNS)
+                    put("domains", JSONArray().apply { put("geosite:private") })
+                    put("skipFallback", true)
+                    put("tag", V2raySettings.TAG_DOMESTIC_DNS)
+                })
+            })
             put("queryStrategy", "UseIPv4")
             put("disableCache", false)
+            put("tag", V2raySettings.TAG_DNS)
         })
 
         val inbounds = JSONArray()
@@ -87,6 +104,19 @@ object XrayConfigGenerator {
         root.put("routing", JSONObject().apply {
             put("domainStrategy", "AsIs")
             put("rules", JSONArray().apply {
+                // DNS-module upstream queries: domestic -> direct, remote -> proxy.
+                // The dns-out outbound hijacks A/AAAA into the built-in module,
+                // whose outgoing queries carry inboundTag "dns-module"/"domestic-dns".
+                put(JSONObject().apply {
+                    put("type", "field")
+                    put("inboundTag", JSONArray().apply { put(V2raySettings.TAG_DOMESTIC_DNS) })
+                    put("outboundTag", "direct")
+                })
+                put(JSONObject().apply {
+                    put("type", "field")
+                    put("inboundTag", JSONArray().apply { put(V2raySettings.TAG_DNS) })
+                    put("outboundTag", "proxy")
+                })
                 put(JSONObject().apply {
                     put("type", "field"); put("port", "53")
                     put("network", "udp,tcp"); put("outboundTag", "dns-out")
@@ -191,7 +221,36 @@ object XrayConfigGenerator {
                 })))
             }
             put("streamSettings", buildStreamSettings(link))
-            put("mux", JSONObject().put("enabled", false))
+            put("mux", buildMux(isTrojan = isTrojan, normalizedNet = normalizedNetworkOf(link), hasVlessFlow = !isTrojan && hasVlessFlow(link)))
+        }
+    }
+
+    /**
+     * Mirrors v2rayNG updateOutboundWithGlobalSettings(): mux is forced OFF for
+     * trojan and XHTTP transports; for a VLESS outbound that already has a flow
+     * (e.g. xtls-rprx-vision) concurrency is -1 (single stream, no multiplexing).
+     */
+    private fun normalizedNetworkOf(link: ShareLink): String =
+        when ((link.params["type"] ?: "tcp").lowercase()) {
+            "xhttp", "splithttp", "x-http", "h2", "h3", "http" -> "xhttp"
+            else -> (link.params["type"] ?: "tcp").lowercase()
+        }
+
+    private fun hasVlessFlow(link: ShareLink): Boolean =
+        !link.params["flow"].isNullOrBlank()
+
+    private fun buildMux(isTrojan: Boolean, normalizedNet: String, hasVlessFlow: Boolean): JSONObject {
+        val enabled = V2raySettings.MUX_ENABLED && !isTrojan && normalizedNet != "xhttp"
+        return JSONObject().apply {
+            if (enabled) {
+                put("enabled", true)
+                put("concurrency", if (hasVlessFlow) -1 else V2raySettings.MUX_CONCURRENCY)
+                put("xudpConcurrency", V2raySettings.MUX_XUDP_CONCURRENCY)
+                put("xudpProxyUDP443", V2raySettings.MUX_XUDP_QUIC)
+            } else {
+                put("enabled", false)
+                put("concurrency", -1)
+            }
         }
     }
 
@@ -447,7 +506,7 @@ object XrayConfigGenerator {
                 }))
             })))
             put("streamSettings", buildStreamSettings(ShareLink("", add, port, fakeParams)))
-            put("mux", JSONObject().put("enabled", false))
+            put("mux", buildMux(isTrojan = false, normalizedNet = normalizedNetworkOf(ShareLink("", add, port, fakeParams)), hasVlessFlow = false))
         }
     }
 }
