@@ -113,7 +113,7 @@ class XrayConfigGeneratorTest {
     }
 
     @Test
-    fun `port 53 traffic is routed to dns-out`() {
+    fun `session port 53 traffic is routed to dns-out from tun only`() {
         val rules = routingRules(generate())
         val dnsRule = (0 until rules.length())
             .map { rules.getJSONObject(it) }
@@ -122,6 +122,9 @@ class XrayConfigGeneratorTest {
         dnsRule!!
         assertEquals("dns-out", dnsRule.getString("outboundTag"))
         assertEquals("udp,tcp", dnsRule.getString("network"))
+        val inboundTags = dnsRule.getJSONArray("inboundTag")
+        assertEquals(1, inboundTags.length())
+        assertEquals("tun-in", inboundTags.getString(0))
     }
 
     @Test

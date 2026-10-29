@@ -105,7 +105,9 @@ object XrayConfigGenerator {
                 }
                 put(JSONObject().apply {
                     put("type", "field"); put("port", "53")
-                    put("network", "udp,tcp"); put("outboundTag", "dns-out")
+                    put("network", "udp,tcp")
+                    put("inboundTag", JSONArray().apply { put("tun-in") })
+                    put("outboundTag", "dns-out")
                 })
                 put(JSONObject().apply {
                     put("type", "field")
