@@ -1320,7 +1320,7 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
             // Must run off the main thread; blocks up to ~12s with 2 attempts internally.
             dev.rouzbeh.hybridvpn.core.vpn.v2ray.V2RayManager.measureOutboundDelay(
                 configJson,
-                "https://www.google.com/generate_204"
+                dev.rouzbeh.hybridvpn.core.vpn.v2ray.V2raySettings.DELAY_TEST_URL
             )
         } catch (e: Exception) {
             android.util.Log.w("DashboardViewModel", "measureProfileDelay failed for ${profile.name}: ${e.message}")
