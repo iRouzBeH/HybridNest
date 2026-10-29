@@ -133,6 +133,65 @@ class XrayConfigGeneratorTest {
         assertEquals("dns", dnsOut.getString("protocol"))
     }
 
+    // ================================================== server-domain bootstrap (dns-step-3)
+
+    @Test
+    fun `server domain direct rule routes the domain to direct`() {
+        val rule = XrayConfigGenerator.serverDomainDirectRule("vpn.example.com")
+        assertTrue("expected a direct rule for a domain", rule != null)
+        rule!!
+        assertEquals("direct", rule.getString("outboundTag"))
+        val domains = rule.getJSONArray("domain")
+        assertEquals("vpn.example.com", domains.getString(0))
+    }
+
+    @Test
+    fun `server domain direct rule is null for ip literals`() {
+        assertTrue(XrayConfigGenerator.serverDomainDirectRule("203.0.113.9") == null)
+        assertTrue(XrayConfigGenerator.serverDomainDirectRule("::1") == null)
+        assertTrue(XrayConfigGenerator.serverDomainDirectRule("  ") == null)
+    }
+
+    @Test
+    fun `pin server domain resolution injects hosts pin and first direct rule`() {
+        val root = generate()
+        val pinned = XrayConfigGenerator.pinServerDomainResolution(
+            root, "vpn.example.com", "203.0.113.9"
+        )
+        assertTrue("expected the domain to be pinned", pinned)
+
+        val dns = root.getJSONObject("dns")
+        assertEquals("203.0.113.9", dns.getJSONObject("hosts").getString("vpn.example.com"))
+
+        val rules = routingRules(root)
+        assertEquals("direct", rules.getJSONObject(0).getString("outboundTag"))
+        assertEquals("vpn.example.com", rules.getJSONObject(0).getJSONArray("domain").getString(0))
+        // The dns-module rules still follow.
+        assertEquals("proxy", inboundTagRule(root, V2raySettings.TAG_DNS)?.getString("outboundTag"))
+    }
+
+    @Test
+    fun `pin server domain resolution is a no-op for ip literals`() {
+        val root = generate()
+        assertFalse(
+            XrayConfigGenerator.pinServerDomainResolution(root, "203.0.113.9", "203.0.113.9")
+        )
+        assertFalse(root.getJSONObject("dns").has("hosts"))
+    }
+
+    @Test
+    fun `session dns module still present alongside bootstrap`() {
+        // When the flag is on the module exists; the service separately pins
+        // dns.hosts and inserts the direct rule at runtime.
+        if (V2raySettings.SESSION_DNS_MODULE) {
+            val dns = generate().getJSONObject("dns")
+            assertEquals(V2raySettings.TAG_DNS, dns.getString("tag"))
+            // hosts key is added by the service at connect time, not the
+            // generator — assert it is absent here so the two paths stay distinct.
+            assertFalse(dns.has("hosts"))
+        }
+    }
+
     // ================================================== session mux
 
     @Test

@@ -177,6 +177,43 @@ object XrayConfigGenerator {
     }
 
     /**
+     * Unconditional safety rule: DNS for the proxy server's own domain NEVER
+     * goes through the proxy. Inserted FIRST in routing.rules by the service
+     * once it has resolved the domain to an IP, so any lookup that escapes the
+     * hosts pin is still answered directly instead of deadlocking on the
+     * not-yet-connected outbound. No-op for IP literals.
+     */
+    fun serverDomainDirectRule(serverDomain: String): JSONObject? {
+        val d = serverDomain.trim()
+        if (d.isEmpty() || isPureIpAddress(d)) return null
+        return JSONObject().apply {
+            put("type", "field")
+            put("domain", JSONArray().apply { put(d) })
+            put("outboundTag", "direct")
+        }
+    }
+
+    /**
+     * Proxy-server-domain bootstrap (mirrors upstream v2rayNG
+     * resolveOutboundDomainsToHosts): pins the already system-resolved IP into
+     * dns.hosts and prepends the direct-domain rule, so the core's DNS module
+     * can never resolve the server address through the proxy it bootstraps.
+     * Mutates [root] in place; returns true when the domain needed pinning.
+     */
+    fun pinServerDomainResolution(root: JSONObject, serverDomain: String, resolvedIp: String): Boolean {
+        val rule = serverDomainDirectRule(serverDomain) ?: return false
+        val dnsObj = root.optJSONObject("dns") ?: return false
+        val hosts = dnsObj.optJSONObject("hosts") ?: JSONObject().also { dnsObj.put("hosts", it) }
+        hosts.put(serverDomain.trim(), resolvedIp)
+        val rules = root.getJSONObject("routing").getJSONArray("rules")
+        val shifted = JSONArray()
+        shifted.put(rule)
+        for (i in 0 until rules.length()) shifted.put(rules.get(i))
+        root.getJSONObject("routing").put("rules", shifted)
+        return true
+    }
+
+    /**
      * Config for the ping/delay-test path (Libv2ray.measureOutboundDelay).
      *
      * Mirrors upstream v2rayNG's getV2rayConfig4Speedtest, whose

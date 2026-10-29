@@ -163,9 +163,26 @@ class HybridVpnService : VpnService() {
         val selectedAddress = resolvedAddresses.filterIsInstance<Inet4Address>().firstOrNull()
             ?: error("The server resolved only to IPv6, but the current TUN supports only IPv4")
         val selectedIp = selectedAddress.hostAddress ?: error("Resolved server address has no textual IP")
-        
+
         endpoint.put("address", selectedIp)
         emitLog("Pinned $protocol endpoint: $originalHost -> $selectedIp:$serverPort")
+
+        // Proxy-server-domain bootstrap (mirrors upstream v2rayNG
+        // resolveOutboundDomainsToHosts): pin the already-resolved IP into
+        // dns.hosts so the core never has to resolve the server domain, and
+        // prepend a routing rule sending any stray lookup for it to "direct".
+        // Together they make the circular "resolve the server via the proxy
+        // that needs the server" deadlock impossible. IP literals skip both.
+        try {
+            val pinned = dev.rouzbeh.hybridvpn.core.vpn.v2ray.XrayConfigGenerator.pinServerDomainResolution(
+                root, originalHost, selectedIp
+            )
+            if (pinned) {
+                emitLog("DNS bootstrap: $originalHost pinned to $selectedIp and routed direct")
+            }
+        } catch (t: Throwable) {
+            emitLog("DNS bootstrap failed (non-fatal): ${t.message}")
+        }
 
         PreparedXrayConfig(
             json = root.toString(2),

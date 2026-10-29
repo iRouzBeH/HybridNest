@@ -44,7 +44,7 @@ object V2raySettings {
      * "dns-module"/"domestic-dns" routing rules (dns-step-3). The ping/test
      * path never uses this — see XrayConfigGenerator.generatePingConfig.
      */
-    const val SESSION_DNS_MODULE = false
+    const val SESSION_DNS_MODULE = true
 
     // Xray routing/dns tags (mirror AppConfig TAG_DNS / TAG_DOMESTIC_DNS).
     const val TAG_DNS = "dns-module"
