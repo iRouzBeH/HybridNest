@@ -954,6 +954,11 @@ class HybridVpnService : VpnService() {
         }
     }
 
+    // WARNING: this method is the executable per-app routing contract.
+    // Keep package APIs and method-specific self-package behavior aligned with
+    // PerAppContractTest and docs/PER_APP_CONTRACT.md.
+    // Never mix allow/disallow APIs or silently widen a refused ALLOW policy.
+    // Update the test and document with every intentional contract change.
     private fun applyPerAppRouting(builder: Builder) {
         // The snapshot was captured at session start (establishSession); re-read it here.
         val policy = sessionRoutingPolicy
