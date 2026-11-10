@@ -357,6 +357,15 @@ class HybridVpnService : VpnService() {
             }
         }
 
+        // Advance sessionId synchronously BEFORE marking CONNECTING so any
+        // in-flight stopJob from a previous disconnect sees forSession != sessionId
+        // and never clobbers the new session's CONNECTING state with DISCONNECTED.
+        val priorSessionId = sessionId
+        val nextSessionId = System.currentTimeMillis().let { if (it <= priorSessionId) priorSessionId + 1 else it }
+        sessionId = nextSessionId
+        VpnStateManager.setCurrentSessionId(nextSessionId)
+        VpnStateManager.clearIntentionalCancel()
+
         emitLog("VpnService started.")
         VpnStateManager.updateStateFromNative(1)
         
@@ -365,7 +374,7 @@ class HybridVpnService : VpnService() {
         connectionJob?.cancel()
         connectionJob = serviceScope.launch {
             val requestedProtocol = intent?.getStringExtra(EXTRA_PROTOCOL)
-            establishSession(requestedProtocol)
+            establishSession(requestedProtocol, priorSessionId, nextSessionId)
 
             // DNS mode has no Room profile — it is configured via
             // DnsSettingsRepository and dispatched directly by the intent extra.
@@ -624,14 +633,27 @@ class HybridVpnService : VpnService() {
      * (session id, routing snapshot) at connection start. Callbacks/results from
      * superseded sessions are ignored via the session id captured in observers.
      */
-    private suspend fun establishSession(protocolTitle: String?) {
-        // Superseded-session hygiene: if a previous session left a TUN behind or teardown is in progress,
-        // finish its teardown BEFORE binding session identity to the new one, so FDs and native engines never overlap.
-        if (stoppingSessionId != null || vpnInterface != null || coreTunFd != null) {
+    private suspend fun establishSession(protocolTitle: String?, priorSessionId: Long, currentSessionId: Long) {
+        // Superseded-session hygiene: if a previous session left a TUN behind and no teardown is in progress,
+        // tear down its handles/engines before starting the new core. If a teardown (stopJob) is already
+        // in progress from a prior disconnect, simply await it below without re-emitting DISCONNECTING.
+        if (stoppingSessionId == null && (vpnInterface != null || coreTunFd != null)) {
+            emitLog("New session requested while prior session handles are still open; tearing down prior handles first.")
+            val fdToClose = coreTunFd
+            val pfdToClose = vpnInterface
+            val dnsToStop = dnsForwarder
+            coreTunFd = null
+            vpnInterface = null
+            dnsForwarder = null
+            tunFdClaimedByCore = false
+            try { stopOpenConnectNative() } catch (e: Throwable) { Log.e(TAG, "stopOpenConnectNative failed", e) }
+            try { V2RayManager.stopCore() } catch (e: Throwable) { Log.e(TAG, "V2Ray stop failed", e) }
+            try { dnsToStop?.stop() } catch (e: Throwable) { Log.e(TAG, "DNS forwarder stop failed", e) }
+            try { fdToClose?.let { Os.close(it) } } catch (_: Throwable) {}
+            try { pfdToClose?.close() } catch (_: Throwable) {}
+        } else if (stoppingSessionId != null && priorSessionId != 0L) {
             emitLog("New session requested while prior session teardown is in progress; waiting for teardown completion first.")
-            stopAllEngines(reason = "superseded by newer session", intentional = true)
-            awaitTeardownCompletion(deadlineMs = 5_000, expectSessionId = sessionId)
-            VpnStateManager.clearIntentionalCancel()
+            awaitTeardownCompletion(deadlineMs = 5_000, expectSessionId = priorSessionId)
         }
         // Hard serialization of stop-then-start: even if the state-based wait
         // above was skipped (handles already cleared) or timed out, the prior
@@ -647,9 +669,13 @@ class HybridVpnService : VpnService() {
         }
         stopJob = null
 
-        sessionId = System.currentTimeMillis()
-        VpnStateManager.setCurrentSessionId(sessionId)
-        VpnStateManager.clearIntentionalCancel()
+        if (sessionId == currentSessionId) {
+            VpnStateManager.setCurrentSessionId(currentSessionId)
+            VpnStateManager.clearIntentionalCancel()
+            if (VpnStateManager.connectionState.value != ConnectionState.CONNECTING) {
+                VpnStateManager.updateState(ConnectionState.CONNECTING)
+            }
+        }
         val snapshot = settingsRepository.snapshotRoutingPolicy()
         sessionRoutingPolicy = snapshot
 
@@ -738,8 +764,8 @@ class HybridVpnService : VpnService() {
         // The HTTP check becomes diagnostic-only (degraded flag), consistent with
         // OpenConnect; the launchConnectivityCheck path skips V2Ray, so run
         // it here with the local proxy explicitly.
-        VpnStateManager.updateStateFromNative(2)
         BroadcastStateManager.broadcastConnectedStateDetailed(applicationContext, VpnProtocol.V2rayNG)
+        VpnStateManager.updateStateFromNative(2)
         emitLog("Xray core started; marking CONNECTED (tunnel-ready). Running diagnostic connectivity check via local proxy.")
         launchConnectivityCheck(sessionId)
     }
@@ -1194,6 +1220,16 @@ class HybridVpnService : VpnService() {
 
     private fun stopAllEngines(reason: String = "unspecified", intentional: Boolean, startId: Int = -1) {
         val forSession = sessionId
+        val preStopState = VpnStateManager.connectionState.value
+        if (reason == "service destroyed" &&
+            preStopState.isTerminal &&
+            vpnInterface == null &&
+            coreTunFd == null &&
+            dnsForwarder == null
+        ) {
+            Log.d(TAG, "stopAllEngines: service destroyed after session $forSession already terminal ($preStopState); skipping duplicate teardown")
+            return
+        }
         synchronized(stopLock) {
             if (stoppingSessionId == forSession && forSession != 0L) {
                 Log.d(TAG, "stopAllEngines: teardown of session $forSession already in progress; duplicate request ignored ($reason)")
@@ -1202,9 +1238,29 @@ class HybridVpnService : VpnService() {
             stoppingSessionId = forSession
         }
         stopReason = reason
-        Log.d(TAG, "Stopping all engines (session $forSession, intentional=$intentional, reason=$reason)...")
+        val stopStartMs = System.currentTimeMillis()
+        Log.d(TAG, "Stopping all engines (session $forSession, intentional=$intentional, reason=$reason, preState=$preStopState)...")
 
-        VpnStateManager.updateState(ConnectionState.DISCONNECTING)
+        if (intentional) VpnStateManager.beginIntentionalCancel()
+
+        // Immediately interrupt any blocking OpenConnect socket syscall (connect/TLS/read)
+        // before launching the async teardown job.
+        if (nativeLibLoaded) {
+            try { interruptOpenConnectNative() } catch (e: Throwable) { Log.w(TAG, "interruptOpenConnectNative failed", e) }
+        }
+
+        val targetTransitionState = if (
+            preStopState == ConnectionState.CANCELING ||
+            preStopState == ConnectionState.CONNECTING ||
+            preStopState == ConnectionState.RECONNECTING
+        ) {
+            ConnectionState.CANCELING
+        } else {
+            ConnectionState.DISCONNECTING
+        }
+        if (!preStopState.isTerminal || preStopState == ConnectionState.CANCELLED) {
+            VpnStateManager.updateState(targetTransitionState)
+        }
 
         connectionJob?.cancel()
         connectionJob = null
@@ -1215,8 +1271,6 @@ class HybridVpnService : VpnService() {
 
         // Signal the UI/ViewModel that a disconnect was requested.
         VpnActionBus.disconnectFlow.tryEmit(Unit)
-
-        if (intentional) VpnStateManager.beginIntentionalCancel()
 
         tunFdClaimedByCore = false
         currentConnectedProtocol = null
@@ -1239,6 +1293,15 @@ class HybridVpnService : VpnService() {
             try { fdToClose?.let { Os.close(it) } } catch (_: Throwable) {}
             try { pfdToClose?.close() } catch (_: Throwable) {}
 
+            // Keep DISCONNECTING / CANCELING visible long enough (~450ms total) for
+            // the UI button & shimmer transition to play smoothly on fast-stopping
+            // engines like AnyConnect, unless a newer session has already started.
+            val minTransitionMs = 450L
+            val elapsedMs = System.currentTimeMillis() - stopStartMs
+            if (intentional && elapsedMs < minTransitionMs && (forSession == sessionId || sessionId == 0L)) {
+                delay(minTransitionMs - elapsedMs)
+            }
+
             // These mutate GLOBAL process state (system proxy props, process
             // network binding, the broadcast "Ready" detailed-state). A stale
             // teardown from a SUPERSEDED session must not apply them while a
@@ -1256,21 +1319,24 @@ class HybridVpnService : VpnService() {
             }
 
             if (forSession == sessionId || sessionId == 0L) {
+                VpnStateManager.clearIntentionalCancel()
                 VpnStateManager.updateStateFromNative(0)
                 withContext(Dispatchers.Main) {
-                    try {
-                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-                            stopForeground(STOP_FOREGROUND_REMOVE)
+                    if (forSession == sessionId || sessionId == 0L) {
+                        try {
+                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                                stopForeground(STOP_FOREGROUND_REMOVE)
+                            } else {
+                                @Suppress("DEPRECATION")
+                                stopForeground(true)
+                            }
+                            getSystemService(NotificationManager::class.java)?.cancel(NOTIFICATION_ID)
+                        } catch (_: Throwable) {}
+                        if (startId != -1) {
+                            stopSelfResult(startId)
                         } else {
-                            @Suppress("DEPRECATION")
-                            stopForeground(true)
+                            stopSelf()
                         }
-                        getSystemService(NotificationManager::class.java)?.cancel(NOTIFICATION_ID)
-                    } catch (_: Throwable) {}
-                    if (startId != -1) {
-                        stopSelfResult(startId)
-                    } else {
-                        stopSelf()
                     }
                 }
             }
@@ -1313,6 +1379,7 @@ class HybridVpnService : VpnService() {
     }
 
     private external fun startOpenConnectNative(serverAddress: String, username: String, password: String, vpnFileDescriptor: Int, sessionId: Long)
+    private external fun interruptOpenConnectNative()
     private external fun stopOpenConnectNative()
 
     private fun startOpenConnectPath(p: dev.rouzbeh.hybridvpn.data.local.VpnProfile) {

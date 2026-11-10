@@ -41,7 +41,7 @@ sealed class DetailedState {
 }
 
 data class NetworkInfo(
-    val ip: String = "0.0.0.0",
+    val ip: String = "Detecting...",
     val location: String = "Detecting...",
     val flagCode: String = "un"
 )
@@ -62,6 +62,13 @@ object VpnStateManager {
 
     private val _networkInfo = MutableStateFlow(NetworkInfo())
     val networkInfo: StateFlow<NetworkInfo> = _networkInfo.asStateFlow()
+
+    /**
+     * Preserved across rapid disconnect/reconnect cycles so post-connect lookups
+     * can reject pre-tunnel leak responses that still carry the user's real ISP IP.
+     */
+    @Volatile
+    var lastKnownRealIp: String? = null
 
     /**
      * True when the tunnel is up but the OPTIONAL public connectivity check did
@@ -208,6 +215,15 @@ object VpnStateManager {
     }
 
     fun updateState(newState: ConnectionState) {
+        val prevState = _connectionState.value
+        if (newState == ConnectionState.CONNECTING ||
+            newState == ConnectionState.RECONNECTING ||
+            newState == ConnectionState.DISCONNECTING ||
+            newState == ConnectionState.CANCELING ||
+            (newState == ConnectionState.CONNECTED && prevState != ConnectionState.CONNECTED)
+        ) {
+            _networkInfo.value = NetworkInfo()
+        }
         _connectionState.value = newState
         applyCommonStateSideEffects(newState, isNative = false)
     }
@@ -275,19 +291,31 @@ object VpnStateManager {
             return
         }
 
+        val prevState = _connectionState.value
         val effectiveState = if (newState == ConnectionState.ERROR && intentionalCancelInFlight) {
             logDebug(
                 TAG,
                 "Native ERROR suppressed as expected cancellation (intentionalCancelInFlight=true)"
             )
             intentionalCancelInFlight = false
-            ConnectionState.CANCELLED
+            if (prevState == ConnectionState.DISCONNECTING) {
+                ConnectionState.DISCONNECTING
+            } else {
+                ConnectionState.CANCELLED
+            }
         } else if (newState == ConnectionState.ERROR) {
             ConnectionState.FAILED
         } else {
             newState
         }
-
+        if (effectiveState == ConnectionState.CONNECTING ||
+            effectiveState == ConnectionState.RECONNECTING ||
+            effectiveState == ConnectionState.DISCONNECTING ||
+            effectiveState == ConnectionState.CANCELING ||
+            (effectiveState == ConnectionState.CONNECTED && prevState != ConnectionState.CONNECTED)
+        ) {
+            _networkInfo.value = NetworkInfo()
+        }
         _connectionState.value = effectiveState
         applyCommonStateSideEffects(effectiveState, isNative = true)
     }
@@ -343,13 +371,44 @@ object VpnStateManager {
 
     @JvmStatic
     fun updateNetworkInfo(ip: String, location: String, flagCode: String = "un") {
-        val safeIp = if (ip.contains(':')) "Unknown" else ip
-        _networkInfo.value = NetworkInfo(safeIp, location, flagCode)
+        val state = _connectionState.value
+        val isResetToDetecting = ip == "Detecting..." && location == "Detecting..." && flagCode == "un"
+        if (!isResetToDetecting) {
+            if (state == ConnectionState.CONNECTING ||
+                state == ConnectionState.RECONNECTING ||
+                state == ConnectionState.DISCONNECTING ||
+                state == ConnectionState.CANCELING
+            ) {
+                logDebug(TAG, "Ignored non-detecting networkInfo ($ip, $location, $flagCode) while state=$state")
+                return
+            }
+            if (state == ConnectionState.CONNECTED && ip != "Unavailable") {
+                val isDns = (_detailedConnectionState.value as? DetailedState.Connected)?.activeProtocol == VpnProtocol.Dns
+                val realIp = lastKnownRealIp
+                if (!isDns && !realIp.isNullOrBlank() && ip.equals(realIp, ignoreCase = true)) {
+                    logDebug(TAG, "Rejected pre-VPN real IP ($ip) while CONNECTED")
+                    return
+                }
+            }
+        }
+        _networkInfo.value = NetworkInfo(ip, location, flagCode)
     }
 
     @JvmStatic
     fun updateIp(ip: String) {
-        if (ip.contains(':')) return
+        val state = _connectionState.value
+        if (state == ConnectionState.CONNECTING ||
+            state == ConnectionState.RECONNECTING ||
+            state == ConnectionState.DISCONNECTING ||
+            state == ConnectionState.CANCELING
+        ) {
+            return
+        }
+        val isDns = (_detailedConnectionState.value as? DetailedState.Connected)?.activeProtocol == VpnProtocol.Dns
+        val realIp = lastKnownRealIp
+        if (state == ConnectionState.CONNECTED && !isDns && !realIp.isNullOrBlank() && ip.equals(realIp, ignoreCase = true)) {
+            return
+        }
         _networkInfo.value = _networkInfo.value.copy(ip = ip)
     }
 

@@ -43,6 +43,8 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
     private var isInitialStateEmission = true
     private var logcatJob: Job? = null
     private var networkFetchJob: Job? = null
+    private var postConnectCheckJob: Job? = null
+    private var cancelJob: Job? = null
     private val _sortedV2rayTabs = MutableStateFlow<Set<String>>(emptySet())
     val sortedV2rayTabs: StateFlow<Set<String>> = _sortedV2rayTabs.asStateFlow()
     private val _v2rayPingTabs = MutableStateFlow<Set<String>>(emptySet())
@@ -285,7 +287,7 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
                 if (t > 0) (System.currentTimeMillis() - t) / 1000 else 0L
             }
         } else {
-            VpnStateManager.updateNetworkInfo("Unknown", "Detecting...", "un")
+            VpnStateManager.updateNetworkInfo("Detecting...", "Detecting...", "un")
         }
 
         viewModelScope.launch {
@@ -321,7 +323,7 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
         viewModelScope.launch {
             dev.rouzbeh.hybridvpn.service.VpnActionBus.disconnectFlow.collect {
                 val current = VpnStateManager.connectionState.value
-                if (current == ConnectionState.CANCELING || current == ConnectionState.DISCONNECTED) {
+                if (current == ConnectionState.DISCONNECTING || current == ConnectionState.CANCELING || current.isTerminal) {
                     android.util.Log.d("DashboardViewModel", "disconnectFlow: already $current, ignoring duplicate signal")
                 } else {
                     cancelConnection(getApplication())
@@ -404,7 +406,11 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
                 }
 
                 if (state == ConnectionState.CONNECTING) {
+                    ++ipLookupSessionId
                     networkFetchJob?.cancel()
+                    postConnectCheckJob?.cancel()
+                    cancelJob?.cancel()
+                    VpnStateManager.updateNetworkInfo("Detecting...", "Detecting...", "un")
                     _uptime.value = 0L // Force zero during connection phase
                     // Only clear logs when a NEW connection is about to be established,
                     // not on ViewModel recreation replay. The re-entry scenario replays
@@ -419,7 +425,13 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
                     }
                     logcatJob?.cancel()
                     startLogcatCapture(activeProfile.value?.protocol ?: _selectedProtocol.value)
+                } else if (state == ConnectionState.DISCONNECTING || state == ConnectionState.CANCELING) {
+                    ++ipLookupSessionId
+                    networkFetchJob?.cancel()
+                    postConnectCheckJob?.cancel()
+                    VpnStateManager.updateNetworkInfo("Detecting...", "Detecting...", "un")
                 } else if (state.isTerminal) {
+                    postConnectCheckJob?.cancel()
                     if (isInitialStateEmission) {
                         isInitialStateEmission = false
                     } else {
@@ -432,14 +444,8 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
                         _pingResult.value = null
                         VpnStateManager.updateSelectionLockedState(false)
 
-                        if (state == ConnectionState.DISCONNECTED || state == ConnectionState.IDLE) {
-                            if (initialNetworkInfo != null) {
-                                val init = initialNetworkInfo!!
-                                VpnStateManager.updateNetworkInfo(init.ip, init.location, init.flagCode)
-                            } else {
-                                fetchInitialNetworkInfo()
-                            }
-                        }
+                        VpnStateManager.updateNetworkInfo("Detecting...", "Detecting...", "un")
+                        fetchInitialNetworkInfo(initialDelayMs = 300L)
                     }
                 }
 
@@ -463,32 +469,30 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
                     }
                     startUptime()
 
+                    val wasInitialReplay = isInitialStateEmission
                     if (isInitialStateEmission) {
                         isInitialStateEmission = false
                     }
 
-                    // Reset IP/location to the loading animation immediately so
-                    // the card does not keep showing the previous location until
-                    // the exit IP is resolved. The VM's fetchCurrentNetworkInfo
-                    // also resets to Detecting, but we do it eagerly here so
-                    // the UI never has a frame where old data is presented as
-                    // if it were the VPN exit. The AnimatedContent in
-                    // NetworkInfoCard cross-fades between old and new flag.
-                    // Note: fetchCurrentNetworkInfo guards with
-                    // connectionState == CONNECTED and session id, so we
-                    // invalidate the display synchronously then kick the fetch
-                    // after a short settle delay.
-                    // Only reset if we still hold the previous public IP (not
-                    // already Detecting) to avoid redundant emissions.
+                    // Reset IP/location/flag to the loading state immediately when
+                    // entering CONNECTED so the card never flashes the previous
+                    // ISP info before the VPN exit IP lookup completes.
                     val curNet = VpnStateManager.networkInfo.value
-                    if (curNet.location != "Detecting..." && curNet.ip != "Unknown") {
-                        VpnStateManager.updateNetworkInfo("Unknown", "Detecting...", "un")
+                    if (!wasInitialReplay || curNet.location == "Detecting..." || curNet.ip == "Detecting..." || curNet.ip == "Unknown") {
+                        VpnStateManager.updateNetworkInfo("Detecting...", "Detecting...", "un")
                     }
 
-                    // Launch network checks in parallel without blocking the flow collection
-                    viewModelScope.launch {
+                    // Track and cancel any prior postConnectCheckJob so a rapid
+                    // disconnect->reconnect within 2s never lets the old session's
+                    // delayed coroutine fire early during the new session.
+                    val connectedSessionId = VpnStateManager.currentSessionId
+                    postConnectCheckJob?.cancel()
+                    postConnectCheckJob = viewModelScope.launch {
                         delay(2000.milliseconds)
-                        if (connectionState.value == ConnectionState.CONNECTED) {
+                        if (isActive &&
+                            connectionState.value == ConnectionState.CONNECTED &&
+                            VpnStateManager.currentSessionId == connectedSessionId
+                        ) {
                             fetchCurrentNetworkInfo()
                             testPing()
                         }
@@ -646,20 +650,75 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
         }
     }
 
-    private var initialNetworkInfo: IpResult? = null
+    @Volatile private var lastKnownRealNetworkInfo: IpResult? = null
     @Volatile private var ipLookupSessionId = 0L
 
-    fun fetchInitialNetworkInfo() {
-        if (connectionState.value.isConnected) return
+    private fun buildFreshHttpClient(
+        proxy: java.net.Proxy = java.net.Proxy.NO_PROXY,
+        vpnNetwork: android.net.Network? = null
+    ): okhttp3.OkHttpClient {
+        val builder = okhttp3.OkHttpClient.Builder()
+            .connectTimeout(2500, java.util.concurrent.TimeUnit.MILLISECONDS)
+            .readTimeout(2500, java.util.concurrent.TimeUnit.MILLISECONDS)
+            .callTimeout(3500, java.util.concurrent.TimeUnit.MILLISECONDS)
+            .connectionPool(okhttp3.ConnectionPool(0, 1, java.util.concurrent.TimeUnit.MILLISECONDS))
+            .retryOnConnectionFailure(false)
+            .followRedirects(true)
+            .followSslRedirects(true)
+            .cache(null)
+            .proxy(proxy)
+        if (vpnNetwork != null && proxy == java.net.Proxy.NO_PROXY) {
+            builder.socketFactory(vpnNetwork.socketFactory)
+            builder.dns(object : okhttp3.Dns {
+                override fun lookup(hostname: String): List<java.net.InetAddress> {
+                    return vpnNetwork.getAllByName(hostname).toList()
+                }
+            })
+        }
+        return builder.build()
+    }
+
+    private fun executeIpLookupRequest(
+        client: okhttp3.OkHttpClient,
+        url: String
+    ): IpResult? {
+        val req = okhttp3.Request.Builder()
+            .url(url)
+            .get()
+            .header("User-Agent", "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Mobile Safari/537.36")
+            .header("Accept", "application/json")
+            .header("Cache-Control", "no-cache, no-store")
+            .header("Pragma", "no-cache")
+            .header("Connection", "close")
+            .build()
+        val call = client.newCall(req)
+        return try {
+            call.execute().use { resp ->
+                if (!resp.isSuccessful) null
+                else {
+                    val body = resp.body?.string() ?: return null
+                    parseIpResponse(url, body)
+                }
+            }
+        } catch (_: Throwable) {
+            try { call.cancel() } catch (_: Throwable) {}
+            null
+        }
+    }
+
+    fun fetchInitialNetworkInfo(initialDelayMs: Long = 0L) {
+        if (!connectionState.value.isTerminal) return
         val currentLookupId = ++ipLookupSessionId
         networkFetchJob?.cancel()
         networkFetchJob = viewModelScope.launch(Dispatchers.IO) {
+            if (initialDelayMs > 0L) {
+                delay(initialDelayMs)
+                if (!isActive || currentLookupId != ipLookupSessionId || !connectionState.value.isTerminal) return@launch
+            }
             System.setProperty("http.keepAlive", "false")
-            // Strictly prefer IPv4-only endpoints first so dual-stack networks
-            // and dual-stack V2Ray servers never resolve/connect over IPv6.
-            // Note: ip-api.com free tier is HTTP-only (HTTPS returns 403) and has
-            // only IPv4 A records. Any IPv6 response from dual-stack fallbacks is
-            // also rejected in parseIpResponse().
+            // Prefer IPv4-only endpoints first; if an endpoint returns IPv6,
+            // remember the first IPv6 result as a fallback and keep trying
+            // remaining endpoints for an IPv4 address.
             val endpoints = listOf(
                 "http://ip-api.com/json",
                 "https://v4.ifconfig.co/json",
@@ -668,37 +727,45 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
                 "https://api.myip.world/json",
                 "https://free.freeipapi.com/api/json"
             )
-            var successResult: IpResult? = null
+            var ipv4Result: IpResult? = null
+            var ipv6Fallback: IpResult? = null
+            val retryDelaysMs = longArrayOf(0L, 2000L)
+            val client = buildFreshHttpClient()
 
-            for (url in endpoints) {
-                if (!isActive || currentLookupId != ipLookupSessionId) return@launch
-                successResult = withTimeoutOrNull(3500L) {
-                    try {
-                        val connection = (URL(url).openConnection() as java.net.HttpURLConnection).apply {
-                            connectTimeout = 2500; readTimeout = 2500; useCaches = false
-                            instanceFollowRedirects = true
-                            requestMethod = "GET"
-                            setRequestProperty("User-Agent", "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Mobile Safari/537.36")
-                            setRequestProperty("Accept", "application/json")
-                            setRequestProperty("Connection", "close")
+            try {
+                for (attemptIndex in retryDelaysMs.indices) {
+                    val delayBeforeMs = retryDelaysMs[attemptIndex]
+                    if (delayBeforeMs > 0L) delay(delayBeforeMs)
+                    if (!isActive || currentLookupId != ipLookupSessionId || !connectionState.value.isTerminal) return@launch
+
+                    for (url in endpoints) {
+                        if (!isActive || currentLookupId != ipLookupSessionId || !connectionState.value.isTerminal) return@launch
+                        val candidate = withTimeoutOrNull(3500L) {
+                            executeIpLookupRequest(client, url)
                         }
-                        if (connection.responseCode !in 200..299) {
-                            null
-                        } else {
-                            val response = connection.inputStream.bufferedReader().use { it.readText() }
-                            parseIpResponse(url, response)
+                        if (candidate != null) {
+                            if (isValidIpv4(candidate.ip)) {
+                                ipv4Result = candidate
+                                break
+                            } else if (candidate.ip.contains(':') && ipv6Fallback == null) {
+                                ipv6Fallback = candidate
+                            }
                         }
-                    } catch (e: Exception) { null }
+                    }
+                    if (ipv4Result != null || ipv6Fallback != null) break
                 }
-                if (successResult != null) break
+            } finally {
+                try { client.connectionPool.evictAll() } catch (_: Throwable) {}
             }
 
-            if (isActive && currentLookupId == ipLookupSessionId && !connectionState.value.isConnected) {
+            val successResult = ipv4Result ?: ipv6Fallback
+            if (isActive && currentLookupId == ipLookupSessionId && connectionState.value.isTerminal) {
                 if (successResult != null) {
-                    initialNetworkInfo = successResult
+                    lastKnownRealNetworkInfo = successResult
+                    VpnStateManager.lastKnownRealIp = successResult.ip
                     VpnStateManager.updateNetworkInfo(successResult.ip, successResult.location, successResult.flagCode)
                 } else {
-                    VpnStateManager.updateNetworkInfo("Unknown", "Unavailable", "un")
+                    VpnStateManager.updateNetworkInfo("Unavailable", "Unavailable", "un")
                 }
             }
         }
@@ -711,26 +778,21 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
         networkFetchJob?.cancel()
         networkFetchJob = viewModelScope.launch(Dispatchers.IO) {
             System.setProperty("http.keepAlive", "false")
-            // Show Detecting only briefly; underlying fetch will retry automatically.
-            // If we already have a valid IP, keep displaying it while re-fetching
-            // to avoid flicker "Unknown" during a manual/automatic retry.
-                // Per user request: on (re)connect the old IP/location must NOT remain
-            // visible - the card should revert to the Detecting animation and stay
-            // there until the new exit IP is actually resolved. Previously we kept
-            // the previous (public) IP to avoid flicker; that caused the
-            // "shows previous information again" bug. Always reset to Detecting
-            // unconditionally at the start of a post-connect fetch so
-            // NetworkInfoCard's showLoading (= isTransitioning || isUnresolved)
-            // stays true until the fresh fetch succeeds.
-            VpnStateManager.updateNetworkInfo("Unknown", "Detecting...", "un")
-
             val detailedState = VpnStateManager.detailedConnectionStateFlow.value
-            val activeProto = (detailedState as? DetailedState.Connected)?.activeProtocol?.title
-                ?: activeProfile.value?.protocol
-                ?: _selectedProtocol.value
+            val detailedProto = (detailedState as? DetailedState.Connected)?.activeProtocol?.title
+            val profileAtStart = activeProfile.value
+            val activeProto = when {
+                detailedProto == "DNS" || _selectedProtocol.value == "DNS" -> "DNS"
+                profileAtStart?.protocol == "v2rayNG" || detailedProto == "v2rayNG" -> "v2rayNG"
+                profileAtStart?.protocol == "OpenConnect" || detailedProto == "OpenConnect" -> "OpenConnect"
+                else -> _selectedProtocol.value
+            }
             val isV2ray = activeProto == "v2rayNG"
             val isDns = activeProto == "DNS"
             val proxy = if (isV2ray) java.net.Proxy(java.net.Proxy.Type.HTTP, java.net.InetSocketAddress("127.0.0.1", 10809)) else java.net.Proxy.NO_PROXY
+            val targetProfileCountry = profileAtStart?.countryCode?.trim()?.lowercase()
+
+            VpnStateManager.updateNetworkInfo("Detecting...", "Detecting...", "un")
 
             val cm = getApplication<Application>().getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
             // Resolve the VPN network lazily per endpoint attempt. AnyConnect's TUN
@@ -743,10 +805,25 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
                     cm.getNetworkCapabilities(net)?.hasTransport(NetworkCapabilities.TRANSPORT_VPN) == true
                 }
 
-            // Always use IPv4-only endpoints first across all modes (V2Ray, OpenConnect,
-            // and DNS) so dual-stack V2Ray servers and dual-stack ISP networks never
-            // return an IPv6 address. ip-api.com free tier uses HTTP and has only IPv4
-            // A records; parseIpResponse also rejects any non-IPv4 address.
+            fun isRealIspLeak(candidate: IpResult): Boolean {
+                if (isDns) return false
+                val realInfo = lastKnownRealNetworkInfo
+                val realIp = realInfo?.ip ?: VpnStateManager.lastKnownRealIp
+                if (!realIp.isNullOrBlank() && candidate.ip.equals(realIp, ignoreCase = true)) {
+                    return true
+                }
+                if (targetProfileCountry != "ir") {
+                    if (candidate.flagCode.equals("ir", ignoreCase = true) ||
+                        candidate.location.equals("Iran", ignoreCase = true)
+                    ) {
+                        return true
+                    }
+                }
+                return false
+            }
+
+            // Try all endpoints preferring IPv4; remember the first IPv6 result
+            // as a fallback and use it only if no endpoint returns IPv4.
             val orderedEndpoints = listOf(
                 "http://ip-api.com/json",
                 "https://v4.ifconfig.co/json",
@@ -755,90 +832,78 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
                 "https://api.myip.world/json",
                 "https://free.freeipapi.com/api/json"
             )
-            var successResult: IpResult? = null
+            var ipv4Result: IpResult? = null
+            var ipv6Fallback: IpResult? = null
+            // Sequential retries inside the same job so retries never cancel an
+            // in-flight lookup or reset the UI state prematurely.
+            val retryDelaysMs = longArrayOf(0L, 1500L, 3000L, 5000L)
 
-            for (url in orderedEndpoints) {
-                if (!isActive || currentLookupId != ipLookupSessionId || VpnStateManager.currentSessionId != sessionAtStart) return@launch
-                successResult = withTimeoutOrNull(3500L) {
-                    try {
-                        val parsedUrl = URL(url)
-                        val rawConnection = when {
-                            isV2ray -> parsedUrl.openConnection(proxy)
-                            isDns -> {
-                                // DNS mode never tunnels: the IP shown is the
-                                // real public IP, so fetch it directly on the
-                                // default network (never bound to the VPN).
-                                parsedUrl.openConnection(java.net.Proxy.NO_PROXY)
-                            }
-                            else -> {
-                                // AnyConnect requires binding to the VPN network so we
-                                // report the tunnel exit IP. Never fall back to the
-                                // default network: on a per-app Allowed tunnel the app
-                                // resolves its own exit through the TUN, and a direct
-                                // connection would silently show the real ISP IP. When the
-                                // TUN isn't visible yet, fail this endpoint (retry path
-                                // re-attempts) rather than leak the real IP.
-                                var vpnNet = findVpnNetwork()
-                                var waitCount = 0
-                                while (vpnNet == null && waitCount < 5 && isActive && connectionState.value == ConnectionState.CONNECTED) {
-                                    delay(400)
-                                    vpnNet = findVpnNetwork()
-                                    waitCount++
+            for (attemptIndex in retryDelaysMs.indices) {
+                val delayBeforeMs = retryDelaysMs[attemptIndex]
+                if (delayBeforeMs > 0L) delay(delayBeforeMs)
+                if (!isActive || currentLookupId != ipLookupSessionId ||
+                    connectionState.value != ConnectionState.CONNECTED ||
+                    VpnStateManager.currentSessionId != sessionAtStart
+                ) return@launch
+
+                for (url in orderedEndpoints) {
+                    if (!isActive || currentLookupId != ipLookupSessionId ||
+                        connectionState.value != ConnectionState.CONNECTED ||
+                        VpnStateManager.currentSessionId != sessionAtStart
+                    ) return@launch
+                    val candidate = withTimeoutOrNull(3500L) {
+                        try {
+                            val client = when {
+                                isV2ray -> buildFreshHttpClient(proxy = proxy)
+                                isDns -> buildFreshHttpClient(proxy = java.net.Proxy.NO_PROXY)
+                                else -> {
+                                    var vpnNet = findVpnNetwork()
+                                    var waitCount = 0
+                                    while (vpnNet == null && waitCount < 5 && isActive && connectionState.value == ConnectionState.CONNECTED) {
+                                        delay(400)
+                                        vpnNet = findVpnNetwork()
+                                        waitCount++
+                                    }
+                                    if (vpnNet == null) {
+                                        android.util.Log.w("DashboardViewModel", "vpnNetwork null for $url, skipping endpoint (no direct fallback)")
+                                        return@withTimeoutOrNull null
+                                    }
+                                    buildFreshHttpClient(proxy = java.net.Proxy.NO_PROXY, vpnNetwork = vpnNet)
                                 }
-                                if (vpnNet == null) {
-                                    android.util.Log.w("DashboardViewModel", "vpnNetwork null for $url, skipping endpoint (no direct fallback)")
-                                    return@withTimeoutOrNull null
-                                }
-                                vpnNet.openConnection(parsedUrl, java.net.Proxy.NO_PROXY)
                             }
+                            try {
+                                val res = executeIpLookupRequest(client, url)
+                                if (res != null && isRealIspLeak(res)) {
+                                    android.util.Log.w("DashboardViewModel", "Rejected pre-tunnel ISP leak from $url: ${res.ip} (${res.location})")
+                                    null
+                                } else {
+                                    res
+                                }
+                            } finally {
+                                try { client.connectionPool.evictAll() } catch (_: Throwable) {}
+                            }
+                        } catch (e: Exception) { null }
+                    }
+                    if (candidate != null) {
+                        if (isValidIpv4(candidate.ip)) {
+                            ipv4Result = candidate
+                            break
+                        } else if (candidate.ip.contains(':') && ipv6Fallback == null) {
+                            ipv6Fallback = candidate
                         }
-                        val connection = (rawConnection as java.net.HttpURLConnection).apply {
-                            connectTimeout = 2500; readTimeout = 2500; useCaches = false
-                            instanceFollowRedirects = true
-                            requestMethod = "GET"
-                            setRequestProperty("User-Agent", "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Mobile Safari/537.36")
-                            setRequestProperty("Accept", "application/json")
-                            setRequestProperty("Connection", "close")
-                        }
-                        if (connection.responseCode !in 200..299) {
-                            null
-                        } else {
-                            val response = connection.inputStream.bufferedReader().use { it.readText() }
-                            parseIpResponse(url, response)
-                        }
-                    } catch (e: Exception) { null }
+                    }
                 }
-                if (successResult != null) break
+                if (ipv4Result != null || ipv6Fallback != null) break
             }
 
+            val successResult = ipv4Result ?: ipv6Fallback
             if (isActive && connectionState.value == ConnectionState.CONNECTED &&
                 VpnStateManager.currentSessionId == sessionAtStart && currentLookupId == ipLookupSessionId
             ) {
                 if (successResult != null) {
                     VpnStateManager.updateNetworkInfo(successResult.ip, successResult.location, successResult.flagCode)
                 } else {
-                    VpnStateManager.updateNetworkInfo("Unknown", "VPN exit unavailable", "un")
-                    // Auto-retry path for the intermittent "VPN exit unavailable" glitch
-                    // (screenshot 2). The single 2s-delayed fetch in CONNECTED collect
-                    // is too early when DNS/HTTP hasn't settled after tunnel up.
-                    // Schedule 2 background retries with backoff; each re-enters
-                    // fetchCurrentNetworkInfo (validates vpnNetwork/proxy + session).
-                    val failedSession = sessionAtStart
-                    viewModelScope.launch {
-                        var delayMs = 3000L
-                        repeat(2) {
-                            delay(delayMs)
-                            delayMs += 3000L
-                            if (connectionState.value == ConnectionState.CONNECTED &&
-                                VpnStateManager.currentSessionId == failedSession &&
-                                VpnStateManager.networkInfo.value.let {
-                                    it.ip == "Unknown" || it.location == "VPN exit unavailable" || it.location == "Unavailable"
-                                }
-                            ) {
-                                fetchCurrentNetworkInfo()
-                            } else return@launch
-                        }
-                    }
+                    VpnStateManager.updateNetworkInfo("Unavailable", "VPN exit unavailable", "un")
                 }
             }
         }
@@ -930,9 +995,9 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
                 else -> null
             } ?: return null
 
-            // Enforce IPv4-only at the source: reject IPv6 or invalid/zero addresses
-            // so the caller falls through to the next IPv4 endpoint or placeholder.
-            if (!isValidIpv4(parsed.ip) || parsed.ip == "0.0.0.0") null else parsed
+            // Accept valid IPv4 or IPv6 addresses; caller prioritizes IPv4 and
+            // uses IPv6 only as a fallback when no endpoint returns IPv4.
+            if (parsed.ip.isBlank() || parsed.ip == "0.0.0.0" || (!isValidIpv4(parsed.ip) && !parsed.ip.contains(':'))) null else parsed
         } catch (e: Exception) { null }
     }
 
@@ -1026,6 +1091,12 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
             return
         }
 
+        ++ipLookupSessionId
+        networkFetchJob?.cancel()
+        postConnectCheckJob?.cancel()
+        cancelJob?.cancel()
+        VpnStateManager.updateState(ConnectionState.CONNECTING)
+
         viewModelScope.launch {
             try {
                 val intent = Intent(context, HybridVpnService::class.java).apply {
@@ -1074,24 +1145,28 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
             return
         }
         android.util.Log.d("DashboardViewModel", "cancelConnection from $current via graceful cancel")
+        ++ipLookupSessionId
+        networkFetchJob?.cancel()
+        postConnectCheckJob?.cancel()
+        VpnStateManager.updateState(ConnectionState.CANCELING)
         dispatchVpnStop(context)
 
-        viewModelScope.launch {
+        cancelJob?.cancel()
+        cancelJob = viewModelScope.launch {
             try {
-                VpnStateManager.updateState(ConnectionState.CANCELING)
                 delay(1000)
-                // Cross-session safety: a NEWER session may have already started
-                // (user hit disconnect then connect quickly). Do not clobber its
-                // CONNECTING/CONNECTED state with a stale forced DISCONNECTED.
+                // Only force DISCONNECTED if teardown hasn't already completed
+                // and no newer session has started.
                 val stateAfterDelay = VpnStateManager.connectionState.value
-                if (stateAfterDelay == ConnectionState.CONNECTING || stateAfterDelay == ConnectionState.CONNECTED) {
-                    android.util.Log.d("DashboardViewModel", "cancelConnection: newer session already $stateAfterDelay; skipping forced DISCONNECTED")
+                if (!isActive || (stateAfterDelay != ConnectionState.CANCELING && stateAfterDelay != ConnectionState.CANCELLED)) {
+                    android.util.Log.d("DashboardViewModel", "cancelConnection: state already $stateAfterDelay; skipping forced DISCONNECTED")
                     return@launch
                 }
                 VpnStateManager.updateState(ConnectionState.DISCONNECTED)
                 VpnStateManager.resetUsage()
                 stopUptime()
                 _uptime.value = 0L
+            } catch (_: CancellationException) {
             } catch (e: Exception) { VpnStateManager.updateState(ConnectionState.ERROR) }
         }
     }
@@ -1107,10 +1182,14 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
      */
     fun initiateDisconnect(context: Context, onActualStop: (Context) -> Unit = {}) {
         android.util.Log.d("DashboardViewModel", "initiateDisconnect (graceful) from ${VpnStateManager.connectionState.value}")
-        dispatchVpnStop(context)
-        onActualStop(context)
+        ++ipLookupSessionId
+        networkFetchJob?.cancel()
+        postConnectCheckJob?.cancel()
+        cancelJob?.cancel()
         stopUptime()
         VpnStateManager.updateState(ConnectionState.DISCONNECTING)
+        dispatchVpnStop(context)
+        onActualStop(context)
         // No forced DISCONNECTED — the service broadcasts the final
         // terminal state once TUN/FDs are closed. We leave the state in
         // DISCONNECTING so the button/indicator can animate "Disconnecting".

@@ -2647,11 +2647,11 @@ fun NetworkInfoCard(
     val isTransitioning =
         connectionState == ConnectionState.CONNECTING || connectionState == ConnectionState.RECONNECTING || connectionState == ConnectionState.DISCONNECTING || connectionState == ConnectionState.CANCELING
     val isConnected = connectionState == ConnectionState.CONNECTED
-    // Always animate ("...") during transitioning and while CONNECTED but the
-    // exit IP is still Unknown/Detecting — that includes the post-connect phase
-    // after we intentionally reset networkInfo, so the previous location is
-    // never shown as if it were the VPN exit.
-    val isUnresolved = isConnected && (networkInfo.ip == "Unknown" || networkInfo.ip == "0.0.0.0" || networkInfo.ip == "127.0.0.1" || networkInfo.location == "Detecting..." || networkInfo.location == "VPN exit unavailable")
+    // Always animate ("...") during transitioning and whenever the IP/location
+    // is still unresolved ("Detecting...") — both after connecting and after
+    // disconnecting — so the card transitions directly from "..." to the
+    // resolved IP, location, and flag together without flashing "Detecting...".
+    val isUnresolved = networkInfo.ip == "Detecting..." || networkInfo.ip == "Unknown" || networkInfo.ip == "0.0.0.0" || networkInfo.ip == "127.0.0.1" || networkInfo.location == "Detecting..."
     val showLoading = isTransitioning || isUnresolved
     // Coarse "which flag" key: drive AnimatedContent so the new VPN flag
     // cross-fades instead of popping instantly.
@@ -2755,7 +2755,8 @@ fun NetworkInfoCard(
                 .padding(24.dp)) {
                 // Retry / spinner at TopEnd — computed first so IP row can reserve space.
                 val hasError = networkInfo.ip == "Error" || networkInfo.location == "Failed to fetch IP" || networkInfo.location.contains("Error")
-                val isExitUnavailable = networkInfo.ip == "Unknown" ||
+                val isExitUnavailable = networkInfo.ip == "Unavailable" ||
+                    networkInfo.ip == "Unknown" ||
                     networkInfo.location == "VPN exit unavailable" ||
                     networkInfo.location == "Unavailable" ||
                     networkInfo.location.contains("VPN exit unavailable")
@@ -2771,7 +2772,7 @@ fun NetworkInfoCard(
                 // loading<->resolved crossfade (that mismatch caused a
                 // ClassCastException crash). A sentinel first value marks loading.
                 AnimatedContent(
-                    targetState = (if (showLoading) "__loading__" else networkInfo.ip) to ipVisible,
+                    targetState = if (showLoading) ("__loading__" to false) else (networkInfo.ip to ipVisible),
                     transitionSpec = { fadeIn(tween(260)) togetherWith fadeOut(tween(160)) },
                     label = "ip_crossfade",
                     modifier = Modifier
@@ -2790,10 +2791,15 @@ fun NetworkInfoCard(
                             SmoothTypingDots(textStyle = textShadow)
                         } else {
                             val rawIp = ipState.first
-                            val isPlaceholder = rawIp == "Unknown" || rawIp == "0.0.0.0" || rawIp.contains(':') || rawIp.isBlank()
-                            val ip = if (isPlaceholder) "Unavailable" else rawIp
+                            val isDetecting = rawIp == "Detecting..." || (networkInfo.location == "Detecting..." && (rawIp == "Unknown" || rawIp == "0.0.0.0" || rawIp.isBlank()))
+                            val isUnavailable = !isDetecting && (rawIp == "Unavailable" || rawIp == "Unknown" || rawIp == "0.0.0.0" || rawIp.isBlank())
+                            val ip = when {
+                                isDetecting -> "Detecting..."
+                                isUnavailable -> "Unavailable"
+                                else -> rawIp
+                            }
                             val visible = ipState.second
-                            val displayIp = if (visible || isPlaceholder) ip else ip.replace(
+                            val displayIp = if (visible || isDetecting || isUnavailable) ip else ip.replace(
                                 Regex("[A-Za-z0-9]"),
                                 "*"
                             )
@@ -2814,15 +2820,17 @@ fun NetworkInfoCard(
                                 overflow = TextOverflow.Ellipsis,
                                 modifier = Modifier.weight(1f, fill = false)
                             )
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Icon(
-                                imageVector = if (visible) Icons.Default.Visibility else Icons.Default.VisibilityOff,
-                                contentDescription = "Toggle IP",
-                                tint = PrimaryCyan,
-                                modifier = Modifier
-                                    .size(20.dp)
-                                    .bounceClick { ipVisible = !ipVisible }
-                            )
+                            if (!isDetecting && !isUnavailable) {
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Icon(
+                                    imageVector = if (visible) Icons.Default.Visibility else Icons.Default.VisibilityOff,
+                                    contentDescription = "Toggle IP",
+                                    tint = PrimaryCyan,
+                                    modifier = Modifier
+                                        .size(20.dp)
+                                        .bounceClick { ipVisible = !ipVisible }
+                                )
+                            }
                         }
                     }
                 }
@@ -2831,7 +2839,7 @@ fun NetworkInfoCard(
                 // Pair<String, Boolean> targetState (second = loading flag) so the
                 // content lambda never receives a bare String mid-crossfade.
                 AnimatedContent(
-                    targetState = networkInfo.location to showLoading,
+                    targetState = if (showLoading) ("__loading__" to true) else (networkInfo.location to false),
                     transitionSpec = { fadeIn(tween(260)) togetherWith fadeOut(tween(160)) },
                     label = "location_crossfade",
                     modifier = Modifier
