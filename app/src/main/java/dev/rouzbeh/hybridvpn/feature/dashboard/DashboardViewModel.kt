@@ -655,14 +655,17 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
         networkFetchJob?.cancel()
         networkFetchJob = viewModelScope.launch(Dispatchers.IO) {
             System.setProperty("http.keepAlive", "false")
-            // Ordered by reliability: ip-api.com and ipwho.is correctly map 45.93.168.99
-            // to NL (verified against browserleaks/ipinfo); ip.sb mis-maps it to TR.
+            // Strictly prefer IPv4-only endpoints first so dual-stack networks
+            // and dual-stack V2Ray servers never resolve/connect over IPv6.
+            // Note: ip-api.com free tier is HTTP-only (HTTPS returns 403) and has
+            // only IPv4 A records. Any IPv6 response from dual-stack fallbacks is
+            // also rejected in parseIpResponse().
             val endpoints = listOf(
-                "https://ip-api.com/json",
-                "https://ipwho.is/",
+                "http://ip-api.com/json",
                 "https://v4.ifconfig.co/json",
-                "https://api.myip.world/json",
+                "https://ipwho.is/",
                 "https://api-ipv4.ip.sb/geoip",
+                "https://api.myip.world/json",
                 "https://free.freeipapi.com/api/json"
             )
             var successResult: IpResult? = null
@@ -740,28 +743,18 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
                     cm.getNetworkCapabilities(net)?.hasTransport(NetworkCapabilities.TRANSPORT_VPN) == true
                 }
 
-            // Ordered by reliability (ip-api.com + ipwho.is verified against browserleaks for 45.93.168.99 → NL).
-            val endpoints = listOf(
-                "https://ip-api.com/json",
-                "https://ipwho.is/",
+            // Always use IPv4-only endpoints first across all modes (V2Ray, OpenConnect,
+            // and DNS) so dual-stack V2Ray servers and dual-stack ISP networks never
+            // return an IPv6 address. ip-api.com free tier uses HTTP and has only IPv4
+            // A records; parseIpResponse also rejects any non-IPv4 address.
+            val orderedEndpoints = listOf(
+                "http://ip-api.com/json",
                 "https://v4.ifconfig.co/json",
-                "https://api.myip.world/json",
+                "https://ipwho.is/",
                 "https://api-ipv4.ip.sb/geoip",
+                "https://api.myip.world/json",
                 "https://free.freeipapi.com/api/json"
             )
-            // DNS mode never tunnels, so the card shows the real public IP. On
-            // dual-stack networks ip-api/ipwho.is may resolve the host over IPv6
-            // and return the IPv6 address while websites still see IPv4. Try the
-            // IPv4-only endpoints first so we prefer IPv4; if none answer (no
-            // IPv4 route) the fallthrough order still yields IPv6.
-            val orderedEndpoints = if (isDns) listOf(
-                "https://v4.ifconfig.co/json",
-                "https://api-ipv4.ip.sb/geoip",
-                "https://api.myip.world/json",
-                "https://free.freeipapi.com/api/json",
-                "https://ip-api.com/json",
-                "https://ipwho.is/"
-            ) else endpoints
             var successResult: IpResult? = null
 
             for (url in orderedEndpoints) {
@@ -853,6 +846,16 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
 
     private data class IpResult(val ip: String, val location: String, val flagCode: String)
 
+    private fun isValidIpv4(ip: String): Boolean {
+        val trimmed = ip.trim()
+        if (trimmed.isEmpty() || trimmed.contains(':')) return false
+        val parts = trimmed.split('.')
+        if (parts.size != 4) return false
+        return parts.all { part ->
+            part.isNotEmpty() && part.length <= 3 && part.all { it.isDigit() } && (part.toIntOrNull() ?: -1) in 0..255
+        }
+    }
+
     private fun parseIpResponse(url: String, response: String): IpResult? {
         return try {
             val json = JSONObject(response)
@@ -878,11 +881,11 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
                 return "un"
             }
 
-            when {
+            val parsed = when {
                 url.contains("ip-api.com") -> {
                     // ip-api returns {"status":"fail"...} when queried without required fields
                     if (json.optString("status", "success") == "fail") return null
-                    val ip = json.optString("query", "0.0.0.0")
+                    val ip = json.optString("query", "").trim()
                     val rawCode = json.optString("countryCode", "un")
                     val country = cleanCountryName(json.optString("country", java.util.Locale("", rawCode).displayCountry))
                     val countryCode = resolveCountryCode(rawCode, country)
@@ -890,42 +893,46 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
                 }
                 url.contains("ipwho.is") -> {
                     if (json.optBoolean("success", true) == false) return null
-                    val ip = json.optString("ip", "0.0.0.0")
+                    val ip = json.optString("ip", "").trim()
                     val rawCode = json.optString("country_code", "un")
                     val country = cleanCountryName(json.optString("country", java.util.Locale("", rawCode).displayCountry))
                     val countryCode = resolveCountryCode(rawCode, country)
                     IpResult(ip, country, countryCode)
                 }
                 url.contains("ip.sb") -> {
-                    val ip = json.optString("ip", "0.0.0.0")
+                    val ip = json.optString("ip", "").trim()
                     val rawCode = json.optString("country_code", "un")
                     val country = cleanCountryName(json.optString("country", java.util.Locale("", rawCode).displayCountry))
                     val countryCode = resolveCountryCode(rawCode, country)
                     IpResult(ip, country, countryCode)
                 }
                 url.contains("myip.world") -> {
-                    val ip = json.optString("ip", "0.0.0.0")
+                    val ip = json.optString("ip", "").trim()
                     val rawCode = json.optString("country_code", "un")
                     val country = cleanCountryName(json.optString("country", java.util.Locale("", rawCode).displayCountry))
                     val countryCode = resolveCountryCode(rawCode, country)
                     IpResult(ip, country, countryCode)
                 }
                 url.contains("ifconfig.co") -> {
-                    val ip = json.optString("ip", "0.0.0.0")
+                    val ip = json.optString("ip", "").trim()
                     val rawCode = json.optString("country_iso", json.optString("country_code", "un"))
                     val country = cleanCountryName(json.optString("country", java.util.Locale("", rawCode).displayCountry))
                     val countryCode = resolveCountryCode(rawCode, country)
                     IpResult(ip, country, countryCode)
                 }
                 url.contains("freeipapi.com") -> {
-                    val ip = json.optString("ipAddress", "0.0.0.0")
+                    val ip = json.optString("ipAddress", "").trim()
                     val rawCode = json.optString("countryCode", json.optString("country_code", "un"))
                     val country = cleanCountryName(json.optString("countryName", java.util.Locale("", rawCode).displayCountry))
                     val countryCode = resolveCountryCode(rawCode, country)
                     IpResult(ip, country, countryCode)
                 }
                 else -> null
-            }
+            } ?: return null
+
+            // Enforce IPv4-only at the source: reject IPv6 or invalid/zero addresses
+            // so the caller falls through to the next IPv4 endpoint or placeholder.
+            if (!isValidIpv4(parsed.ip) || parsed.ip == "0.0.0.0") null else parsed
         } catch (e: Exception) { null }
     }
 

@@ -2789,9 +2789,11 @@ fun NetworkInfoCard(
                         if (ipState.first == "__loading__") {
                             SmoothTypingDots(textStyle = textShadow)
                         } else {
-                            val ip = ipState.first
+                            val rawIp = ipState.first
+                            val isPlaceholder = rawIp == "Unknown" || rawIp == "0.0.0.0" || rawIp.contains(':') || rawIp.isBlank()
+                            val ip = if (isPlaceholder) "Unavailable" else rawIp
                             val visible = ipState.second
-                            val displayIp = if (visible) ip else ip.replace(
+                            val displayIp = if (visible || isPlaceholder) ip else ip.replace(
                                 Regex("[A-Za-z0-9]"),
                                 "*"
                             )

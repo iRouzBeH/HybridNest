@@ -343,11 +343,13 @@ object VpnStateManager {
 
     @JvmStatic
     fun updateNetworkInfo(ip: String, location: String, flagCode: String = "un") {
-        _networkInfo.value = NetworkInfo(ip, location, flagCode)
+        val safeIp = if (ip.contains(':')) "Unknown" else ip
+        _networkInfo.value = NetworkInfo(safeIp, location, flagCode)
     }
 
     @JvmStatic
     fun updateIp(ip: String) {
+        if (ip.contains(':')) return
         _networkInfo.value = _networkInfo.value.copy(ip = ip)
     }
 
