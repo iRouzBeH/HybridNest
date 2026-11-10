@@ -535,6 +535,15 @@ class DnsForwarder(
         b.put(64); b.put(proto.toByte()); b.putShort(0)
         b.put(FAKE_V4_BYTES); b.put(dstIp); b.put(payload)
         val p = b.array()
+        if (proto == 6 && payload.size >= 20) {
+            p[20 + 16] = 0; p[20 + 17] = 0
+            val tc = tcpChecksum4(FAKE_V4_BYTES, dstIp, p.copyOfRange(20, p.size))
+            p[20 + 16] = (tc ushr 8).toByte(); p[20 + 17] = tc.toByte()
+        } else if (proto == 17 && payload.size >= 8) {
+            p[20 + 6] = 0; p[20 + 7] = 0
+            val uc = udpChecksum4(FAKE_V4_BYTES, dstIp, p.copyOfRange(20, p.size))
+            p[20 + 6] = (uc ushr 8).toByte(); p[20 + 7] = uc.toByte()
+        }
         val c = checksum(p.copyOf(20))
         p[10] = (c ushr 8).toByte(); p[11] = c.toByte()
         return p
@@ -573,6 +582,13 @@ class DnsForwarder(
         pseudo.put(src); pseudo.put(dst)
         pseudo.put(0); pseudo.put(17); pseudo.putShort(udp.size.toShort())
         pseudo.put(udp)
+        return checksum(pseudo.array())
+    }
+    private fun tcpChecksum4(src: ByteArray, dst: ByteArray, tcp: ByteArray): Int {
+        val pseudo = ByteBuffer.allocate(12 + tcp.size)
+        pseudo.put(src); pseudo.put(dst)
+        pseudo.put(0); pseudo.put(6); pseudo.putShort(tcp.size.toShort())
+        pseudo.put(tcp)
         return checksum(pseudo.array())
     }
     private fun udpChecksum6(src: ByteArray, dst: ByteArray, udp: ByteArray): Int {

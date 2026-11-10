@@ -118,6 +118,13 @@ class RoutingRefusedException(message: String) : IllegalStateException(message)
  */
 object RoutingPolicyResolver {
 
+    /**
+     * Resolves the policy at tunnel start. If [policy.enabled] is false (Global mode),
+     * unconditionally returns [RoutingDecision.Global] without any fallback override.
+     */
+    fun resolveForTunnelStart(policy: RoutingPolicy, installedPackages: Set<String>): RoutingDecision =
+        resolve(policy, installedPackages)
+
     fun resolve(policy: RoutingPolicy, installedPackages: Set<String>): RoutingDecision {
         if (!policy.enabled) return RoutingDecision.Global
 

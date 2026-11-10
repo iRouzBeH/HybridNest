@@ -93,7 +93,13 @@ object XrayConfigGenerator {
         })
         outbounds.put(JSONObject().apply {
             put("tag", "dns-out"); put("protocol", "dns")
-            put("settings", JSONObject())
+            put("settings", JSONObject().apply {
+                put("nonIPQuery", "drop")
+                put("blockTypes", JSONArray().apply {
+                    put(28) // AAAA (TUN is IPv4-only)
+                    put(65) // HTTPS / SVCB
+                })
+            })
         })
         root.put("outbounds", outbounds)
 

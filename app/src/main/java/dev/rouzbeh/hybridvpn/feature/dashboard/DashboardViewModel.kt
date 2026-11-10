@@ -579,11 +579,14 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
                     // (that would kill the app's own connectivity checks).
                     // Documented exception; see MANUAL_TEST.md.
                     if (app.packageName == ownPackageName) return@mapNotNull null
+                    val isSystemFlag = (app.flags and ApplicationInfo.FLAG_SYSTEM) != 0
+                    val isUpdatedSystemFlag = (app.flags and ApplicationInfo.FLAG_UPDATED_SYSTEM_APP) != 0
+                    val isLaunchable = pm.getLaunchIntentForPackage(app.packageName) != null
                     AppInfo(
                         appName = app.loadLabel(pm).toString(),
                         packageName = app.packageName,
                         icon = app.loadIcon(pm),
-                        isSystemApp = (app.flags and ApplicationInfo.FLAG_SYSTEM) != 0,
+                        isSystemApp = isSystemFlag && !isUpdatedSystemFlag && !isLaunchable,
                         isSelected = selectedApps.contains(app.packageName)
                     )
                 }.sortedWith(compareByDescending<AppInfo> { it.isSelected }.thenBy { it.appName.lowercase() })

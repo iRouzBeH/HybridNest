@@ -501,7 +501,8 @@ class HybridVpnService : VpnService() {
             .addRoute(cfg.FAKE_DNS_V6, 128)
 
         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) builder.setMetered(false)
-        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.LOLLIPOP_MR1) builder.setBlocking(false)
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.LOLLIPOP_MR1) builder.setBlocking(true)
+        builder.allowBypass()
 
         applyPerAppRouting(builder)
 
@@ -801,9 +802,12 @@ class HybridVpnService : VpnService() {
         // `dns` may be a comma-joined list of ALL server-assigned resolvers (native
         // layer forwards the complete X-CSTP-DNS list). Each is added individually so
         // a second advertised resolver is not silently dropped.
-        val serverDnsServers = dns.split(",").map { it.trim() }.filter { it.isNotEmpty() }
+        // Filter out IPv6 DNS servers since the OpenConnect TUN is configured as IPv4-only.
+        val serverDnsServers = dns.split(",")
+            .map { it.trim() }
+            .filter { it.isNotEmpty() && !it.contains(':') }
         serverDnsServers.forEach { server -> builder.addDnsServer(server) }
-        // Static fallback ONLY when the server assigned no resolvers.
+        // Static fallback ONLY when the server assigned no IPv4 resolvers.
         if (serverDnsServers.isEmpty()) builder.addDnsServer("8.8.8.8")
         emitLog("Builder DNS servers: ${serverDnsServers.ifEmpty { listOf("8.8.8.8 (fallback; server assigned none)") }}")
 
@@ -968,7 +972,7 @@ class HybridVpnService : VpnService() {
             }
         emitLog("Routing: applying policy r${policy.revision}: ${policy.describe()}")
 
-        val decision = dev.rouzbeh.hybridvpn.core.routing.RoutingPolicyResolver.resolve(
+        val decision = dev.rouzbeh.hybridvpn.core.routing.RoutingPolicyResolver.resolveForTunnelStart(
             policy = policy,
             installedPackages = installedPackagesForRouting()
         )

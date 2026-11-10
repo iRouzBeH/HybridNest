@@ -18,7 +18,7 @@ object V2raySettings {
     const val VPN_DNS = "9.9.9.9"
 
     /** Remote DNS the Xray built-in DNS module forwards to THROUGH the proxy. */
-    const val REMOTE_DNS = "9.9.9.9"
+    const val REMOTE_DNS = "tcp://1.1.1.1"
 
     /**
      * Domestic DNS the built-in module forwards to directly (skipFallback).
@@ -27,8 +27,8 @@ object V2raySettings {
      */
     const val DOMESTIC_DNS = "178.22.122.100"
 
-    /** Mux on the proxy outbound (v2rayNG "Enable mux"). dns-step-2 flips on. */
-    const val MUX_ENABLED = true
+    /** Mux on the proxy outbound (v2rayNG "Enable mux"). Disabled by default for compatibility. */
+    const val MUX_ENABLED = false
     const val MUX_CONCURRENCY = 10
     const val MUX_XUDP_CONCURRENCY = 13
 
