@@ -126,7 +126,6 @@ import androidx.core.net.toUri
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import coil.compose.AsyncImage
-import coil.request.ImageRequest
 import dev.rouzbeh.hybridvpn.R
 import dev.rouzbeh.hybridvpn.core.designsystem.BackgroundDark
 import dev.rouzbeh.hybridvpn.core.designsystem.BorderGlass
@@ -1648,18 +1647,22 @@ fun ServerItemCard(
         if (isSubscriptionInfoCard && rawClean.isBlank()) subscriptionLabel else rawClean
     }
 
+    val context = LocalContext.current
     val countryCodes = remember(flags) {
-        flags.map { emoji ->
+        flags.mapNotNull { emoji ->
             try {
                 val cp1 = emoji.codePointAt(0)
                 val cp2 = emoji.codePointAt(emoji.offsetByCodePoints(0, 1))
                 val c1 = (cp1 - 0x1F1E6 + 97).toChar()
                 val c2 = (cp2 - 0x1F1E6 + 97).toChar()
-                "$c1$c2"
+                BundledFlags.normalizeCode("$c1$c2")
             } catch (e: Exception) {
-                "un"
+                null
             }
         }
+    }
+    val flagBitmaps = remember(context, countryCodes) {
+        countryCodes.take(2).mapNotNull { code -> BundledFlags.getFlagBitmap(context, code) }
     }
 
     Row(
@@ -1698,7 +1701,7 @@ fun ServerItemCard(
         // Subscription info cards (volume/time) don't show the protocol/v2rayNG logo
         // — removing it frees up room for the meta row and keeps the card minimal.
         if (!isSubscriptionInfoCard) {
-        val hasFlag = countryCodes.isNotEmpty()
+        val hasFlag = flagBitmaps.isNotEmpty()
         val boxModifier = if (hasFlag) {
             Modifier
                 .size(width = 56.dp, height = 36.dp)
@@ -1724,14 +1727,13 @@ fun ServerItemCard(
                     tint = if (isSelected) PrimaryCyan else TextSecondary,
                     modifier = Modifier.size(22.dp)
                 )
-            } else if (countryCodes.size == 1) {
-                AsyncImage(
-                    model = coil.request.ImageRequest.Builder(LocalContext.current)
-                        .data("https://flagcdn.com/w160/${countryCodes[0]}.png")
-                        .crossfade(true).build(),
+            } else if (flagBitmaps.size == 1) {
+                androidx.compose.foundation.Image(
+                    bitmap = flagBitmaps[0],
                     contentDescription = "Flag",
                     contentScale = ContentScale.Crop,
                     alignment = Alignment.Center,
+                    filterQuality = androidx.compose.ui.graphics.FilterQuality.High,
                     modifier = Modifier.fillMaxSize()
                 )
             } else {
@@ -1746,13 +1748,12 @@ fun ServerItemCard(
                             ); close()
                             }), contentAlignment = Alignment.Center
                     ) {
-                        AsyncImage(
-                            model = coil.request.ImageRequest.Builder(LocalContext.current)
-                                .data("https://flagcdn.com/w160/${countryCodes[1]}.png")
-                                .crossfade(true).build(),
+                        androidx.compose.foundation.Image(
+                            bitmap = flagBitmaps[1],
                             contentDescription = "Flag 2",
                             contentScale = ContentScale.Crop,
                             alignment = Alignment.Center,
+                            filterQuality = androidx.compose.ui.graphics.FilterQuality.High,
                             modifier = Modifier.fillMaxSize()
                         )
                     }
@@ -1766,13 +1767,12 @@ fun ServerItemCard(
                             ); close()
                             }), contentAlignment = Alignment.Center
                     ) {
-                        AsyncImage(
-                            model = coil.request.ImageRequest.Builder(LocalContext.current)
-                                .data("https://flagcdn.com/w160/${countryCodes[0]}.png")
-                                .crossfade(true).build(),
+                        androidx.compose.foundation.Image(
+                            bitmap = flagBitmaps[0],
                             contentDescription = "Flag 1",
                             contentScale = ContentScale.Crop,
                             alignment = Alignment.Center,
+                            filterQuality = androidx.compose.ui.graphics.FilterQuality.High,
                             modifier = Modifier.fillMaxSize()
                         )
                     }
@@ -2654,18 +2654,20 @@ fun NetworkInfoCard(
     val isUnresolved = networkInfo.ip == "Detecting..." || networkInfo.ip == "Unknown" || networkInfo.ip == "0.0.0.0" || networkInfo.ip == "127.0.0.1" || networkInfo.location == "Detecting..."
     val showLoading = isTransitioning || isUnresolved
     // Coarse "which flag" key: drive AnimatedContent so the new VPN flag
-    // cross-fades instead of popping instantly.
+    // cross-fades together with the IP and location text in one atomic step.
+    val context = LocalContext.current
     val effectiveFlagCode = remember(networkInfo.flagCode, networkInfo.location) {
-        val code = networkInfo.flagCode.lowercase().trim()
-        if (code.length == 2 && code != "un" && code.all { it in 'a'..'z' }) {
-            code
+        val normalized = BundledFlags.normalizeCode(networkInfo.flagCode)
+        if (normalized != null) {
+            normalized
         } else if (networkInfo.location.isNotBlank() && networkInfo.location != "Unknown" && networkInfo.location != "Detecting..." && !networkInfo.location.contains("Unavailable")) {
             val locName = networkInfo.location
-            java.util.Locale.getISOCountries().firstOrNull { iso ->
+            val resolved = java.util.Locale.getISOCountries().firstOrNull { iso ->
                 val loc = java.util.Locale("", iso)
                 loc.displayCountry.equals(locName, ignoreCase = true) ||
                 loc.getDisplayCountry(java.util.Locale.ENGLISH).equals(locName, ignoreCase = true)
-            }?.lowercase() ?: "un"
+            }?.lowercase()
+            BundledFlags.normalizeCode(resolved) ?: "un"
         } else {
             "un"
         }
@@ -2690,48 +2692,33 @@ fun NetworkInfoCard(
         Box(modifier = Modifier.fillMaxSize()) {
             AnimatedContent(
                 targetState = flagKey,
-                transitionSpec = { fadeIn(tween(380)) togetherWith fadeOut(tween(260)) },
+                transitionSpec = { fadeIn(tween(260)) togetherWith fadeOut(tween(160)) },
                 label = "flag_crossfade",
                 modifier = Modifier.matchParentSize()
             ) { key ->
-                val code = key
-                if (code != "un" && code != "__loading__" && code.isNotBlank()) {
-                    var retryAttempt by remember(code) { mutableStateOf(0) }
-                    var loadFailed by remember(code) { mutableStateOf(false) }
-
-                    LaunchedEffect(code, loadFailed) {
-                        if (loadFailed && retryAttempt < 2) {
-                            delay(1500L)
-                            loadFailed = false
-                            retryAttempt++
-                        }
+                val flagBitmap = remember(context, key) {
+                    if (key != "un" && key != "__loading__" && key.isNotBlank()) {
+                        BundledFlags.getFlagBitmap(context, key)
+                    } else {
+                        null
                     }
-
+                }
+                if (flagBitmap != null) {
                     Box(modifier = Modifier.matchParentSize()) {
                         Box(Modifier.matchParentSize().background(SurfaceDark))
-                        AsyncImage(
-                            model = ImageRequest.Builder(LocalContext.current)
-                                .data("https://flagcdn.com/w640/$code.png")
-                                .setParameter("retry", retryAttempt)
-                                .crossfade(true)
-                                .build(),
+                        androidx.compose.foundation.Image(
+                            bitmap = flagBitmap,
                             contentDescription = "Flag Background",
                             contentScale = ContentScale.Crop,
                             colorFilter = ColorFilter.colorMatrix(contrastMatrix),
-                            onState = { state ->
-                                if (state is coil.compose.AsyncImagePainter.State.Error) {
-                                    loadFailed = true
-                                } else if (state is coil.compose.AsyncImagePainter.State.Success) {
-                                    loadFailed = false
-                                }
-                            },
+                            filterQuality = androidx.compose.ui.graphics.FilterQuality.High,
                             modifier = Modifier
                                 .matchParentSize()
                                 .alpha(0.9f)
                         )
                     }
                 } else {
-                    // No flag (loading / un) — keep a muted placeholder so the
+                    // No flag (loading / un / unmapped) — keep a muted placeholder so the
                     // gradient animation doesn't flash a missing image.
                     Box(Modifier.matchParentSize().background(SurfaceDark))
                 }
