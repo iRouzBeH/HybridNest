@@ -32,6 +32,7 @@ import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
+import org.json.JSONArray
 import org.json.JSONObject
 import java.net.URL
 import kotlin.time.Duration.Companion.milliseconds
@@ -40,6 +41,7 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
 
     private val dao = AppDatabase.getDatabase(application).vpnProfileDao()
     private val settingsRepository = SettingsRepository(application)
+    val settings: SettingsRepository get() = settingsRepository
     private var isIntentionalReconnect = false
     private var isInitialStateEmission = true
     private var logcatJob: Job? = null
@@ -101,6 +103,13 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
 
     fun clearLogs(protocol: String) { LogStore.clear(protocol) }
 
+    fun clearAllProtocolLogs() {
+        LogStore.clear("OpenConnect")
+        LogStore.clear("WireGuard")
+        LogStore.clear("v2rayNG")
+        showToast("All logs cleared")
+    }
+
     fun appendLog(protocol: String, log: String) { LogStore.append(protocol, log) }
 
     private fun startLogcatCapture(protocol: String) {
@@ -154,6 +163,20 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
 
     private fun showToast(message: String) {
         viewModelScope.launch { _toastMessage.emit(message) }
+    }
+
+    fun showDashboardToast(message: String) {
+        showToast(message)
+    }
+
+    fun notifySettingsSaved(sectionName: String) {
+        settingsRepository.syncRuntimeSettings()
+        val msg = if (connectionState.value == ConnectionState.CONNECTED) {
+            "$sectionName saved • Reconnect VPN to apply"
+        } else {
+            "$sectionName saved"
+        }
+        showToast(msg)
     }
 
     private val _installedApps = MutableStateFlow<List<AppInfo>>(emptyList())
@@ -1084,7 +1107,11 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
                 val validPrefixes = listOf("vmess://", "vless://", "trojan://", "ss://", "ssr://", "v2ray://")
                 if (cAddr.startsWith("http://") || cAddr.startsWith("https://")) {
                     try {
-                        val connection = URL(cAddr).openConnection().apply { connectTimeout = 10000 }
+                        val connection = URL(cAddr).openConnection().apply {
+                            connectTimeout = 10000
+                            val ua = settingsRepository.getSubUserAgent().trim()
+                            if (ua.isNotEmpty()) setRequestProperty("User-Agent", ua)
+                        }
                         val response = connection.getInputStream().bufferedReader().use { it.readText() }
                         val decoded = try { String(android.util.Base64.decode(response, android.util.Base64.DEFAULT)) } catch (e: Exception) { response }
                         val lines = decoded.lines().map { it.trim() }.filter { line -> line.isNotBlank() && validPrefixes.any { line.startsWith(it, true) } }
@@ -1638,9 +1665,10 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
             // XrayConfigGenerator.generatePingConfig). Must run off the main
             // thread; blocks up to ~12s with 2 attempts internally.
             val configJson = dev.rouzbeh.hybridvpn.core.vpn.v2ray.XrayConfigGenerator.generatePingConfig(profile)
+            val testUrl = settingsRepository.getPingTestUrl().ifBlank { "https://www.google.com/generate_204" }
             dev.rouzbeh.hybridvpn.core.vpn.v2ray.V2RayManager.measureOutboundDelay(
                 configJson,
-                "https://www.google.com/generate_204"
+                testUrl
             )
         } catch (e: Exception) {
             android.util.Log.w("DashboardViewModel", "measureProfileDelay failed for ${profile.name}: ${e.message}")
@@ -1668,7 +1696,11 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
                 val url = existingProfiles.first().password.trim()
                 if (!url.startsWith("http")) return@launch
                 val preservedSubName = existingProfiles.first().subName
-                val connection = URL(url).openConnection().apply { connectTimeout = 10000 }
+                val connection = URL(url).openConnection().apply {
+                    connectTimeout = 10000
+                    val ua = settingsRepository.getSubUserAgent().trim()
+                    if (ua.isNotEmpty()) setRequestProperty("User-Agent", ua)
+                }
                 val response = connection.getInputStream().bufferedReader().use { it.readText() }
                 val decoded = try { String(android.util.Base64.decode(response, android.util.Base64.DEFAULT)) } catch (e: Exception) { response }
                 val validPrefixes = listOf("vmess://", "vless://", "trojan://", "v2ray://")
@@ -1689,6 +1721,106 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
                     withContext(Dispatchers.Main) { _subscriptionToast.emit("Subscription Updated Successfully") }
                 }
             } catch (e: Exception) { withContext(Dispatchers.Main) { _subscriptionToast.emit("Update Failed") } }
+        }
+    }
+
+    fun exportAllProfilesToJson(onExportReady: (String) -> Unit) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val profiles = allProfiles.value.ifEmpty {
+                dao.getAllProfiles().firstOrNull() ?: emptyList()
+            }
+            val rootJson = JSONObject().apply {
+                put("app", "HybridNest")
+                put("version", 1)
+                put("exportedAt", System.currentTimeMillis())
+                val arr = JSONArray()
+                profiles.forEach { p ->
+                    arr.put(JSONObject().apply {
+                        put("name", p.name)
+                        put("protocol", p.protocol)
+                        put("serverAddress", p.serverAddress)
+                        put("username", p.username)
+                        put("password", p.password)
+                        put("countryCode", p.countryCode)
+                        put("subName", p.subName)
+                    })
+                }
+                put("profiles", arr)
+            }
+            val exportString = rootJson.toString(2)
+            withContext(Dispatchers.Main) {
+                onExportReady(exportString)
+                showToast("Exported ${profiles.size} profiles to clipboard")
+            }
+        }
+    }
+
+    fun restoreProfilesFromBackupJson(rawJson: String) {
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val root = JSONObject(rawJson)
+                val profilesArray = root.optJSONArray("profiles")
+                if (profilesArray == null) {
+                    withContext(Dispatchers.Main) {
+                        showToast("Invalid backup data in clipboard")
+                    }
+                    return@launch
+                }
+
+                val currentProfiles = allProfiles.value.ifEmpty {
+                    dao.getAllProfiles().firstOrNull() ?: emptyList()
+                }
+                val existingKeys = currentProfiles.map {
+                    Triple(it.protocol.lowercase(), it.serverAddress.trim(), it.name.trim())
+                }.toSet()
+
+                var importedCount = 0
+                var skippedCount = 0
+
+                for (i in 0 until profilesArray.length()) {
+                    val obj = profilesArray.optJSONObject(i) ?: continue
+                    val name = obj.optString("name").trim()
+                    val protocol = obj.optString("protocol").trim()
+                    val serverAddress = obj.optString("serverAddress").trim()
+                    val username = obj.optString("username", "")
+                    val password = obj.optString("password", "")
+                    val countryCode = obj.optString("countryCode", "un").ifBlank { "un" }
+                    val subName = obj.optString("subName", "")
+
+                    if (name.isBlank() || protocol.isBlank() || serverAddress.isBlank()) {
+                        skippedCount++
+                        continue
+                    }
+
+                    val key = Triple(protocol.lowercase(), serverAddress, name)
+                    if (existingKeys.contains(key)) {
+                        skippedCount++
+                    } else {
+                        dao.insertProfile(
+                            VpnProfile(
+                                name = name,
+                                protocol = protocol,
+                                serverAddress = serverAddress,
+                                username = username,
+                                password = password,
+                                countryCode = countryCode,
+                                subName = subName,
+                                isActive = false
+                            )
+                        )
+                        importedCount++
+                    }
+                }
+
+                withContext(Dispatchers.Main) {
+                    showToast("Restored $importedCount profiles ($skippedCount duplicates skipped)")
+                }
+            } catch (e: Exception) {
+                android.util.Log.e("DashboardViewModel", "restoreProfilesFromBackupJson failed: ${e.message}")
+                withContext(Dispatchers.Main) {
+                    showToast("Invalid backup data in clipboard")
+                }
+            }
         }
     }
 

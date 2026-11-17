@@ -47,16 +47,18 @@ object XrayConfigGenerator {
                 put("userLevel", 8)
             })
             put("sniffing", org.json.JSONObject().apply {
-                put("enabled", true)
+                put("enabled", V2raySettings.SNIFFING_ENABLED)
                 put("destOverride", org.json.JSONArray().apply { put("http"); put("tls") })
                 put("routeOnly", false)
             })
         })
 
+        val listenAddress = if (V2raySettings.ALLOW_LAN_HOTSPOT) "0.0.0.0" else "127.0.0.1"
+
         inbounds.put(JSONObject().apply {
             put("tag", "socks-in")
             put("protocol", "socks")
-            put("listen", "127.0.0.1")
+            put("listen", listenAddress)
             put("port", SOCKS_PORT)
             put("settings", JSONObject().apply {
                 put("auth", "noauth")
@@ -64,7 +66,7 @@ object XrayConfigGenerator {
                 put("userLevel", 8)
             })
             put("sniffing", JSONObject().apply {
-                put("enabled", true)
+                put("enabled", V2raySettings.SNIFFING_ENABLED)
                 put("destOverride", JSONArray().apply { put("http"); put("tls") })
                 put("routeOnly", false)
             })
@@ -73,7 +75,7 @@ object XrayConfigGenerator {
         inbounds.put(JSONObject().apply {
             put("tag", "http-in")
             put("protocol", "http")
-            put("listen", "127.0.0.1")
+            put("listen", listenAddress)
             put("port", HTTP_PORT)
             put("settings", JSONObject().apply {
                 put("allowTransparent", false)
@@ -110,6 +112,21 @@ object XrayConfigGenerator {
                 if (V2raySettings.SESSION_DNS_MODULE) {
                     putSessionDnsRoutingRules(this)
                 }
+                val bypassedRules = V2raySettings.BYPASSED_DOMAINS.mapNotNull { toXrayDomainRule(it) }
+                if (bypassedRules.isNotEmpty()) {
+                    put(JSONObject().apply {
+                        put("type", "field")
+                        put("domain", JSONArray(bypassedRules))
+                        put("outboundTag", "direct")
+                    })
+                }
+                if (V2raySettings.BYPASS_LAN || V2raySettings.ALLOW_LAN_HOTSPOT) {
+                    put(JSONObject().apply {
+                        put("type", "field")
+                        put("ip", JSONArray().apply { put("geoip:private") })
+                        put("outboundTag", "direct")
+                    })
+                }
                 put(JSONObject().apply {
                     put("type", "field"); put("port", "53")
                     put("network", "udp,tcp")
@@ -141,6 +158,26 @@ object XrayConfigGenerator {
     }
 
     /**
+     * Converts a domain bypass string (e.g. ".ir", "shaparak.ir", "https://example.com/test", "domain:foo")
+     * into a valid Xray domain rule ("domain:ir", "domain:shaparak.ir", etc.).
+     */
+    fun toXrayDomainRule(rawEntry: String): String? {
+        var s = rawEntry.trim().lowercase()
+        if (s.startsWith("geosite:") || s.startsWith("domain:") || s.startsWith("full:") || s.startsWith("regexp:")) {
+            return s
+        }
+        if (s.startsWith("http://")) s = s.removePrefix("http://")
+        if (s.startsWith("https://")) s = s.removePrefix("https://")
+        if (s.contains('/')) s = s.substringBefore('/')
+        if (s.contains(':')) s = s.substringBefore(':')
+        while (s.startsWith(".")) s = s.removePrefix(".")
+        if (s.startsWith("www.")) s = s.removePrefix("www.")
+        s = s.trim()
+        if (s.isEmpty()) return null
+        return "domain:$s"
+    }
+
+    /**
      * Built-in DNS module, mirroring v2rayNG's getDns() — real sessions only.
      *  - tag = "dns-module" so the module's own upstream queries can be
      *    routed (inboundTag "dns-module" -> proxy, "domestic-dns" -> direct).
@@ -151,12 +188,18 @@ object XrayConfigGenerator {
      *  - domestic resolver for direct domains, skipFallback like v2rayNG.
      */
     private fun putSessionDns(root: JSONObject) {
+        val domesticDomains = JSONArray().apply {
+            put("geosite:private")
+            V2raySettings.BYPASSED_DOMAINS.forEach { raw ->
+                toXrayDomainRule(raw)?.let { rule -> put(rule) }
+            }
+        }
         root.put("dns", JSONObject().apply {
             put("servers", JSONArray().apply {
                 put(V2raySettings.REMOTE_DNS)
                 put(JSONObject().apply {
                     put("address", V2raySettings.DOMESTIC_DNS)
-                    put("domains", JSONArray().apply { put("geosite:private") })
+                    put("domains", domesticDomains)
                     put("skipFallback", true)
                     put("tag", V2raySettings.TAG_DOMESTIC_DNS)
                 })
@@ -460,10 +503,12 @@ object XrayConfigGenerator {
 
     private fun buildWireGuardOutbound(configText: String): JSONObject {
         val wg = WireGuardConfig.parse(configText)
+        val effectiveMtu = if (V2raySettings.WG_MTU_OVERRIDE in 1280..1500) V2raySettings.WG_MTU_OVERRIDE else wg.mtu
+        val effectiveKeepAlive = if (V2raySettings.WG_KEEPALIVE_OVERRIDE >= 0) V2raySettings.WG_KEEPALIVE_OVERRIDE else wg.keepAlive
         val settings = JSONObject().apply {
             put("secretKey", wg.secretKey)
             put("address", JSONArray(wg.localAddresses))
-            put("mtu", wg.mtu)
+            put("mtu", effectiveMtu)
             put("noKernelTun", true)
             if (wg.reserved != null && wg.reserved.isNotEmpty()) {
                 put("reserved", JSONArray(wg.reserved))
@@ -479,8 +524,8 @@ object XrayConfigGenerator {
                 if (!wg.preSharedKey.isNullOrBlank()) {
                     put("preSharedKey", wg.preSharedKey)
                 }
-                if (wg.keepAlive > 0) {
-                    put("keepAlive", wg.keepAlive)
+                if (effectiveKeepAlive > 0) {
+                    put("keepAlive", effectiveKeepAlive)
                 }
             }
             put("peers", JSONArray().put(peerObj))

@@ -41,7 +41,12 @@ struct vpn_state {
     std::string pass;
     jobject service_obj = nullptr;
     std::vector<int> protected_fds;
+    bool enable_dtls = true;
+    int dpd_timeout = 300;
 };
+
+static std::atomic<bool> g_enable_dtls{true};
+static std::atomic<int> g_dpd_timeout{300};
 
 static std::mutex g_state_mtx;
 static std::shared_ptr<vpn_state> g_active_vpn;
@@ -400,7 +405,12 @@ void vpn_thread_func(std::shared_ptr<vpn_state> state) {
     LOGI("CSTP connection established");
 
     // Attempt DTLS
-    openconnect_setup_dtls(vpninfo, 60);
+    if (state->enable_dtls) {
+        LOGI("Attempting DTLS setup (dpd=60)...");
+        openconnect_setup_dtls(vpninfo, 60);
+    } else {
+        LOGI("DTLS disabled by user settings; skipping DTLS setup");
+    }
 
     if (is_stop_requested(state)) {
         LOGI("Stop requested after DTLS setup; aborting before TUN establish (session=%lld)", (long long) session_id);
@@ -505,7 +515,7 @@ void vpn_thread_func(std::shared_ptr<vpn_state> state) {
     LOGI("Entering OpenConnect main loop...");
     {
         if (!is_stop_requested(state)) {
-            int ret = openconnect_mainloop(vpninfo, 300, 10);
+            int ret = openconnect_mainloop(vpninfo, state->dpd_timeout, 10);
             if (is_stop_requested(state)) {
                 // Intentional disconnect/cancel: Kotlin's stopAllEngines owns the
                 // DISCONNECTING/CANCELING -> DISCONNECTED transition and its timing.
@@ -620,6 +630,21 @@ static void perform_stop_openconnect() {
 
 extern "C"
 JNIEXPORT void JNICALL
+Java_dev_rouzbeh_hybridvpn_service_HybridVpnService_configureOpenConnectNative(
+        JNIEnv *env,
+        jobject thiz,
+        jboolean enable_dtls,
+        jint dpd_timeout) {
+    g_enable_dtls.store(enable_dtls == JNI_TRUE);
+    int clamped_dpd = dpd_timeout;
+    if (clamped_dpd < 30) clamped_dpd = 30;
+    if (clamped_dpd > 600) clamped_dpd = 600;
+    g_dpd_timeout.store(clamped_dpd);
+    LOGI("JNI: configureOpenConnectNative: enable_dtls=%d, dpd_timeout=%d", (int)enable_dtls, clamped_dpd);
+}
+
+extern "C"
+JNIEXPORT void JNICALL
 Java_dev_rouzbeh_hybridvpn_service_HybridVpnService_startOpenConnectNative(
         JNIEnv *env,
         jobject thiz,
@@ -642,6 +667,8 @@ Java_dev_rouzbeh_hybridvpn_service_HybridVpnService_startOpenConnectNative(
     new_state->tun_fd = vpn_file_descriptor;
     new_state->session_id = session_id;
     new_state->service_obj = env->NewGlobalRef(thiz);
+    new_state->enable_dtls = g_enable_dtls.load();
+    new_state->dpd_timeout = g_dpd_timeout.load();
 
     if (native_server) env->ReleaseStringUTFChars(server_address, native_server);
     if (native_user) env->ReleaseStringUTFChars(username, native_user);

@@ -137,7 +137,8 @@ class HybridVpnService : VpnService() {
     }
 
     private suspend fun preparePinnedXrayConfig(
-        activeProfile: dev.rouzbeh.hybridvpn.data.local.VpnProfile
+        activeProfile: dev.rouzbeh.hybridvpn.data.local.VpnProfile,
+        skipDnsPinning: Boolean = false
     ): PreparedXrayConfig = withContext(Dispatchers.IO) {
         val root = JSONObject(dev.rouzbeh.hybridvpn.core.vpn.v2ray.XrayConfigGenerator.generateConfig(activeProfile))
         val outbounds = root.getJSONArray("outbounds")
@@ -155,24 +156,28 @@ class HybridVpnService : VpnService() {
             ?: error("The server resolved only to IPv6, but the current TUN supports only IPv4")
         val selectedIp = selectedAddress.hostAddress ?: error("Resolved server address has no textual IP")
 
-        dev.rouzbeh.hybridvpn.core.vpn.v2ray.XrayConfigGenerator.updateProxyOutboundEndpoint(root, selectedIp)
-        emitLog("Pinned $protocol endpoint: $originalHost -> $selectedIp:$serverPort")
+        if (!skipDnsPinning) {
+            dev.rouzbeh.hybridvpn.core.vpn.v2ray.XrayConfigGenerator.updateProxyOutboundEndpoint(root, selectedIp)
+            emitLog("Pinned $protocol endpoint: $originalHost -> $selectedIp:$serverPort")
 
-        // Proxy-server-domain bootstrap (mirrors upstream v2rayNG
-        // resolveOutboundDomainsToHosts): pin the already-resolved IP into
-        // dns.hosts so the core never has to resolve the server domain, and
-        // prepend a routing rule sending any stray lookup for it to "direct".
-        // Together they make the circular "resolve the server via the proxy
-        // that needs the server" deadlock impossible. IP literals skip both.
-        try {
-            val pinned = dev.rouzbeh.hybridvpn.core.vpn.v2ray.XrayConfigGenerator.pinServerDomainResolution(
-                root, originalHost, selectedIp
-            )
-            if (pinned) {
-                emitLog("DNS bootstrap: $originalHost pinned to $selectedIp and routed direct")
+            // Proxy-server-domain bootstrap (mirrors upstream v2rayNG
+            // resolveOutboundDomainsToHosts): pin the already-resolved IP into
+            // dns.hosts so the core never has to resolve the server domain, and
+            // prepend a routing rule sending any stray lookup for it to "direct".
+            // Together they make the circular "resolve the server via the proxy
+            // that needs the server" deadlock impossible. IP literals skip both.
+            try {
+                val pinned = dev.rouzbeh.hybridvpn.core.vpn.v2ray.XrayConfigGenerator.pinServerDomainResolution(
+                    root, originalHost, selectedIp
+                )
+                if (pinned) {
+                    emitLog("DNS bootstrap: $originalHost pinned to $selectedIp and routed direct")
+                }
+            } catch (t: Throwable) {
+                emitLog("DNS bootstrap failed (non-fatal): ${t.message}")
             }
-        } catch (t: Throwable) {
-            emitLog("DNS bootstrap failed (non-fatal): ${t.message}")
+        } else {
+            emitLog("DNS bootstrap/pinning skipped for $protocol endpoint $originalHost:$serverPort")
         }
 
         PreparedXrayConfig(
@@ -533,6 +538,7 @@ class HybridVpnService : VpnService() {
     }
 
     private suspend fun startV2Ray(activeProfile: dev.rouzbeh.hybridvpn.data.local.VpnProfile) {
+        val settings = SettingsRepository(applicationContext).also { it.syncRuntimeSettings() }
         val isWireGuard = currentConnectedProtocol == VpnProtocol.WireGuard ||
             activeProfile.protocol.equals("WireGuard", ignoreCase = true) ||
             dev.rouzbeh.hybridvpn.core.vpn.wireguard.WireGuardConfig.isWireGuardConfig(activeProfile.serverAddress)
@@ -544,8 +550,9 @@ class HybridVpnService : VpnService() {
         prepareXrayAssets()
         emitLog("Generating and pinning Xray configuration for ${targetProtocol.title}...")
 
+        val skipDnsPinning = isWireGuard && !settings.isWireGuardBootstrapResolveEnabled()
         val preparedConfig = try {
-            preparePinnedXrayConfig(activeProfile)
+            preparePinnedXrayConfig(activeProfile, skipDnsPinning = skipDnsPinning)
         } catch (t: Throwable) {
             emitLog("FATAL: Cannot prepare Xray endpoint: ${t.message}")
             VpnStateManager.updateStateFromNative(3)
@@ -553,9 +560,15 @@ class HybridVpnService : VpnService() {
             return
         }
 
+        val tunnelDns = if (isWireGuard) {
+            settings.getWireGuardTunnelDns().ifBlank { dev.rouzbeh.hybridvpn.core.vpn.v2ray.V2raySettings.VPN_DNS }
+        } else {
+            settings.getV2rayVpnDns().ifBlank { dev.rouzbeh.hybridvpn.core.vpn.v2ray.V2raySettings.VPN_DNS }
+        }
+
         emitLog("Establishing TUN...")
         val fd = try {
-            establishTunNative(ip = "172.19.0.1", dns = dev.rouzbeh.hybridvpn.core.vpn.v2ray.V2raySettings.VPN_DNS, excludedServerIp = preparedConfig.serverIp)
+            establishTunNative(ip = "172.19.0.1", dns = tunnelDns, excludedServerIp = preparedConfig.serverIp)
         } catch (e: dev.rouzbeh.hybridvpn.core.routing.RoutingRefusedException) {
             emitLog("FATAL: Connection refused by routing policy: " + e.message)
             VpnStateManager.updateStateFromNative(3)
@@ -662,6 +675,7 @@ class HybridVpnService : VpnService() {
             emitLog("FATAL: VPN consent not granted / revoked.")
             return -1
         }
+        val settings = SettingsRepository(applicationContext)
         val launchIntent = packageManager.getLaunchIntentForPackage(packageName)
         val pendingConfigure = android.app.PendingIntent.getActivity(
             this, 0, launchIntent, android.app.PendingIntent.FLAG_IMMUTABLE
@@ -669,7 +683,7 @@ class HybridVpnService : VpnService() {
         val builder = Builder()
             .setSession("HybridNestVPN")
             .setConfigureIntent(pendingConfigure)
-            .setMtu(1400)
+            .setMtu(settings.getOpenConnectMtu())
             .addAddress(ip, 32)
             .addRoute("0.0.0.0", 0)
 
@@ -681,9 +695,10 @@ class HybridVpnService : VpnService() {
             .map { it.trim() }
             .filter { it.isNotEmpty() && !it.contains(':') }
         serverDnsServers.forEach { server -> builder.addDnsServer(server) }
-        // Static fallback ONLY when the server assigned no IPv4 resolvers.
-        if (serverDnsServers.isEmpty()) builder.addDnsServer("8.8.8.8")
-        emitLog("Builder DNS servers: ${serverDnsServers.ifEmpty { listOf("8.8.8.8 (fallback; server assigned none)") }}")
+        // Fallback ONLY when the server assigned no IPv4 resolvers.
+        val fallbackDns = settings.getOpenConnectFallbackDns().ifBlank { "8.8.8.8" }
+        if (serverDnsServers.isEmpty()) builder.addDnsServer(fallbackDns)
+        emitLog("Builder DNS servers: ${serverDnsServers.ifEmpty { listOf("$fallbackDns (fallback; server assigned none)") }}")
 
         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) builder.setMetered(false)
         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.LOLLIPOP_MR1) builder.setBlocking(false)
@@ -732,6 +747,12 @@ class HybridVpnService : VpnService() {
             emitLog("FATAL: VPN consent not granted / revoked.")
             return -1
         }
+        val settings = SettingsRepository(applicationContext)
+        val mtu = if (currentConnectedProtocol == VpnProtocol.WireGuard && settings.getWireGuardMtuOverride() in 1280..1500) {
+            settings.getWireGuardMtuOverride()
+        } else {
+            1400
+        }
         val launchIntent = packageManager.getLaunchIntentForPackage(packageName)
         val pendingConfigure = android.app.PendingIntent.getActivity(
             this, 0, launchIntent, android.app.PendingIntent.FLAG_IMMUTABLE
@@ -739,7 +760,7 @@ class HybridVpnService : VpnService() {
         val builder = Builder()
             .setSession("HybridNestVPN")
             .setConfigureIntent(pendingConfigure)
-            .setMtu(1400)
+            .setMtu(mtu)
             .addAddress(ip, 32)
 
         if (excludedServerIp !is Inet4Address) {
@@ -1002,6 +1023,10 @@ class HybridVpnService : VpnService() {
     private fun launchConnectivityCheck(forSessionId: Long) {
         checkJob?.cancel()
         checkJob = serviceScope.launch {
+            if (!SettingsRepository(applicationContext).isConnectivityCheckEnabled()) {
+                emitLog("Post-connect connectivity check skipped (disabled in Features settings).")
+                return@launch
+            }
             // Preserve the protocol captured at check start; V2Ray checks run in
             // startV2Ray with the local HTTP proxy instead.
             val proto = currentConnectedProtocol
@@ -1218,6 +1243,7 @@ class HybridVpnService : VpnService() {
         super.onDestroy()
     }
 
+    private external fun configureOpenConnectNative(enableDtls: Boolean, dpdTimeout: Int)
     private external fun startOpenConnectNative(serverAddress: String, username: String, password: String, vpnFileDescriptor: Int, sessionId: Long)
     private external fun interruptOpenConnectNative()
     private external fun stopOpenConnectNative()
@@ -1229,6 +1255,11 @@ class HybridVpnService : VpnService() {
             stopSelf()
             return 
         }
+        val settings = SettingsRepository(applicationContext).also { it.syncRuntimeSettings() }
+        configureOpenConnectNative(
+            enableDtls = settings.isOpenConnectDtlsEnabled(),
+            dpdTimeout = settings.getOpenConnectDpdTimeout()
+        )
         startOpenConnectNative(p.serverAddress, p.username, p.password, -1, sessionId)
     }
 }

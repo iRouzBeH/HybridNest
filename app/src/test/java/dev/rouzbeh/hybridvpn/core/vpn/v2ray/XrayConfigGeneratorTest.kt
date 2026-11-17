@@ -304,4 +304,178 @@ class XrayConfigGeneratorTest {
                 .getJSONArray("vnext").getJSONObject(0).getString("address")
         )
     }
+
+    // ================================================== dynamic settings & overrides
+
+    @Test
+    fun `sniffing toggles dynamically based on V2raySettings`() {
+        try {
+            V2raySettings.SNIFFING_ENABLED = false
+            val inboundsOff = generate().getJSONArray("inbounds")
+            val tunOff = (0 until inboundsOff.length()).map { inboundsOff.getJSONObject(it) }.first { it.optString("tag") == "tun-in" }
+            assertFalse(tunOff.getJSONObject("sniffing").getBoolean("enabled"))
+
+            V2raySettings.SNIFFING_ENABLED = true
+            val inboundsOn = generate().getJSONArray("inbounds")
+            val tunOn = (0 until inboundsOn.length()).map { inboundsOn.getJSONObject(it) }.first { it.optString("tag") == "tun-in" }
+            assertTrue(tunOn.getJSONObject("sniffing").getBoolean("enabled"))
+        } finally {
+            V2raySettings.resetToDefaults()
+        }
+    }
+
+    @Test
+    fun `bypass lan rule is conditionally injected into routing rules`() {
+        try {
+            V2raySettings.BYPASS_LAN = false
+            val rulesOff = routingRules(generate())
+            val hasGeoIpOff = (0 until rulesOff.length()).any { i ->
+                rulesOff.getJSONObject(i).optJSONArray("ip")?.let { arr ->
+                    (0 until arr.length()).any { j -> arr.getString(j) == "geoip:private" }
+                } == true
+            }
+            assertFalse("geoip:private rule should not be present when BYPASS_LAN is false", hasGeoIpOff)
+
+            V2raySettings.BYPASS_LAN = true
+            val rulesOn = routingRules(generate())
+            val geoIpRule = (0 until rulesOn.length()).map { rulesOn.getJSONObject(it) }.firstOrNull { rule ->
+                rule.optJSONArray("ip")?.let { arr ->
+                    (0 until arr.length()).any { j -> arr.getString(j) == "geoip:private" }
+                } == true
+            }
+            assertTrue("geoip:private rule should be present when BYPASS_LAN is true", geoIpRule != null)
+            assertEquals("direct", geoIpRule?.getString("outboundTag"))
+        } finally {
+            V2raySettings.resetToDefaults()
+        }
+    }
+
+    @Test
+    fun `wireguard outbound respects MTU and keepalive overrides in V2raySettings`() {
+        val samplePrivKey = "YKh/8+7bVzM+p0yT7v6E2Z1r0x5y8z9w1a2b3c4d5e8="
+        val samplePubKey = "bmXOC+F1FxEMF9dyiK2H5/1SUtzHP0JuVo5VCa2wWg4="
+        val wgUri = "wireguard://${java.net.URLEncoder.encode(samplePrivKey, "UTF-8")}@198.51.100.1:51820" +
+            "?address=10.0.0.2%2F32&publickey=${java.net.URLEncoder.encode(samplePubKey, "UTF-8")}&mtu=1360&keepalive=25"
+        val profile = VpnProfile(name = "wg", protocol = "wireguard", serverAddress = wgUri)
+
+        try {
+            // Default (no override: WG_MTU_OVERRIDE=0, WG_KEEPALIVE_OVERRIDE=-1)
+            V2raySettings.resetToDefaults()
+            val defSettings = proxyOutbound(generate(profile)).getJSONObject("settings")
+            assertEquals(1360, defSettings.getInt("mtu"))
+            assertEquals(25, defSettings.getJSONArray("peers").getJSONObject(0).getInt("keepAlive"))
+
+            // Overrides applied
+            V2raySettings.WG_MTU_OVERRIDE = 1420
+            V2raySettings.WG_KEEPALIVE_OVERRIDE = 50
+            val overriddenSettings = proxyOutbound(generate(profile)).getJSONObject("settings")
+            assertEquals(1420, overriddenSettings.getInt("mtu"))
+            assertEquals(50, overriddenSettings.getJSONArray("peers").getJSONObject(0).getInt("keepAlive"))
+        } finally {
+            V2raySettings.resetToDefaults()
+        }
+    }
+
+    @Test
+    fun `toXrayDomainRule correctly normalizes prefixes URLs and suffixes`() {
+        assertEquals("domain:ir", XrayConfigGenerator.toXrayDomainRule(".ir"))
+        assertEquals("domain:shaparak.ir", XrayConfigGenerator.toXrayDomainRule("shaparak.ir"))
+        assertEquals("domain:digikala.com", XrayConfigGenerator.toXrayDomainRule("https://www.digikala.com/product/123"))
+        assertEquals("geosite:ir", XrayConfigGenerator.toXrayDomainRule("geosite:ir"))
+        assertEquals("domain:google.com", XrayConfigGenerator.toXrayDomainRule("domain:google.com"))
+        assertEquals(null, XrayConfigGenerator.toXrayDomainRule("   "))
+    }
+
+    @Test
+    fun `bypassed domains are added to domestic DNS module and direct routing rules`() {
+        try {
+            V2raySettings.resetToDefaults()
+            V2raySettings.BYPASSED_DOMAINS = setOf(".ir", "shaparak.ir")
+
+            val root = generate()
+
+            // Check DNS module domestic resolver domains
+            val dnsServers = root.getJSONObject("dns").getJSONArray("servers")
+            val domesticServer = (0 until dnsServers.length())
+                .map { dnsServers.optJSONObject(it) }
+                .first { it != null && it.optString("tag") == V2raySettings.TAG_DOMESTIC_DNS }!!
+            val domains = domesticServer.getJSONArray("domains")
+            val domainList = (0 until domains.length()).map { domains.getString(it) }
+            assertTrue(domainList.contains("geosite:private"))
+            assertTrue(domainList.contains("domain:ir"))
+            assertTrue(domainList.contains("domain:shaparak.ir"))
+
+            // Check direct routing rule for bypassed domains
+            val rules = routingRules(root)
+            val directDomainRule = (0 until rules.length())
+                .map { rules.getJSONObject(it) }
+                .firstOrNull {
+                    it.optString("outboundTag") == "direct" && it.has("domain")
+                }
+            assertTrue("Expected direct domain routing rule", directDomainRule != null)
+            val routedDomains = (0 until directDomainRule!!.getJSONArray("domain").length())
+                .map { directDomainRule.getJSONArray("domain").getString(it) }
+            assertTrue(routedDomains.contains("domain:ir"))
+            assertTrue(routedDomains.contains("domain:shaparak.ir"))
+        } finally {
+            V2raySettings.resetToDefaults()
+        }
+    }
+
+    @Test
+    fun `allow LAN hotspot switches inbounds to 0_0_0_0 and routes geoip private directly`() {
+        try {
+            // Default: hotspot false -> listen on 127.0.0.1
+            V2raySettings.resetToDefaults()
+            var root = generate()
+            var inbounds = root.getJSONArray("inbounds")
+            var socksIn = (0 until inbounds.length()).map { inbounds.getJSONObject(it) }.first { it.getString("tag") == "socks-in" }
+            var httpIn = (0 until inbounds.length()).map { inbounds.getJSONObject(it) }.first { it.getString("tag") == "http-in" }
+            assertEquals("127.0.0.1", socksIn.getString("listen"))
+            assertEquals("127.0.0.1", httpIn.getString("listen"))
+
+            // Hotspot true -> listen on 0.0.0.0 and geoip:private routed direct
+            V2raySettings.ALLOW_LAN_HOTSPOT = true
+            root = generate()
+            inbounds = root.getJSONArray("inbounds")
+            socksIn = (0 until inbounds.length()).map { inbounds.getJSONObject(it) }.first { it.getString("tag") == "socks-in" }
+            httpIn = (0 until inbounds.length()).map { inbounds.getJSONObject(it) }.first { it.getString("tag") == "http-in" }
+            assertEquals("0.0.0.0", socksIn.getString("listen"))
+            assertEquals("0.0.0.0", httpIn.getString("listen"))
+
+            val rules = routingRules(root)
+            val directPrivateIpRule = (0 until rules.length())
+                .map { rules.getJSONObject(it) }
+                .firstOrNull {
+                    it.optString("outboundTag") == "direct" &&
+                        it.optJSONArray("ip")?.let { ipArr ->
+                            (0 until ipArr.length()).any { i -> ipArr.getString(i) == "geoip:private" }
+                        } == true
+                }
+            assertTrue("Expected geoip:private direct routing rule when hotspot is active", directPrivateIpRule != null)
+        } finally {
+            V2raySettings.resetToDefaults()
+        }
+    }
+
+    @Test
+    fun `resetToDefaults restores all original compile-time defaults`() {
+        V2raySettings.VPN_DNS = "1.2.3.4"
+        V2raySettings.REMOTE_DNS = "tcp://8.8.8.8"
+        V2raySettings.SNIFFING_ENABLED = false
+        V2raySettings.BYPASS_LAN = true
+        V2raySettings.WG_MTU_OVERRIDE = 1400
+        V2raySettings.BYPASSED_DOMAINS = setOf("test.ir")
+        V2raySettings.ALLOW_LAN_HOTSPOT = true
+
+        V2raySettings.resetToDefaults()
+
+        assertEquals(V2raySettings.DEFAULT_VPN_DNS, V2raySettings.VPN_DNS)
+        assertEquals(V2raySettings.DEFAULT_REMOTE_DNS, V2raySettings.REMOTE_DNS)
+        assertEquals(V2raySettings.DEFAULT_SNIFFING_ENABLED, V2raySettings.SNIFFING_ENABLED)
+        assertEquals(V2raySettings.DEFAULT_BYPASS_LAN, V2raySettings.BYPASS_LAN)
+        assertEquals(V2raySettings.DEFAULT_WG_MTU_OVERRIDE, V2raySettings.WG_MTU_OVERRIDE)
+        assertEquals(V2raySettings.DEFAULT_BYPASSED_DOMAINS, V2raySettings.BYPASSED_DOMAINS)
+        assertEquals(V2raySettings.DEFAULT_ALLOW_LAN_HOTSPOT, V2raySettings.ALLOW_LAN_HOTSPOT)
+    }
 }

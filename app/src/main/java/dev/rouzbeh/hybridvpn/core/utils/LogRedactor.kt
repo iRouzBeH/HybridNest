@@ -56,11 +56,19 @@ object LogRedactor {
     private const val REDACTED = "<redacted>"
 
     /**
+     * Master switch for strict producer-side redaction.
+     * When disabled, lines are passed through verbatim.
+     */
+    @JvmField
+    @Volatile
+    var strictRedactionEnabled: Boolean = true
+
+    /**
      * Redacts a single log line. Idempotent: already-redacted lines pass through
      * unchanged, so double-redaction cannot corrupt output.
      */
     fun redact(line: String): String {
-        if (line.isEmpty()) return line
+        if (!strictRedactionEnabled || line.isEmpty()) return line
         var out = line
 
         // 1. Secret-bearing headers: "Name: value" -> "Name: <redacted>".

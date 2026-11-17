@@ -341,25 +341,41 @@ fun DashboardScreen(
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
 
+    var activeDrawerModal by remember { mutableStateOf(DrawerModalType.NONE) }
+    var openSplitSheetTrigger by remember { mutableStateOf(0) }
+    var disconnectWarningMessage by remember { mutableStateOf<String?>(null) }
+
     androidx.compose.material3.ModalNavigationDrawer(
         drawerState = drawerState,
         gesturesEnabled = drawerState.isOpen, // CRITICAL FIX: Disables swipe-to-open
         drawerContent = {
             androidx.compose.material3.ModalDrawerSheet(
-                modifier = Modifier.fillMaxWidth(0.75f), // Takes exactly 3/4 of the screen
+                modifier = Modifier.fillMaxWidth(0.80f),
                 drawerContainerColor = SurfaceMenu
             ) {
-                Spacer(modifier = Modifier.height(64.dp))
-                Text(
-                    "HybridNest",
-                    color = PrimaryCyan,
-                    fontSize = 24.sp,
-                    fontWeight = FontWeight.Bold,
-                    fontFamily = SoraFamily,
-                    modifier = Modifier.padding(16.dp)
+                HybridNestDrawerContent(
+                    isDrawerOpen = drawerState.isOpen,
+                    onSelectModal = { modal ->
+                        scope.launch { drawerState.close() }
+                        when (modal) {
+                            DrawerModalType.ANYCONNECT,
+                            DrawerModalType.WIREGUARD,
+                            DrawerModalType.V2RAY,
+                            DrawerModalType.FEATURES -> {
+                                if (!connectionState.isTerminal) {
+                                    disconnectWarningMessage = "Cannot modify settings while VPN is connected. Please disconnect your active connection and try again.\n\nWould you like to disconnect now?"
+                                } else {
+                                    activeDrawerModal = modal
+                                }
+                            }
+                            DrawerModalType.CHECK_UPDATE,
+                            DrawerModalType.ABOUT -> {
+                                activeDrawerModal = modal
+                            }
+                            DrawerModalType.NONE -> Unit
+                        }
+                    }
                 )
-                androidx.compose.material3.HorizontalDivider(color = BorderGlass)
-                // Future menu items will go here
             }
         }
     ) {
@@ -414,10 +430,31 @@ fun DashboardScreen(
             onOpenDrawer = { scope.launch { drawerState.open() } },
             onRetryIpFetch = { viewModel.retryFetchIp() },
             onImportWireGuardUri = { uri -> viewModel.importWireGuardFromUri(context, uri) },
+            openSplitSheetTrigger = openSplitSheetTrigger,
             toastFlow = viewModel.toastMessage,
-            subscriptionToastFlow = viewModel.subscriptionToast
+            subscriptionToastFlow = viewModel.subscriptionToast,
+            onShowDisconnectWarning = { disconnectWarningMessage = it }
         )
     }
+
+    DrawerModalHost(
+        activeModal = activeDrawerModal,
+        onDismiss = { activeDrawerModal = DrawerModalType.NONE },
+        viewModel = viewModel,
+        onOpenPerAppRouting = {
+            activeDrawerModal = DrawerModalType.NONE
+            openSplitSheetTrigger++
+        }
+    )
+
+    ActiveConnectionWarningDialog(
+        message = disconnectWarningMessage,
+        onDismiss = { disconnectWarningMessage = null },
+        onDisconnect = {
+            disconnectWarningMessage = null
+            viewModel.initiateDisconnect(context) { /* handled in VM */ }
+        }
+    )
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -465,8 +502,10 @@ fun DashboardContent(
     onOpenDrawer: () -> Unit,
     onRetryIpFetch: () -> Unit,
     onImportWireGuardUri: ((android.net.Uri) -> Unit)? = null,
+    openSplitSheetTrigger: Int = 0,
     toastFlow: kotlinx.coroutines.flow.Flow<String>,
-    subscriptionToastFlow: kotlinx.coroutines.flow.Flow<String> = kotlinx.coroutines.flow.emptyFlow()
+    subscriptionToastFlow: kotlinx.coroutines.flow.Flow<String> = kotlinx.coroutines.flow.emptyFlow(),
+    onShowDisconnectWarning: (String) -> Unit = {}
 ) {
     var showAddServerSheet by remember { mutableStateOf(false) }
     var showServerListSheet by remember { mutableStateOf(false) }
@@ -476,6 +515,12 @@ fun DashboardContent(
     var editingProfile by remember { mutableStateOf<VpnProfile?>(null) }
     var dashboardToastMessage by remember { mutableStateOf<String?>(null) }
     val onShowToast = { msg: String -> dashboardToastMessage = msg }
+
+    LaunchedEffect(openSplitSheetTrigger) {
+        if (openSplitSheetTrigger > 0) {
+            showSplitSheet = true
+        }
+    }
 
     val currentProtocolDisplay = VpnProtocolDisplay.entries.find { it.title == selectedProtocol }
         ?: VpnProtocolDisplay.OpenConnect
@@ -649,9 +694,15 @@ fun DashboardContent(
                 }
                 RoutingSelectorButton(
                     currentMode = currentMode,
-                    isEnabled = isUiUnlocked, // Reuse the same lock logic as protocols
+                    isEnabled = isUiUnlocked,
                     onClick = {
-                        if (isPerAppEnabled) showAppRoutingScreen = true else showSplitSheet = true
+                        if (isUiUnlocked) {
+                            if (isPerAppEnabled) showAppRoutingScreen = true else showSplitSheet = true
+                        } else {
+                            onShowDisconnectWarning(
+                                "Cannot modify Split Tunneling while VPN is connected. Please disconnect your active connection and try again.\n\nWould you like to disconnect now?"
+                            )
+                        }
                     }
                 )
 
@@ -660,7 +711,14 @@ fun DashboardContent(
                     selectedProtocol = currentProtocolDisplay,
                     isEnabled = isUiUnlocked,
                     onProtocolSelected = {
-                        onProtocolSelected(it.title)
+                        if (it == currentProtocolDisplay) return@ProtocolSelector
+                        if (isUiUnlocked) {
+                            onProtocolSelected(it.title)
+                        } else {
+                            onShowDisconnectWarning(
+                                "Cannot switch protocol while VPN is connected. Please disconnect your active connection and try again.\n\nWould you like to disconnect now?"
+                            )
+                        }
                     }
                 )
 
@@ -671,7 +729,15 @@ fun DashboardContent(
                     hasProfiles = filteredProfiles.isNotEmpty(),
                     isEnabled = isUiUnlocked,
                     onClick = { showServerListSheet = true },
-                    onAddClick = { if (isUiUnlocked) showAddServerSheet = true }
+                    onAddClick = {
+                        if (isUiUnlocked) {
+                            showAddServerSheet = true
+                        } else {
+                            onShowDisconnectWarning(
+                                "Cannot add a server while VPN is connected. Please disconnect your active connection and try again.\n\nWould you like to disconnect now?"
+                            )
+                        }
+                    }
                 )
 
                 // 6. Bottom Grid (4 boxes: Status, Ping, Uptime, Power)
@@ -1239,11 +1305,10 @@ fun ServerSelectorButton(
         Box(
             modifier = Modifier
                 .size(64.dp)
-                .alpha(if (isEnabled) 1f else 0.5f)
                 .clip(RoundedCornerShape(16.dp))
                 .background(SurfaceGlass)
                 .border(1.dp, BorderGlass, RoundedCornerShape(16.dp))
-                .clickable(enabled = isEnabled) {
+                .clickable {
                     haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
                     onAddClick()
                 },
@@ -1252,7 +1317,7 @@ fun ServerSelectorButton(
             Icon(
                 imageVector = Icons.Default.Add,
                 contentDescription = "Add Server",
-                tint = if (isEnabled) PrimaryCyan else Color.Gray.copy(alpha = 0.5f)
+                tint = PrimaryCyan
             )
         }
     }
@@ -1957,8 +2022,7 @@ fun ProtocolSelector(
 
     Row(
         modifier = Modifier
-            .fillMaxWidth()
-            .alpha(if (isEnabled) 1f else 0.5f),
+            .fillMaxWidth(),
         horizontalArrangement = Arrangement.spacedBy(8.dp)
     ) {
         VpnProtocolDisplay.entries.forEach { protocol ->
@@ -1987,7 +2051,7 @@ fun ProtocolSelector(
                         color = if (isSelected) PrimaryCyan else BorderGlass,
                         shape = RoundedCornerShape(16.dp)
                     )
-                    .clickable(enabled = isEnabled) {
+                    .clickable {
                         haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
                         onProtocolSelected(protocol)
                     }
@@ -3242,11 +3306,10 @@ fun RoutingSelectorButton(
         modifier = modifier
             .fillMaxWidth()
             .height(64.dp)
-            .alpha(if (isEnabled) 1f else 0.5f)
             .clip(RoundedCornerShape(16.dp))
             .background(SurfaceGlass)
             .border(1.dp, BorderGlass, RoundedCornerShape(16.dp))
-            .clickable(enabled = isEnabled) {
+            .clickable {
                 haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
                 onClick()
             }
