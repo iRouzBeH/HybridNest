@@ -1,6 +1,7 @@
 package dev.rouzbeh.hybridvpn.core.vpn.v2ray
 
 import android.util.Base64
+import dev.rouzbeh.hybridvpn.core.vpn.wireguard.WireGuardConfig
 import dev.rouzbeh.hybridvpn.data.local.VpnProfile
 import org.json.JSONArray
 import org.json.JSONObject
@@ -222,6 +223,113 @@ object XrayConfigGenerator {
     }
 
     /**
+     * Extracts the server endpoint (host and port) from a configuration string.
+     * Supports wireguard://, WireGuard .conf, vless://, trojan://, and vmess://.
+     */
+    fun extractServerEndpoint(addressOrConfig: String): Pair<String, Int>? {
+        val trimmed = addressOrConfig.trim()
+        return when {
+            WireGuardConfig.isWireGuardConfig(trimmed) -> {
+                runCatching {
+                    val wg = WireGuardConfig.parse(trimmed)
+                    Pair(wg.endpointHost, wg.endpointPort)
+                }.getOrNull()
+            }
+            trimmed.startsWith("vless://", true) || trimmed.startsWith("trojan://", true) -> {
+                runCatching {
+                    val link = parseShareLink(trimmed)
+                    Pair(link.host, link.port)
+                }.getOrNull()
+            }
+            trimmed.startsWith("vmess://", true) -> {
+                runCatching {
+                    val b64 = trimmed.substringAfter("://").substringBefore('#')
+                    val decoded = String(WireGuardConfig.Base64Util.decode(b64))
+                    val json = JSONObject(decoded)
+                    Pair(json.optString("add"), json.optInt("port", 443))
+                }.getOrNull()
+            }
+            else -> null
+        }
+    }
+
+    /**
+     * Extracts the server endpoint (host and port) from a VPN profile.
+     */
+    fun extractServerEndpoint(profile: VpnProfile): Pair<String, Int>? =
+        extractServerEndpoint(profile.serverAddress)
+
+    /**
+     * Extracts the server endpoint (host and port) from an Xray outbound JSON object (e.g. tagged "proxy").
+     * Supports vless, vmess, trojan, and wireguard outbounds.
+     */
+    fun extractEndpointFromOutbound(outbound: JSONObject): Pair<String, Int>? {
+        val protocol = outbound.optString("protocol")
+        val settings = outbound.optJSONObject("settings") ?: return null
+        return when (protocol) {
+            "vless", "vmess" -> {
+                val target = settings.optJSONArray("vnext")?.optJSONObject(0) ?: return null
+                val addr = target.optString("address")
+                val port = target.optInt("port", 443)
+                if (addr.isNotBlank()) Pair(addr, port) else null
+            }
+            "trojan" -> {
+                val target = settings.optJSONArray("servers")?.optJSONObject(0) ?: return null
+                val addr = target.optString("address")
+                val port = target.optInt("port", 443)
+                if (addr.isNotBlank()) Pair(addr, port) else null
+            }
+            "wireguard" -> {
+                val peer = settings.optJSONArray("peers")?.optJSONObject(0) ?: return null
+                val ep = peer.optString("endpoint")
+                WireGuardConfig.parseHostAndPort(ep)
+            }
+            else -> null
+        }
+    }
+
+    /**
+     * Updates the proxy outbound's endpoint address (and optionally port) with the resolved IP.
+     * Supports vless, vmess, trojan, and wireguard outbounds.
+     */
+    fun updateProxyOutboundEndpoint(root: JSONObject, resolvedIp: String, port: Int? = null): Boolean {
+        val outbounds = root.optJSONArray("outbounds") ?: return false
+        val proxy = (0 until outbounds.length())
+            .map { outbounds.getJSONObject(it) }
+            .firstOrNull { it.optString("tag") == "proxy" } ?: return false
+        val protocol = proxy.optString("protocol")
+        val settings = proxy.optJSONObject("settings") ?: return false
+        return when (protocol) {
+            "vless", "vmess" -> {
+                val target = settings.optJSONArray("vnext")?.optJSONObject(0) ?: return false
+                target.put("address", resolvedIp)
+                if (port != null && port > 0) target.put("port", port)
+                true
+            }
+            "trojan" -> {
+                val target = settings.optJSONArray("servers")?.optJSONObject(0) ?: return false
+                target.put("address", resolvedIp)
+                if (port != null && port > 0) target.put("port", port)
+                true
+            }
+            "wireguard" -> {
+                val peer = settings.optJSONArray("peers")?.optJSONObject(0) ?: return false
+                val currentEp = peer.optString("endpoint")
+                val currentPort = WireGuardConfig.parseHostAndPort(currentEp)?.second ?: (port ?: 51820)
+                val p = if (port != null && port > 0) port else currentPort
+                val newEp = if (resolvedIp.contains(":") && !resolvedIp.startsWith("[")) {
+                    "[$resolvedIp]:$p"
+                } else {
+                    "$resolvedIp:$p"
+                }
+                peer.put("endpoint", newEp)
+                true
+            }
+            else -> false
+        }
+    }
+
+    /**
      * Config for the ping/delay-test path (Libv2ray.measureOutboundDelay).
      *
      * Mirrors upstream v2rayNG's getV2rayConfig4Speedtest, whose
@@ -344,7 +452,44 @@ object XrayConfigGenerator {
             address.startsWith("vless://", true) ||
             address.startsWith("trojan://", true) -> buildVlessOrTrojanOutbound(address, forSession)
             address.startsWith("vmess://", true)  -> buildVmessOutbound(address, forSession)
+            WireGuardConfig.isWireGuardConfig(address) ||
+            profile.protocol.equals("wireguard", ignoreCase = true) -> buildWireGuardOutbound(address)
             else -> error("Unsupported config scheme: ${address.substringBefore("://")}")
+        }
+    }
+
+    private fun buildWireGuardOutbound(configText: String): JSONObject {
+        val wg = WireGuardConfig.parse(configText)
+        val settings = JSONObject().apply {
+            put("secretKey", wg.secretKey)
+            put("address", JSONArray(wg.localAddresses))
+            put("mtu", wg.mtu)
+            put("noKernelTun", true)
+            if (wg.reserved != null && wg.reserved.isNotEmpty()) {
+                put("reserved", JSONArray(wg.reserved))
+            }
+            val peerObj = JSONObject().apply {
+                val authority = if (wg.endpointHost.contains(":") && !wg.endpointHost.startsWith("[")) {
+                    "[${wg.endpointHost}]:${wg.endpointPort}"
+                } else {
+                    "${wg.endpointHost}:${wg.endpointPort}"
+                }
+                put("endpoint", authority)
+                put("publicKey", wg.publicKey)
+                if (!wg.preSharedKey.isNullOrBlank()) {
+                    put("preSharedKey", wg.preSharedKey)
+                }
+                if (wg.keepAlive > 0) {
+                    put("keepAlive", wg.keepAlive)
+                }
+            }
+            put("peers", JSONArray().put(peerObj))
+        }
+
+        return JSONObject().apply {
+            put("protocol", "wireguard")
+            put("settings", settings)
+            // Note: WireGuard outbound is an L3 tunnel protocol and does not use streamSettings or mux
         }
     }
 
@@ -654,7 +799,7 @@ object XrayConfigGenerator {
         return streamObj
     }
 
-    private fun isDomainName(value: String?): Boolean {
+    internal fun isDomainName(value: String?): Boolean {
         if (value.isNullOrBlank()) return false
         val v = value.trim()
         // mirrored approximation of Utils.isDomainName: not pure IP and looks like domain
@@ -663,7 +808,7 @@ object XrayConfigGenerator {
         return v.contains('.') && Regex("^[A-Za-z0-9.-]+$").matches(v)
     }
 
-    private fun isPureIpAddress(value: String): Boolean {
+    internal fun isPureIpAddress(value: String): Boolean {
         val v = value.trim().removePrefix("[").removeSuffix("]")
         // IPv4
         if (Regex("^([0-9]{1,3}\\.){3}[0-9]{1,3}$").matches(v)) {

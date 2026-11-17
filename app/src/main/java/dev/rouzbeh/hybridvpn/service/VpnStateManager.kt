@@ -32,7 +32,7 @@ enum class ConnectionState {
 enum class VpnProtocol(val title: String) {
     OpenConnect("OpenConnect"),
     V2rayNG("v2rayNG"),
-    Dns("DNS")
+    WireGuard("WireGuard")
 }
 
 sealed class DetailedState {
@@ -383,9 +383,8 @@ object VpnStateManager {
                 return
             }
             if (state == ConnectionState.CONNECTED && ip != "Unavailable") {
-                val isDns = (_detailedConnectionState.value as? DetailedState.Connected)?.activeProtocol == VpnProtocol.Dns
                 val realIp = lastKnownRealIp
-                if (!isDns && !realIp.isNullOrBlank() && ip.equals(realIp, ignoreCase = true)) {
+                if (!realIp.isNullOrBlank() && ip.equals(realIp, ignoreCase = true)) {
                     logDebug(TAG, "Rejected pre-VPN real IP ($ip) while CONNECTED")
                     return
                 }
@@ -404,9 +403,8 @@ object VpnStateManager {
         ) {
             return
         }
-        val isDns = (_detailedConnectionState.value as? DetailedState.Connected)?.activeProtocol == VpnProtocol.Dns
         val realIp = lastKnownRealIp
-        if (state == ConnectionState.CONNECTED && !isDns && !realIp.isNullOrBlank() && ip.equals(realIp, ignoreCase = true)) {
+        if (state == ConnectionState.CONNECTED && !realIp.isNullOrBlank() && ip.equals(realIp, ignoreCase = true)) {
             return
         }
         _networkInfo.value = _networkInfo.value.copy(ip = ip)

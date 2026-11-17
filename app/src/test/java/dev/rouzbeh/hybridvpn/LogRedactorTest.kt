@@ -105,6 +105,25 @@ class LogRedactorTest {
     }
 
     @Test
+    fun `wireguard uri and keys are redacted`() {
+        val uriLine = "Connecting to wireguard://aW52YWxpZF9wcml2YXRlX2tleQ==@198.51.100.1:51820?publickey=cHVia2V5&presharedkey=c2VjcmV0cHNr#WG-Server"
+        val redactedUri = LogRedactor.redact(uriLine)
+        assertFalse(redactedUri.contains("aW52YWxpZF9wcml2YXRlX2tleQ=="))
+        assertFalse(redactedUri.contains("c2VjcmV0cHNr"))
+        assertTrue(redactedUri.contains("wireguard://<redacted>@198.51.100.1:51820"))
+        assertTrue(redactedUri.contains("presharedkey=<redacted>"))
+        assertTrue(redactedUri.contains("publickey=cHVia2V5"))
+
+        val jsonLine = """{"secretKey": "bXlTZWNyZXRLZXkxMjM0NTY3ODkwMTI=", "peers": [{"publicKey": "pub123", "preSharedKey": "cHNrMTIz"}]}"""
+        val redactedJson = LogRedactor.redact(jsonLine)
+        assertFalse(redactedJson.contains("bXlTZWNyZXRLZXkxMjM0NTY3ODkwMTI="))
+        assertFalse(redactedJson.contains("cHNrMTIz"))
+        assertTrue(redactedJson.contains(""""secretKey": "<redacted>""""))
+        assertTrue(redactedJson.contains(""""preSharedKey": "<redacted>""""))
+        assertTrue(redactedJson.contains(""""publicKey": "pub123""""))
+    }
+
+    @Test
     fun `redaction is idempotent`() {
         val line = "Set-Cookie: webvpncontext=SECRET; Secure"
         val once = LogRedactor.redact(line)

@@ -13,6 +13,8 @@ import androidx.lifecycle.viewModelScope
 import dev.rouzbeh.hybridvpn.data.local.AppDatabase
 import dev.rouzbeh.hybridvpn.data.local.VpnProfile
 import dev.rouzbeh.hybridvpn.core.vpn.v2ray.V2RayManager
+import dev.rouzbeh.hybridvpn.core.vpn.wireguard.WireGuardConfig
+import dev.rouzbeh.hybridvpn.core.vpn.wireguard.WireGuardParsedConfig
 import dev.rouzbeh.hybridvpn.data.model.AppInfo
 import dev.rouzbeh.hybridvpn.data.repository.SettingsRepository
 import dev.rouzbeh.hybridvpn.service.BroadcastStateManager
@@ -38,7 +40,6 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
 
     private val dao = AppDatabase.getDatabase(application).vpnProfileDao()
     private val settingsRepository = SettingsRepository(application)
-    private val dnsSettingsRepository = dev.rouzbeh.hybridvpn.data.repository.DnsSettingsRepository(application)
     private var isIntentionalReconnect = false
     private var isInitialStateEmission = true
     private var logcatJob: Job? = null
@@ -83,99 +84,17 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
     val activeProfile: StateFlow<VpnProfile?> = dao.getActiveProfile()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
 
-    // -------------------------------------------------------------- DNS mode
-
-    /** Visible DNS servers (built-ins minus hidden + customs), ping applied. */
-    private val _dnsServers = MutableStateFlow<List<dev.rouzbeh.hybridvpn.core.vpn.dns.DnsServer>>(emptyList())
-    val dnsServers: StateFlow<List<dev.rouzbeh.hybridvpn.core.vpn.dns.DnsServer>> = _dnsServers.asStateFlow()
-
-    /** The currently selected DNS server (falls back to first visible). */
-    private val _selectedDnsServer = MutableStateFlow<dev.rouzbeh.hybridvpn.core.vpn.dns.DnsServer?>(null)
-    val selectedDnsServer: StateFlow<dev.rouzbeh.hybridvpn.core.vpn.dns.DnsServer?> = _selectedDnsServer.asStateFlow()
-
-    fun refreshDnsServers() {
-        viewModelScope.launch(Dispatchers.IO) {
-            val servers = dnsSettingsRepository.getServers()
-            _dnsServers.value = servers
-            _selectedDnsServer.value = dnsSettingsRepository.getSelectedServer()
-        }
-    }
-
-    fun selectDnsServer(id: String) {
-        viewModelScope.launch(Dispatchers.IO) {
-            val target = _dnsServers.value.firstOrNull { it.id == id }
-            // Servers that failed their ping test (-1) are unreachable — mirror
-            // the VPN server rule and refuse selection with the same toast.
-            if (target?.ping == -1L) {
-                showToast("This server is unreachable right now\nPick another server or retest its ping.")
-                return@launch
-            }
-            dnsSettingsRepository.selectServer(id)
-            _selectedDnsServer.value = dnsSettingsRepository.getSelectedServer()
-        }
-    }
-
-    fun addDnsServer(name: String, primary: String, secondary: String?) {
-        viewModelScope.launch(Dispatchers.IO) {
-            val result = dnsSettingsRepository.addCustomServer(name, primary, secondary)
-            result.onSuccess { refreshDnsServers() }
-                .onFailure { showToast(it.message ?: "Could not add DNS server") }
-        }
-    }
-
-    fun updateDnsServer(id: String, name: String, primary: String, secondary: String?) {
-        viewModelScope.launch(Dispatchers.IO) {
-            val result = dnsSettingsRepository.updateCustomServer(id, name, primary, secondary)
-            result.onSuccess { refreshDnsServers() }
-                .onFailure { showToast(it.message ?: "Could not update DNS server") }
-        }
-    }
-
-    fun deleteDnsServer(id: String) {
-        viewModelScope.launch(Dispatchers.IO) {
-            dnsSettingsRepository.deleteOrHide(id)
-            refreshDnsServers()
-        }
-    }
-
-    /** Ping a single DNS server via a real UDP DNS query and cache the result. */
-    fun testDnsPing(id: String) {
-        viewModelScope.launch(Dispatchers.IO) {
-            val server = _dnsServers.value.firstOrNull { it.id == id } ?: return@launch
-            val ping = dev.rouzbeh.hybridvpn.core.vpn.dns.DnsPing.pingUdp(server.primary)
-            dnsSettingsRepository.setPing(id, ping)
-            _dnsServers.value = dnsSettingsRepository.getServers()
-        }
-    }
-
-    /** Retest ping for every visible DNS server (bounded concurrency). */
-    fun testAllDnsPing() {
-        viewModelScope.launch(Dispatchers.IO) {
-            val targets = _dnsServers.value
-            if (targets.isEmpty()) return@launch
-            coroutineScope {
-                targets.map { server ->
-                    async(Dispatchers.IO) {
-                        val ping = dev.rouzbeh.hybridvpn.core.vpn.dns.DnsPing.pingUdp(server.primary)
-                        dnsSettingsRepository.setPing(server.id, ping)
-                    }
-                }.awaitAll()
-            }
-            _dnsServers.value = dnsSettingsRepository.getServers()
-        }
-    }
-
     val connectionState: StateFlow<ConnectionState> = VpnStateManager.connectionState
     val speed: StateFlow<Pair<String, String>> = VpnStateManager.speed
     val networkInfo: StateFlow<NetworkInfo> = VpnStateManager.networkInfo
 
     /** Live Log now backed by process-scoped LogStore so it survives re-entry. */
     val currentLogs: StateFlow<List<String>> = combine(
-        selectedProtocol, LogStore.openConnectLogs, LogStore.v2rayLogs, LogStore.dnsLogs
-    ) { protocol, ocLogs, v2Logs, dnsLogs ->
+        selectedProtocol, LogStore.openConnectLogs, LogStore.v2rayLogs, LogStore.wireguardLogs
+    ) { protocol, ocLogs, v2Logs, wgLogs ->
         when (protocol) {
             "OpenConnect" -> ocLogs
-            "DNS" -> dnsLogs
+            "WireGuard" -> wgLogs
             else -> v2Logs
         }
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
@@ -190,10 +109,8 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
             try {
                 Runtime.getRuntime().exec("logcat -c").waitFor()
                 val cmd = when (protocol) {
-                    "v2rayNG" ->
+                    "v2rayNG", "WireGuard" ->
                         "logcat -v time HybridNestVPN:D GoLog:D libv2ray:D Go:D AndroidRuntime:E DEBUG:E libc:E System.err:W *:S"
-                    "DNS" ->
-                        "logcat -v time HybridNestVPN:D HybridVpnService:D DnsForwarder:D DnsPacket:D AndroidRuntime:E *:S"
                     else ->
                         "logcat -v time OpenConnect:D HybridNestJNI:D HybridNestVPN:D VPNService:D AndroidRuntime:E DEBUG:E libc:E *:S"
                 }
@@ -252,20 +169,6 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
     val isBypassMode: StateFlow<Boolean> = _isBypassMode.asStateFlow()
 
     private var pingJob: Job? = null
-
-    /**
-     * True when the ACTIVE connection is the DNS method. Uses the authoritative
-     * detailed-state first (set by the service broadcast), falling back to the
-     * selected protocol so the card can be labelled even on a replay where the
-     * detailed broadcast hasn't landed yet.
-     */
-    private fun isDnsActive(): Boolean {
-        val ds = VpnStateManager.detailedConnectionStateFlow.value
-        return when {
-            ds is DetailedState.Connected -> ds.activeProtocol == VpnProtocol.Dns
-            else -> _selectedProtocol.value == "DNS"
-        }
-    }
 
     // Subscription-info detection is shared with DashboardScreen so the UI and
     // the ViewModel agree on which profiles are informational cards.
@@ -367,17 +270,12 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
 
             val active = dao.getActiveProfile().firstOrNull()
             if (active != null) {
-                // Migrate a stale selection from a removed protocol to a
-                // still-supported default so the selector lands on a real tab.
                 _selectedProtocol.value = when (active.protocol) {
-                    "OpenConnect", "v2rayNG", "DNS" -> active.protocol
+                    "OpenConnect", "WireGuard", "v2rayNG" -> active.protocol
                     else -> "OpenConnect"
                 }
             }
         }
-
-        // DNS mode has no Room profile — seed the server list + selection.
-        refreshDnsServers()
 
         viewModelScope.launch {
             VpnStateManager.detailedConnectionStateFlow.collect { detailedState ->
@@ -522,20 +420,13 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
     }
 
     fun testPing(ipToPing: String = "8.8.8.8") {
-        if (connectionState.value != ConnectionState.CONNECTED) return // CRITICAL FIX: Guard against early execution
+        if (connectionState.value != ConnectionState.CONNECTED) return // Guard against early execution
         pingJob?.cancel()
         pingJob = viewModelScope.launch(Dispatchers.IO) {
             _pingResult.value = "Testing..."
-            if (activeProfile.value?.protocol == "v2rayNG") {
+            val activeProto = activeProfile.value?.protocol ?: _selectedProtocol.value
+            if (activeProto == "v2rayNG" || activeProto == "WireGuard") {
                 val rtt = V2RayManager.measureRealPing()
-                _pingResult.value = if (rtt >= 0) "$rtt ms" else "Timeout"
-                return@launch
-            }
-            if (isDnsActive()) {
-                // DNS mode: measure a real DNS query to the selected resolver
-                // through a protect()ed socket so it leaves on the raw network.
-                val target = _selectedDnsServer.value?.primary
-                val rtt = target?.let { dev.rouzbeh.hybridvpn.core.vpn.dns.DnsPing.pingUdp(it) } ?: -1L
                 _pingResult.value = if (rtt >= 0) "$rtt ms" else "Timeout"
                 return@launch
             }
@@ -782,14 +673,13 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
             val detailedProto = (detailedState as? DetailedState.Connected)?.activeProtocol?.title
             val profileAtStart = activeProfile.value
             val activeProto = when {
-                detailedProto == "DNS" || _selectedProtocol.value == "DNS" -> "DNS"
+                profileAtStart?.protocol == "WireGuard" || detailedProto == "WireGuard" -> "WireGuard"
                 profileAtStart?.protocol == "v2rayNG" || detailedProto == "v2rayNG" -> "v2rayNG"
                 profileAtStart?.protocol == "OpenConnect" || detailedProto == "OpenConnect" -> "OpenConnect"
                 else -> _selectedProtocol.value
             }
-            val isV2ray = activeProto == "v2rayNG"
-            val isDns = activeProto == "DNS"
-            val proxy = if (isV2ray) java.net.Proxy(java.net.Proxy.Type.HTTP, java.net.InetSocketAddress("127.0.0.1", 10809)) else java.net.Proxy.NO_PROXY
+            val isXray = activeProto == "v2rayNG" || activeProto == "WireGuard"
+            val proxy = if (isXray) java.net.Proxy(java.net.Proxy.Type.HTTP, java.net.InetSocketAddress("127.0.0.1", 10809)) else java.net.Proxy.NO_PROXY
             val targetProfileCountry = profileAtStart?.countryCode?.trim()?.lowercase()
 
             VpnStateManager.updateNetworkInfo("Detecting...", "Detecting...", "un")
@@ -806,7 +696,6 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
                 }
 
             fun isRealIspLeak(candidate: IpResult): Boolean {
-                if (isDns) return false
                 val realInfo = lastKnownRealNetworkInfo
                 val realIp = realInfo?.ip ?: VpnStateManager.lastKnownRealIp
                 if (!realIp.isNullOrBlank() && candidate.ip.equals(realIp, ignoreCase = true)) {
@@ -854,8 +743,7 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
                     val candidate = withTimeoutOrNull(3500L) {
                         try {
                             val client = when {
-                                isV2ray -> buildFreshHttpClient(proxy = proxy)
-                                isDns -> buildFreshHttpClient(proxy = java.net.Proxy.NO_PROXY)
+                                isXray -> buildFreshHttpClient(proxy = proxy)
                                 else -> {
                                     var vpnNet = findVpnNetwork()
                                     var waitCount = 0
@@ -1075,16 +963,8 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
     }
 
     fun startVpn(context: Context) {
-        val isDns = _selectedProtocol.value == "DNS"
         val currentProfile = activeProfile.value
-        // DNS mode has no Room profile; its selection lives in
-        // DnsSettingsRepository. All other protocols require a matching active
-        // profile before a session can start.
-        if (!isDns && (currentProfile == null || currentProfile.protocol != _selectedProtocol.value || isSubscriptionInfoName(currentProfile.name))) return
-        if (isDns && _selectedDnsServer.value == null) {
-            showToast("Select a DNS server first")
-            return
-        }
+        if (currentProfile == null || currentProfile.protocol != _selectedProtocol.value || isSubscriptionInfoName(currentProfile.name)) return
         routingRefusalReason()?.let { reason ->
             showToast(reason)
             VpnStateManager.updateState(ConnectionState.ERROR)
@@ -1101,10 +981,7 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
             try {
                 val intent = Intent(context, HybridVpnService::class.java).apply {
                     action = HybridVpnService.ACTION_START_VPN
-                    putExtra(
-                        HybridVpnService.EXTRA_PROTOCOL,
-                        if (isDns) "DNS" else currentProfile!!.protocol
-                    )
+                    putExtra(HybridVpnService.EXTRA_PROTOCOL, currentProfile.protocol)
                 }
                 context.startService(intent)
             } catch (e: Exception) { VpnStateManager.updateState(ConnectionState.ERROR) }
@@ -1220,7 +1097,11 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
                             val parsedName = extractV2rayName(config) ?: if (cName.isNotBlank()) "$cName ${index + 1}" else "V2Ray Sub ${index + 1}"
                             dao.insertProfile(VpnProfile(name = parsedName, protocol = protocol, serverAddress = config, username = "sub:${cAddr}", password = cPass.ifBlank { cAddr }, isActive = index == firstRealIndex, subName = cName))
                         }
-                    } catch (e: Exception) { dao.insertProfile(VpnProfile(name = cName.ifBlank { "V2Ray Sub Link" }, protocol = protocol, serverAddress = cAddr, username = "sub:${cAddr}", password = cPass.ifBlank { cAddr }, isActive = true, subName = cName)) }
+                        withContext(Dispatchers.Main) { showToast("Subscription added (${lines.size} configs)") }
+                    } catch (e: Exception) {
+                        dao.insertProfile(VpnProfile(name = cName.ifBlank { "V2Ray Sub Link" }, protocol = protocol, serverAddress = cAddr, username = "sub:${cAddr}", password = cPass.ifBlank { cAddr }, isActive = true, subName = cName))
+                        withContext(Dispatchers.Main) { showToast("Failed to fetch subscription") }
+                    }
                 } else {
                     val lines = cAddr.lines().map { it.trim() }.filter { line -> line.isNotBlank() && validPrefixes.any { line.startsWith(it, true) } }
                     if (lines.isEmpty()) { withContext(Dispatchers.Main) { showToast("Invalid configuration!") }; return@launch }
@@ -1228,9 +1109,325 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
                         val parsedName = extractV2rayName(config) ?: if (cName.isNotBlank()) (if (lines.size > 1) "$cName ${index + 1}" else cName) else "V2Ray Server"
                         dao.insertProfile(VpnProfile(name = parsedName, protocol = protocol, serverAddress = config, username = "single", password = "", isActive = index == 0))
                     }
+                    withContext(Dispatchers.Main) { showToast(if (lines.size == 1) "Config added successfully" else "${lines.size} configs added") }
+                }
+            } else if (protocol == "WireGuard") {
+                try {
+                    val parsed = WireGuardConfig.fromConfig(cAddr)
+                    parsed.requireValid()
+                    val country = if (countryCode != "un") countryCode else resolveHostCountryCode(parsed.endpointHost)
+                    val finalName = if (cName.isNotBlank()) cName else parsed.remark
+                    dao.insertProfile(
+                        VpnProfile(
+                            name = finalName,
+                            protocol = "WireGuard",
+                            serverAddress = parsed.toUri(),
+                            username = "single",
+                            password = "",
+                            isActive = true,
+                            countryCode = country
+                        )
+                    )
+                    withContext(Dispatchers.Main) { showToast("Config added successfully") }
+                } catch (e: Exception) {
+                    withContext(Dispatchers.Main) { showToast(e.message ?: "Invalid WireGuard configuration") }
                 }
             } else {
                 dao.insertProfile(VpnProfile(name = cName, protocol = protocol, serverAddress = cAddr, username = cUser, password = cPass, isActive = true, countryCode = countryCode))
+                withContext(Dispatchers.Main) { showToast("Server added successfully") }
+            }
+        }
+    }
+
+    /**
+     * Resolves country code from a hostname or IP address.
+     */
+    suspend fun resolveHostCountryCode(host: String): String {
+        val tld = host.substringAfterLast('.').lowercase()
+        if (tld.length == 2 && BundledFlags.isSupported(tld)) {
+            return tld
+        }
+        return withContext(Dispatchers.IO) {
+            try {
+                val ip = java.net.InetAddress.getByName(host).hostAddress ?: return@withContext "un"
+                val url = "http://ip-api.com/json/$ip"
+                val client = buildFreshHttpClient()
+                val result = executeIpLookupRequest(client, url)
+                result?.flagCode?.let { BundledFlags.normalizeCode(it) } ?: "un"
+            } catch (_: Exception) {
+                "un"
+            }
+        }
+    }
+
+    /**
+     * Imports one or more WireGuard configs from raw text (either wireguard:// URIs or .conf text).
+     */
+    fun importWireGuardConfig(configText: String, nameOverride: String? = null): Boolean {
+        val trimmed = configText.trim()
+        if (trimmed.isBlank()) return false
+        try {
+            val configs = if (trimmed.startsWith("[Interface]", ignoreCase = true) || trimmed.contains("\n[Interface]", ignoreCase = true)) {
+                listOf(WireGuardConfig.fromConfig(trimmed))
+            } else {
+                val lines = trimmed.lines().map { it.trim() }.filter { it.startsWith("wireguard://", ignoreCase = true) }
+                if (lines.isEmpty() && WireGuardConfig.isWireGuardConfig(trimmed)) {
+                    listOf(WireGuardConfig.fromConfig(trimmed))
+                } else if (lines.isNotEmpty()) {
+                    lines.map { WireGuardConfig.fromConfig(it) }
+                } else {
+                    return false
+                }
+            }
+            if (configs.isEmpty()) return false
+
+            viewModelScope.launch(Dispatchers.IO) {
+                configs.forEachIndexed { index, parsed ->
+                    parsed.requireValid()
+                    val countryCode = resolveHostCountryCode(parsed.endpointHost)
+                    val finalName = if (!nameOverride.isNullOrBlank()) {
+                        if (configs.size > 1) "$nameOverride ${index + 1}" else nameOverride
+                    } else {
+                        parsed.remark
+                    }
+                    val profile = VpnProfile(
+                        name = finalName,
+                        protocol = "WireGuard",
+                        serverAddress = parsed.toUri(),
+                        username = "single",
+                        password = "",
+                        isActive = index == 0 && activeProfile.value == null,
+                        countryCode = countryCode
+                    )
+                    dao.insertProfile(profile)
+                }
+            }
+            return true
+        } catch (e: Exception) {
+            android.util.Log.e("DashboardViewModel", "importWireGuardConfig failed: ${e.message}")
+            return false
+        }
+    }
+
+    /**
+     * Imports one or more WireGuard profiles from a file (.conf) or an archive (.zip) URI.
+     */
+    fun importWireGuardFromUri(context: Context, uri: android.net.Uri) {
+        viewModelScope.launch(Dispatchers.IO) {
+            var importedCount = 0
+            try {
+                var displayName: String? = null
+                runCatching {
+                    context.contentResolver.query(uri, arrayOf(android.provider.OpenableColumns.DISPLAY_NAME), null, null, null)?.use { cursor ->
+                        if (cursor.moveToFirst()) {
+                            val idx = cursor.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
+                            if (idx >= 0) displayName = cursor.getString(idx)
+                        }
+                    }
+                }
+                if (displayName.isNullOrBlank()) {
+                    displayName = uri.lastPathSegment ?: "wireguard.conf"
+                }
+
+                val inputStream = context.contentResolver.openInputStream(uri)
+                if (inputStream == null) {
+                    withContext(Dispatchers.Main) { showToast("Unable to open file") }
+                    return@launch
+                }
+
+                val buffered = java.io.BufferedInputStream(inputStream)
+                buffered.mark(4)
+                val header = ByteArray(4)
+                val bytesRead = buffered.read(header)
+                buffered.reset()
+
+                val isZip = (bytesRead == 4 && header[0] == 0x50.toByte() && header[1] == 0x4B.toByte() && header[2] == 0x03.toByte() && header[3] == 0x04.toByte())
+                    || displayName.endsWith(".zip", ignoreCase = true)
+
+                val parsedConfigs = mutableListOf<WireGuardParsedConfig>()
+
+                if (isZip) {
+                    val zipStream = java.util.zip.ZipInputStream(buffered)
+                    var entry = zipStream.nextEntry
+                    while (entry != null) {
+                        val name = entry.name
+                        val isDir = entry.isDirectory
+                        val isMacMeta = name.contains("__MACOSX") || java.io.File(name).name.startsWith(".")
+                        if (!isDir && !isMacMeta && (name.endsWith(".conf", ignoreCase = true) || name.endsWith(".txt", ignoreCase = true))) {
+                            val baseFileName = java.io.File(name).name.substringBeforeLast('.')
+                            val baos = java.io.ByteArrayOutputStream()
+                            val buffer = ByteArray(4096)
+                            var len: Int
+                            var total = 0
+                            while (zipStream.read(buffer).also { len = it } > 0) {
+                                baos.write(buffer, 0, len)
+                                total += len
+                                if (total > 65536) break
+                            }
+                            val text = baos.toString("UTF-8").trim()
+                            if (WireGuardConfig.isWireGuardConfig(text)) {
+                                runCatching {
+                                    val parsed = WireGuardConfig.parse(text, defaultRemark = baseFileName)
+                                    parsed.requireValid()
+                                    parsedConfigs.add(parsed)
+                                }
+                            }
+                        }
+                        zipStream.closeEntry()
+                        entry = zipStream.nextEntry
+                    }
+                    zipStream.close()
+                } else {
+                    val baseFileName = displayName.substringBeforeLast('.')
+                    val text = buffered.bufferedReader(Charsets.UTF_8).use { it.readText() }.trim()
+                    if (WireGuardConfig.isWireGuardConfig(text)) {
+                        if (text.startsWith("[Interface]", ignoreCase = true) || text.contains("\n[Interface]", ignoreCase = true)) {
+                            runCatching {
+                                val parsed = WireGuardConfig.parse(text, defaultRemark = baseFileName)
+                                parsed.requireValid()
+                                parsedConfigs.add(parsed)
+                            }
+                        } else {
+                            val lines = text.lines().map { it.trim() }.filter { it.startsWith("wireguard://", ignoreCase = true) }
+                            if (lines.isNotEmpty()) {
+                                lines.forEachIndexed { idx, line ->
+                                    runCatching {
+                                        val overrideName = if (lines.size > 1) "$baseFileName ${idx + 1}" else baseFileName
+                                        val parsed = WireGuardConfig.parse(line, defaultRemark = overrideName)
+                                        parsed.requireValid()
+                                        parsedConfigs.add(parsed)
+                                    }
+                                }
+                            } else {
+                                runCatching {
+                                    val parsed = WireGuardConfig.parse(text, defaultRemark = baseFileName)
+                                    parsed.requireValid()
+                                    parsedConfigs.add(parsed)
+                                }
+                            }
+                        }
+                    }
+                    buffered.close()
+                }
+
+                if (parsedConfigs.isEmpty()) {
+                    withContext(Dispatchers.Main) { showToast("No valid WireGuard configuration found") }
+                    return@launch
+                }
+
+                for (parsed in parsedConfigs) {
+                    val canonicalUri = parsed.toUri()
+                    val isDuplicate = allProfiles.value.any { it.protocol == "WireGuard" && it.serverAddress == canonicalUri }
+                    if (!isDuplicate) {
+                        val countryCode = resolveHostCountryCode(parsed.endpointHost)
+                        val profile = VpnProfile(
+                            name = parsed.remark,
+                            protocol = "WireGuard",
+                            serverAddress = canonicalUri,
+                            username = "single",
+                            password = "",
+                            isActive = (importedCount == 0 && activeProfile.value == null),
+                            countryCode = countryCode
+                        )
+                        dao.insertProfile(profile)
+                        importedCount++
+                    }
+                }
+
+                withContext(Dispatchers.Main) {
+                    if (importedCount > 0) {
+                        showToast("Imported $importedCount WireGuard profile(s)")
+                    } else {
+                        showToast("All imported configuration(s) already exist")
+                    }
+                }
+            } catch (e: Exception) {
+                android.util.Log.e("DashboardViewModel", "importWireGuardFromUri failed: ${e.message}")
+                withContext(Dispatchers.Main) {
+                    showToast(e.message ?: "Failed to import WireGuard profile(s)")
+                }
+            }
+        }
+    }
+
+    /**
+     * Saves or updates a manual WireGuard profile from structured form fields.
+     */
+    fun saveWireGuardProfile(
+        name: String,
+        endpointHost: String,
+        endpointPort: Int,
+        secretKey: String,
+        publicKey: String,
+        localAddress: String = "10.0.0.2/32",
+        preSharedKey: String? = null,
+        mtu: Int = 1420,
+        reserved: String? = null,
+        keepAlive: Int = 0,
+        dns: String? = null,
+        listenPort: Int? = null,
+        allowedIps: String? = null,
+        editingProfileId: Int? = null
+    ) {
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val addrs = localAddress.split(',')
+                    .map { it.trim() }
+                    .filter { it.isNotEmpty() }
+                    .ifEmpty { listOf("10.0.0.2/32") }
+                val parsedAllowedIps = allowedIps?.split(',')
+                    ?.map { it.trim() }
+                    ?.filter { it.isNotEmpty() }
+                    ?.ifEmpty { listOf("0.0.0.0/0") }
+                    ?: listOf("0.0.0.0/0")
+                val parsedReserved = reserved?.trim()?.takeIf { it.isNotEmpty() }?.let { WireGuardConfig.parseReserved(it) }
+                val parsed = WireGuardParsedConfig(
+                    remark = name.trim().ifEmpty { "WireGuard Server" },
+                    secretKey = secretKey.trim(),
+                    publicKey = publicKey.trim(),
+                    preSharedKey = preSharedKey?.trim()?.ifEmpty { null },
+                    endpointHost = endpointHost.trim(),
+                    endpointPort = endpointPort.coerceIn(1, 65535),
+                    localAddresses = addrs,
+                    mtu = mtu.coerceIn(1280, 1500),
+                    keepAlive = keepAlive.coerceAtLeast(0),
+                    reserved = parsedReserved,
+                    dns = dns?.trim()?.ifEmpty { null },
+                    listenPort = listenPort,
+                    allowedIps = parsedAllowedIps
+                )
+                parsed.requireValid()
+                val countryCode = resolveHostCountryCode(parsed.endpointHost)
+                val canonicalUri = parsed.toUri()
+
+                if (editingProfileId != null) {
+                    val existing = dao.getProfileById(editingProfileId)
+                    if (existing != null) {
+                        dao.updateProfile(
+                            existing.copy(
+                                name = parsed.remark,
+                                serverAddress = canonicalUri,
+                                protocol = "WireGuard",
+                                countryCode = if (existing.countryCode != "un") existing.countryCode else countryCode
+                            )
+                        )
+                        return@launch
+                    }
+                }
+                dao.insertProfile(
+                    VpnProfile(
+                        name = parsed.remark,
+                        protocol = "WireGuard",
+                        serverAddress = canonicalUri,
+                        username = "single",
+                        password = "",
+                        isActive = activeProfile.value == null,
+                        countryCode = countryCode
+                    )
+                )
+            } catch (e: Exception) {
+                android.util.Log.e("DashboardViewModel", "saveWireGuardProfile failed: ${e.message}")
+                showToast(e.message ?: "Failed to save WireGuard profile")
             }
         }
     }
@@ -1395,11 +1592,43 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
         }
     }
 
-    fun testSingleV2rayPing(profile: VpnProfile) {
+    fun testServerPing(profile: VpnProfile) {
         if (isSubscriptionInfoName(profile.name)) return
         viewModelScope.launch(Dispatchers.IO) {
             val ping = measureProfileDelay(profile)
             dao.updateProfile(profile.copy(ping = ping))
+        }
+    }
+
+    fun testSingleV2rayPing(profile: VpnProfile) = testServerPing(profile)
+
+    fun testActiveServerPing() = testPing()
+
+    fun testAllWireGuardPing() {
+        viewModelScope.launch(Dispatchers.IO) {
+            val targets = allProfiles.value.filter { it.protocol == "WireGuard" }
+            if (targets.isEmpty()) return@launch
+            targets.forEach { dao.updateProfile(it.copy(ping = 0L)) }
+            val concurrency = 5
+            val semaphore = Semaphore(concurrency)
+            coroutineScope {
+                targets.map { profile ->
+                    async(Dispatchers.IO) {
+                        semaphore.withPermit {
+                            val ping = measureProfileDelay(profile)
+                            dao.updateProfile(profile.copy(ping = ping))
+                        }
+                    }
+                }.awaitAll()
+            }
+        }
+    }
+
+    fun testAllServersPing(protocol: String = _selectedProtocol.value) {
+        if (protocol == "WireGuard") {
+            testAllWireGuardPing()
+        } else if (protocol == "v2rayNG") {
+            testV2rayRealDelay("SingleLinks")
         }
     }
 

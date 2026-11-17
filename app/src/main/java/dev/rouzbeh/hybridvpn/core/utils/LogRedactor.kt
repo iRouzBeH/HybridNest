@@ -73,14 +73,22 @@ object LogRedactor {
             "${it.groupValues[1]}=$REDACTED"
         }
 
-        // 3. Credential-bearing URLs: scheme://user:password@host
+        // 3. Credential-bearing URLs: scheme://user:password@host or wireguard://privatekey@endpoint
         out = out.replaceRegex(Regex("(https?://)([^/\\s:]+):([^/\\s@]+)@", RegexOption.IGNORE_CASE)) {
             "${it.groupValues[1]}${it.groupValues[2]}:$REDACTED@"
         }
+        out = out.replaceRegex(Regex("(wireguard://)([^@\\s]+)@", RegexOption.IGNORE_CASE)) {
+            "${it.groupValues[1]}$REDACTED@"
+        }
 
-        // 4. password=<value> form/query parameters.
-        out = out.replaceRegex(Regex("\\b(password|pass|secret|token)\\s*=\\s*[^&\\s]+", RegexOption.IGNORE_CASE)) {
+        // 4. password=<value>, presharedkey=<value>, secretKey=<value> form/query parameters.
+        out = out.replaceRegex(Regex("\\b(password|pass|secret|token|presharedkey|preshared_key|psk|secretkey|secret_key|privatekey|private_key)\\s*=\\s*[^&\\s]+", RegexOption.IGNORE_CASE)) {
             "${it.groupValues[1]}=$REDACTED"
+        }
+
+        // 5. JSON fields for keys/secrets: "secretKey": "..." / "preSharedKey": "..."
+        out = out.replaceRegex(Regex("\"(secretKey|secret_key|privateKey|private_key|preSharedKey|pre_shared_key|psk)\"\\s*:\\s*\"[^\"]+\"", RegexOption.IGNORE_CASE)) {
+            "\"${it.groupValues[1]}\": \"$REDACTED\""
         }
 
         return out

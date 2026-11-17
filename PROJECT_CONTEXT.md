@@ -1,6 +1,6 @@
 # HybridNest Project Context & Architectural Specification
 
-This document provides a comprehensive technical overview and architectural blueprint of **HybridNest** (package: `dev.rouzbeh.hybridvpn`), an advanced multi-protocol Android VPN client supporting Cisco AnyConnect (via OpenConnect), v2rayNG (V2Ray/Xray cores), and a custom packet-level DNS-over-TUN routing engine.
+This document provides a comprehensive technical overview and architectural blueprint of **HybridNest** (package: `dev.rouzbeh.hybridvpn`), an advanced multi-protocol Android VPN client supporting Cisco AnyConnect (via OpenConnect), WireGuard (via Xray's user-space gVisor netstack outbound), and v2rayNG (VLESS/VMess/Trojan via Xray-core).
 
 ---
 
@@ -49,7 +49,7 @@ HybridNest/
     │   └── libv2ray.aar                  # Xray Go core library (Gomobile + geoip/geosite)
     └── src/
         ├── androidTest/                  # Android instrumented tests
-        ├── test/                         # JVM unit tests (Routing, DNS, V2Ray config, State)
+        ├── test/                         # JVM unit tests (Routing, WireGuard, V2Ray config, State)
         └── main/
             ├── AndroidManifest.xml       # App declarations, permissions, services
             ├── assets/
@@ -65,7 +65,7 @@ HybridNest/
             │   ├── armeabi-v7a/          # libopenconnect.so, libstoken.so
             │   ├── x86/                  # libopenconnect.so, libstoken.so
             │   └── x86_64/               # libopenconnect.so, libstoken.so
-            ├── res/                      # Drawables, icons, custom Sora fonts, XML rules
+            ├── res/                      # Drawables (ic_anyconnect, ic_wireguard, ic_v2rayng), fonts, XML
             └── java/dev/rouzbeh/hybridvpn/
                 ├── HybridVpnApplication.kt# App class, uncaught crash & exit diagnostic logger
                 ├── MainActivity.kt       # Single Activity host with Edge-to-Edge & Navigation
@@ -73,20 +73,20 @@ HybridNest/
                 │   ├── designsystem/     # Theme, color palettes (Cyberpunk/Dark), typography
                 │   ├── model/            # NetworkState domain models
                 │   ├── routing/          # Per-app routing policy, snapshot, and resolver
-                │   ├── utils/            # LogRedactor (producer-side credential scrubbing)
+                │   ├── utils/            # LogRedactor (producer-side credential & key scrubbing)
                 │   └── vpn/
                 │       ├── ConnectivityDiagnostics.kt # Non-fatal public connectivity verifier
-                │       ├── dns/          # User-space DNS forwarder, packet parser, ping, config
-                │       └── v2ray/        # Xray config generator, settings, V2RayManager lifecycle
+                │       ├── v2ray/        # Xray config generator with WireGuard outbound, V2RayManager
+                │       └── wireguard/    # WireGuard config parser, validator, canonical URI serializer, RFC 7748 Curve25519 key utils
                 ├── data/
                 │   ├── local/            # Room AppDatabase, VpnProfile entity, VpnProfileDao
                 │   ├── model/            # AppInfo model for per-app app picker
-                │   └── repository/       # SettingsRepository, DnsSettingsRepository
+                │   └── repository/       # SettingsRepository (per-app routing & preferences)
                 ├── feature/
-                │   ├── dashboard/        # DashboardScreen, ViewModel, DnsScreens, BundledFlags
+                │   ├── dashboard/        # DashboardScreen, ViewModel, BundledFlags, InfoRemarkClassifier
                 │   └── splash/           # Animated splash screen
                 └── service/
-                    ├── HybridVpnService.kt       # Unified Android VpnService implementation
+                    ├── HybridVpnService.kt       # Unified Android VpnService (OpenConnect, v2rayNG, WireGuard)
                     ├── VpnStateManager.kt        # State machine, traffic counter, session tracking
                     ├── VpnActionBus.kt           # SharedFlow event bus between Service and UI
                     ├── RoutingPolicyStatus.kt    # Active routing policy tracker
@@ -142,10 +142,10 @@ HybridNest/
 ### Storage & Persistence
 - **Room Database (`cybernest_database`):**
   - Entity: `VpnProfile` (`id`, `name`, `protocol`, `serverAddress`, `username`, `password`, `isActive`, `countryCode`, `subName`, `ping`, `mAllowedAppsVpn`, `mAllowedAppsVpnAreDisallowed`).
+  - Schema: `version = 1`. Stores profiles for all three protocols (`"OpenConnect"`, `"WireGuard"`, and `"v2rayNG"`). WireGuard profiles are serialized and stored as canonical `wireguard://` URIs in `serverAddress`, avoiding any database schema migration.
   - DAO: `VpnProfileDao` provides flows of profiles, active profile queries, and CRUD operations.
 - **SharedPreferences:**
   - `"hybridvpn_settings"`: Per-app routing toggle, allow/bypass mode, selected packages set, and monotonic `routing_revision`.
-  - `"hybridvpn_dns"`: Selected DNS ID, custom DNS servers JSON array, hidden built-in IDs, cached pings.
   - `"hybridvpn_prefs"`: Session start timestamp (`START_TIME`), baseline Rx/Tx byte counts (`START_RX`, `START_TX`).
   - `"exit_reasons"`: Historical Android process exit tracking timestamp.
 
@@ -157,13 +157,12 @@ HybridNest/
     - **Header & Hero Control:** Dynamic interactive Power Button reflecting current connection state (`CONNECTING`, `CONNECTED`, `DISCONNECTING`, `CANCELING`, `ERROR`).
     - **Live Network Card:** IP address, location, country flag (loaded synchronously from bundled assets via `BundledFlags`), ISP name, and live diagnostic badge.
     - **Metrics Bar:** Dynamic session uptime counter and real-time DL / UL throughput meters (`TrafficStats` polling).
-    - **Protocol Switcher:** 3-way toggle between **OpenConnect**, **v2rayNG**, and **DNS**.
-    - **Server List / Subscription Groups:** Server cards with latency pings, country flag badges, edit/delete actions, and subscription volume/expiry metadata info cards.
-    - **Import & Modals:** Manual OpenConnect form, V2Ray link parser (VLESS/VMess/Trojan), QR camera scanner (ML Kit), subscription link updater.
+    - **Protocol Switcher:** 3-way toggle between **AnyConnect** (`OpenConnect`), **WireGuard** (`WireGuard`), and **v2rayNG** (`v2rayNG`).
+    - **Server List / Subscription Groups:** Server cards with latency pings, country flag badges, edit/delete actions, leading subscription volume/expiry metadata info cards (with contiguous info entry merging and zero 0px gap spacing), and persistent `v2rayNG` subscription tab selection across sheet dismissals.
+    - **Import & Modals:** Manual OpenConnect form, V2Ray link parser (VLESS/VMess/Trojan), WireGuard management (redesigned structured manual Add/Edit dialog with `Interface` and `Peer` cards, in-app key generation via `WireGuardKeyUtils`, QR Code scanner via ML Kit, `.conf` / `.zip` archive file importing, and clipboard import), subscription link updater.
     - **Per-App Routing Sheet:** App selector with search, select-all, and Allow vs Bypass mode toggles.
-    - **Live Logs Sheet:** Real-time filtered, sanitized log streaming with producer-side credential redaction.
-- **DNS UI (`DnsScreens.kt`):**
-  - Dedicated server list screen for DNS mode, custom server creator/editor, ping test actions, and provider hiding.
+    - **Live Logs Sheet:** Real-time filtered, sanitized log streaming with producer-side credential and key redaction, clear button, and one-tap Copy Logs button with local feedback toast.
+    - **Toast Feedback Overlay:** Persistent `CustomGlassToast` on the Home/Dashboard screen for server/subscription addition confirmation (`v2rayNG`, `WireGuard`, and `OpenConnect`), in addition to server list and routing views.
 
 ---
 
@@ -178,7 +177,7 @@ A single `VpnService` subclass (`dev.rouzbeh.hybridvpn.service.HybridVpnService`
   - Ongoing notification shows active country emoji/flag, location, formatted DL/UL speed, and a `"Disconnect"` pending intent.
 - **TUN Interface Management:**
   - Created via `VpnService.Builder`.
-  - OpenConnect & v2rayNG use MTU `1400`; DNS mode uses MTU `1500`.
+  - All protocols (OpenConnect, v2rayNG, WireGuard) use MTU `1400` (or the profile's configured MTU clamped to 1280..1500 for WireGuard).
   - FD Handoff: The TUN `FileDescriptor` is duplicated via `android.system.Os.dup(pfd.fileDescriptor)` (retrieving the integer descriptor via reflection on `FileDescriptor.descriptor`) and passed to native engines. Fallback calls `pfd.detachFd()`.
 - **Session Identification & Race Prevention:**
   - Monotonic `sessionId` generation: every connection attempt advances `sessionId`.
@@ -232,20 +231,31 @@ A single `VpnService` subclass (`dev.rouzbeh.hybridvpn.service.HybridVpnService`
 
 ---
 
-### Protocol 3: DNS Mode (DNS-over-TUN)
-- **Concept:** A lightweight, non-proxying mode where **only DNS traffic** is intercepted and redirected to custom or privacy-preserving DNS resolvers (Google, Cloudflare, Quad9, AdGuard, etc.). The user's IP is **not** altered, and regular traffic does not pass through any proxy.
-- **TUN Configuration:**
-  - TUN Interface IP: `10.10.10.1/32` (IPv4), `fd00:646e:7373::1/128` (IPv6).
-  - Advertised DNS Server: `10.10.10.53` (IPv4), `fd00:646e:7373::53` (IPv6).
-  - Routes Added: **Strictly** `10.10.10.53/32` and `fd00:646e:7373::53/128`. No default route (`0.0.0.0/0`) is installed.
-- **User-Space Forwarder (`DnsForwarder.kt`):**
-  - Reader thread reads raw IP packets directly off the TUN `FileDescriptor`.
-  - Packet Parser (`DnsPacket.kt`): Parses IPv4 / IPv6 headers, verifies destination IP is the fake DNS address (`10.10.10.53`), and extracts UDP or TCP DNS payloads.
-  - Relaying:
-    - UDP queries are forwarded to the configured primary (or secondary fallback) upstream resolver using protected UDP sockets (`protectUdp`).
-    - If the response has the Truncation bit set (`TC=1`), the forwarder automatically retries the query over a protected TCP socket according to RFC 7766.
-    - Upstream timeouts trigger an immediate retry and failover to the secondary resolver. If both fail, a `SERVFAIL` packet is generated and written back to the TUN.
-  - Packet Synthesis: Constructs IPv4/IPv6 responses, recalculates standard Internet checksums (IP header checksum, UDP pseudo-header checksum, TCP pseudo-header checksum), and writes raw bytes back into the TUN fd.
+### Protocol 3: WireGuard (Xray User-Space Outbound)
+- **Concept:** WireGuard VPN protocol executed entirely through Xray-core's built-in user-space WireGuard outbound engine rather than requiring kernel WireGuard module or root netlink permissions.
+- **Configuration & Parsing (`WireGuardConfig.kt`):**
+  - **Data Model:** `WireGuardParsedConfig` captures `remark`, `secretKey` (client private key), `publicKey` (peer public key), `preSharedKey`, `endpointHost`, `endpointPort`, `localAddresses` (e.g. `["10.0.0.2/32"]`), `mtu` (default `1420`), `keepAlive` (seconds), `reserved` (optional 3-byte array e.g. for WARP), `dns` server, `listenPort`, and `allowedIps` (default `["0.0.0.0/0"]`).
+  - **Supported Formats & Import:**
+    - Standard `wireguard://` URI: `wireguard://<private_key>@<host>:<port>?address=<addrs>&publickey=<pub_key>&presharedkey=...#<remark>` with alias support (`publickey`/`pk`, `presharedkey`/`psk`, `address`/`ip`, `listenport`, `allowedips`, etc.).
+    - Standard INI `.conf` formats containing `[Interface]` and `[Peer]` sections.
+    - Single `.conf` file and multi-profile `.zip` archive batch import in `DashboardViewModel.kt` (`importWireGuardFromUri`).
+    - Manual form input via redesigned structured Add/Edit dialog in `DashboardScreen.kt` (`Interface` card and `Peer` card).
+  - **Key Generation & Derivation (`WireGuardKeyUtils.kt`):**
+    - Pure-Kotlin RFC 7748 Montgomery ladder on Curve25519 ($P = 2^{255} - 19$, base point $U = 9$).
+    - Zero external crypto dependencies (no BouncyCastle or Tink required; Android 7.0+ / minSdk 24 compatible).
+    - Features private key clamping, random private key generation via `SecureRandom`, and public key derivation (`scalarMultBase`).
+  - **Canonical Serialization:** Serializes configurations into canonical `wireguard://` URIs stored in Room `VpnProfile.serverAddress` (`protocol = "WireGuard"`), preserving database schema `version = 1`.
+- **Xray Engine Runtime & Generation (`XrayConfigGenerator.kt`):**
+  - Outbound protocol: `"protocol": "wireguard"`.
+  - `"noKernelTun": true`: **Critical on Android.** Explicitly instructs Xray's WireGuard outbound builder (`conf.WireGuardConfig.Build`) to use its embedded user-space gVisor netstack device instead of invoking Linux kernel netlink commands (`netlink.LinkAdd`), which fail with `EPERM` on non-rooted Android devices.
+  - Generates interface settings: `"secretKey"`, `"address"` (list of local CIDRs), `"mtu"` (clamped to 1280..1500), `"reserved"` (optional 3-byte JSON integer array).
+  - Generates peer settings: `"publicKey"`, `"preSharedKey"` (if present), `"endpoint": "<host>:<port>"`, `"keepAlive"`.
+- **Bootstrap Resolution & TCP Preflight Skipping (`HybridVpnService.kt`):**
+  - `preparePinnedXrayConfig` detects WireGuard outbounds, extracts `endpoint` (`"<host>:<port>"`), resolves domain hosts to IPv4, and pins them into `dns.hosts` routed direct.
+  - TCP preflight socket check is skipped for WireGuard because WireGuard endpoints communicate strictly over UDP (a TCP probe would fail and cause false-positive aborts).
+- **Ping Testing & Exit-IP Verification:**
+  - Real delay measurements use `XrayConfigGenerator.generatePingConfig`, which spins up an ephemeral core instance to measure true round-trip delay to the WireGuard peer.
+  - Post-connection exit-IP and Geo verification is routed through Xray's local HTTP proxy (`127.0.0.1:10809`), matching v2rayNG behavior.
 
 ---
 
@@ -257,14 +267,13 @@ Implemented via `HybridVpnService.applyPerAppRouting` and resolved via `RoutingP
 |---|---|---|---|
 | **OpenConnect** | None (all apps routed) | Selected apps + `dev.rouzbeh.hybridvpn` | Selected apps disallowed |
 | **v2rayNG** | `dev.rouzbeh.hybridvpn` disallowed | Selected apps only (`dev.rouzbeh.hybridvpn` excluded) | Selected apps + `dev.rouzbeh.hybridvpn` disallowed |
-| **DNS-Only** | `dev.rouzbeh.hybridvpn` disallowed | Selected apps only (`dev.rouzbeh.hybridvpn` excluded) | Selected apps + `dev.rouzbeh.hybridvpn` disallowed |
+| **WireGuard** | `dev.rouzbeh.hybridvpn` disallowed | Selected apps only (`dev.rouzbeh.hybridvpn` excluded) | Selected apps + `dev.rouzbeh.hybridvpn` disallowed |
 
 **Core Invariants:**
 1. **Single API Family:** `VpnService.Builder` must never be called with both `addAllowedApplication` and `addDisallowedApplication` in the same session.
 2. **Self-Package Semantics:**
    - OpenConnect protects its sockets via `protect()` and includes `HybridNest` inside the tunnel during ALLOW mode so its in-app exit IP detection succeeds.
-   - V2Ray runs in-process without socket protection; allowing `HybridNest` inside the tunnel would cause outbound proxy traffic to loop into its own TUN. V2Ray detects exit IP via its local HTTP proxy (`127.0.0.1:10809`).
-   - DNS forwarder upstream sockets must never loop into the TUN.
+   - V2Ray and WireGuard run Xray in-process without socket protection; allowing `HybridNest` inside the tunnel would cause outbound proxy traffic to loop into its own TUN. V2Ray and WireGuard detect exit IP via Xray's local HTTP proxy (`127.0.0.1:10809`).
 3. **Fail-Closed Policy:** In ALLOW mode, if all selected apps are uninstalled or missing, connection is refused (`RoutingRefusedException`) rather than silently widened to global routing.
 
 ---
@@ -332,30 +341,27 @@ Implemented via `HybridVpnService.applyPerAppRouting` and resolved via `RoutingP
 |---|---|
 | `app/src/main/java/dev/rouzbeh/hybridvpn/HybridVpnApplication.kt` | Application class; configures uncaught exception handlers and historical exit diagnostics (`ApplicationExitInfo`). |
 | `app/src/main/java/dev/rouzbeh/hybridvpn/MainActivity.kt` | Single Activity host; handles system splash screen installation, edge-to-edge layout, and Compose navigation. |
-| `app/src/main/java/dev/rouzbeh/hybridvpn/service/HybridVpnService.kt` | Unified VPN service (~1400 lines); manages TUN allocation, session IDs, routing policies, and dispatches OpenConnect, V2Ray, and DNS engines. |
+| `app/src/main/java/dev/rouzbeh/hybridvpn/service/HybridVpnService.kt` | Unified VPN service (~1400 lines); manages TUN allocation, session IDs, routing policies, and dispatches OpenConnect, v2rayNG, and WireGuard engines. |
 | `app/src/main/java/dev/rouzbeh/hybridvpn/service/VpnStateManager.kt` | Thread-safe state container; tracks `ConnectionState`, speed calculation (`TrafficStats`), persistent start times, and network info. |
 | `app/src/main/java/dev/rouzbeh/hybridvpn/service/VpnActionBus.kt` | Asynchronous decoupled event bus (`disconnectFlow`, `teardownComplete`) coordinating Service and ViewModel actions. |
 | `app/src/main/java/dev/rouzbeh/hybridvpn/service/RoutingPolicyStatus.kt` | Single source of truth for the actively established routing policy revision and teardown reasons. |
 | `app/src/main/java/dev/rouzbeh/hybridvpn/service/LogStore.kt` | Process-wide circular in-memory log buffer (500 lines per protocol) persisting across UI recreations. |
-| `app/src/main/java/dev/rouzbeh/hybridvpn/core/utils/LogRedactor.kt` | Producer-side redaction utility scrubbing auth cookies, session tokens, passwords, and authorization headers from logs. |
+| `app/src/main/java/dev/rouzbeh/hybridvpn/core/utils/LogRedactor.kt` | Producer-side redaction utility scrubbing auth cookies, session tokens, passwords, authorization headers, and WireGuard private/preshared keys from logs. |
+| `app/src/main/java/dev/rouzbeh/hybridvpn/core/vpn/wireguard/WireGuardConfig.kt` | WireGuard data model (`WireGuardParsedConfig`), multi-format parser (`.conf`, `wireguard://`, form), validator, `listenPort` and `allowedIps` handling, and canonical URI serializer. |
+| `app/src/main/java/dev/rouzbeh/hybridvpn/core/vpn/wireguard/WireGuardKeyUtils.kt` | Pure-Kotlin RFC 7748 Curve25519 (X25519) key generation, private key clamping, and Montgomery ladder public key derivation ($P = 2^{255} - 19, U = 9$). |
 | `app/src/main/java/dev/rouzbeh/hybridvpn/core/vpn/v2ray/V2RayManager.kt` | Manages Gomobile `CoreController` lifecycle, config validation, and outbound ping tests. |
-| `app/src/main/java/dev/rouzbeh/hybridvpn/core/vpn/v2ray/XrayConfigGenerator.kt` | Generates full session and trimmed ping JSON configs for Xray; handles VLESS/VMess/Trojan and transport stream settings. |
+| `app/src/main/java/dev/rouzbeh/hybridvpn/core/vpn/v2ray/XrayConfigGenerator.kt` | Generates full session and trimmed ping JSON configs for Xray; handles VLESS/VMess/Trojan and WireGuard (`noKernelTun: true`) outbounds. |
 | `app/src/main/java/dev/rouzbeh/hybridvpn/core/vpn/v2ray/V2raySettings.kt` | Constants for DNS, MUX concurrency, XUDP settings, and routing tags. |
-| `app/src/main/java/dev/rouzbeh/hybridvpn/core/vpn/dns/DnsForwarder.kt` | Packet-level user-space forwarder; reads TUN IP packets, forwards DNS to upstreams over protected sockets, rewrites checksums. |
-| `app/src/main/java/dev/rouzbeh/hybridvpn/core/vpn/dns/DnsPacket.kt` | Low-level IPv4, IPv6, UDP, and TCP header parser and binary serializer. |
-| `app/src/main/java/dev/rouzbeh/hybridvpn/core/vpn/dns/DnsServer.kt` | Domain model for DNS servers, built-in resolvers catalog, and IP validator. |
 | `app/src/main/java/dev/rouzbeh/hybridvpn/core/vpn/ConnectivityDiagnostics.kt` | Bounded diagnostic verifier checking DNS and HTTP reachability through established tunnels without tearing them down. |
 | `app/src/main/java/dev/rouzbeh/hybridvpn/core/routing/RoutingPolicy.kt` | Immutable policy snapshot, routing decisions (`Global`, `Allow`, `Bypass`, `Refused`), and `RoutingRefusedException`. |
 | `app/src/main/java/dev/rouzbeh/hybridvpn/core/routing/RoutingPolicyResolver.kt` | Pure JVM resolver resolving desired policies against installed applications. |
-| `app/src/main/java/dev/rouzbeh/hybridvpn/data/local/VpnProfile.kt` | Room entity representing a saved OpenConnect or V2Ray server profile. |
+| `app/src/main/java/dev/rouzbeh/hybridvpn/data/local/VpnProfile.kt` | Room entity representing a saved OpenConnect, WireGuard, or v2rayNG server profile. |
 | `app/src/main/java/dev/rouzbeh/hybridvpn/data/local/VpnProfileDao.kt` | Room DAO with reactive Flow queries and CRUD operations. |
 | `app/src/main/java/dev/rouzbeh/hybridvpn/data/local/AppDatabase.kt` | Room database definition (`cybernest_database`). |
 | `app/src/main/java/dev/rouzbeh/hybridvpn/data/repository/SettingsRepository.kt` | SharedPreferences storage for per-app routing and policy revisions. |
-| `app/src/main/java/dev/rouzbeh/hybridvpn/data/repository/DnsSettingsRepository.kt` | SharedPreferences storage for DNS server list, selections, and latency caches. |
-| `app/src/main/java/dev/rouzbeh/hybridvpn/feature/dashboard/DashboardViewModel.kt` | Central ViewModel (~1470 lines); handles server pinging, network IP lookups, subscriptions, and state coordination. |
-| `app/src/main/java/dev/rouzbeh/hybridvpn/feature/dashboard/DashboardScreen.kt` | Main Composable screen (~4000 lines); contains all UI dialogs, dashboard cards, animations, and controls. |
+| `app/src/main/java/dev/rouzbeh/hybridvpn/feature/dashboard/DashboardViewModel.kt` | Central ViewModel (~1700 lines); handles server pinging (including WireGuard ephemeral ping), network IP lookups (via local HTTP proxy for v2rayNG and WireGuard), WireGuard `.conf`/`.zip` batch import, subscriptions, config addition toasts, and state coordination. |
+| `app/src/main/java/dev/rouzbeh/hybridvpn/feature/dashboard/DashboardScreen.kt` | Main Composable screen (~4380 lines); contains all UI dialogs, dashboard cards, animations, 3-way protocol switcher (AnyConnect, WireGuard, v2rayNG), redesigned WireGuard Add/Edit UI (`Interface` and `Peer` cards), persistent subscription tab selection, Live Logs copy action, and Home screen toast feedback. |
 | `app/src/main/java/dev/rouzbeh/hybridvpn/feature/dashboard/BundledFlags.kt` | In-memory cache and synchronous decoder for bundled 1280px lossless WebP country flags. |
-| `app/src/main/java/dev/rouzbeh/hybridvpn/feature/dashboard/DnsScreens.kt` | Full-screen UI for DNS-only server selection, editing, and latency testing. |
 | `app/src/main/java/dev/rouzbeh/hybridvpn/feature/dashboard/InfoRemarkClassifier.kt` | Natural language and regex classifier extracting subscription bandwidth and duration metadata from config names. |
 | `app/src/main/cpp/native-lib.cpp` | C++ JNI bridge (~690 lines); controls OpenConnect main loop, thread lifecycle, and socket interruption. |
 
@@ -374,7 +380,6 @@ Implemented via `HybridVpnService.applyPerAppRouting` and resolved via `RoutingP
    While reliable on current Android versions, accessing private platform fields carries greylist/hidden API restriction risks on future Android releases.
 3. **Hardcoded Endpoints & Fallbacks:**
    - `V2raySettings.kt`: Hardcodes `VPN_DNS = "9.9.9.9"`, `REMOTE_DNS = "tcp://1.1.1.1"`, and `DOMESTIC_DNS = "178.22.122.100"`.
-   - `DnsTunnelConfig`: Hardcodes fake addresses `10.10.10.1`, `10.10.10.53`, `fd00:646e:7373::1`, and `fd00:646e:7373::53`.
    - `ConnectivityDiagnostics.kt`: Hardcodes probe host `cp.cloudflare.com` and raw IP `1.1.1.1`.
 4. **Synchronous Network Calls for Subscription Fetching:**
    `DashboardViewModel.updateSubscription` directly utilizes blocking `java.net.URL(url).openConnection()` on `Dispatchers.IO` without HTTP connection pooling or custom TLS handling.

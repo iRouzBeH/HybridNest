@@ -20,6 +20,8 @@ import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.PressInteraction
@@ -43,6 +45,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.AltRoute
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -51,8 +54,10 @@ import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.ContentPaste
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.Dns
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.FileDownload
@@ -71,6 +76,7 @@ import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.outlined.Sort
 import androidx.compose.material.icons.outlined.Sync
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -307,8 +313,8 @@ fun Modifier.bounceClick(onLongClick: (() -> Unit)? = null, onClick: () -> Unit)
 
 enum class VpnProtocolDisplay(val title: String, val iconResId: Int) {
     OpenConnect("OpenConnect", R.drawable.ic_openconnect),
-    Dns("DNS", R.drawable.ic_dns),
-    V2rayNG("v2rayNG", R.drawable.ic_v2rayng) // Ensure ic_v2rayng.png exists in res/drawable
+    WireGuard("WireGuard", R.drawable.ic_wireguard),
+    V2rayNG("v2rayNG", R.drawable.ic_v2rayng)
 }
 
 @Composable
@@ -328,13 +334,12 @@ fun DashboardScreen(
     val isBypassMode by viewModel.isBypassMode.collectAsStateWithLifecycle()
     val isRoutingPending by viewModel.isRoutingPending.collectAsStateWithLifecycle()
     val currentLogs by viewModel.currentLogs.collectAsStateWithLifecycle()
-    val dnsServers by viewModel.dnsServers.collectAsStateWithLifecycle()
-    val selectedDnsServer by viewModel.selectedDnsServer.collectAsStateWithLifecycle()
     val v2rayPingTabs by viewModel.v2rayPingTabs.collectAsStateWithLifecycle()
 
     val drawerState =
         androidx.compose.material3.rememberDrawerState(initialValue = androidx.compose.material3.DrawerValue.Closed)
     val scope = rememberCoroutineScope()
+    val context = LocalContext.current
 
     androidx.compose.material3.ModalNavigationDrawer(
         drawerState = drawerState,
@@ -408,14 +413,7 @@ fun DashboardScreen(
             onReconnectWithLatestPolicy = { context -> viewModel.reconnectWithLatestPolicy(context) },
             onOpenDrawer = { scope.launch { drawerState.open() } },
             onRetryIpFetch = { viewModel.retryFetchIp() },
-            dnsServers = dnsServers,
-            selectedDnsServer = selectedDnsServer,
-            onSelectDnsServer = { viewModel.selectDnsServer(it) },
-            onAddDnsServer = { name, primary, secondary -> viewModel.addDnsServer(name, primary, secondary) },
-            onUpdateDnsServer = { id, name, primary, secondary -> viewModel.updateDnsServer(id, name, primary, secondary) },
-            onDeleteDnsServer = { viewModel.deleteDnsServer(it) },
-            onTestDnsPing = { viewModel.testDnsPing(it) },
-            onTestAllDnsPing = { viewModel.testAllDnsPing() },
+            onImportWireGuardUri = { uri -> viewModel.importWireGuardFromUri(context, uri) },
             toastFlow = viewModel.toastMessage,
             subscriptionToastFlow = viewModel.subscriptionToast
         )
@@ -466,38 +464,26 @@ fun DashboardContent(
     onReconnectWithLatestPolicy: (android.content.Context) -> Unit,
     onOpenDrawer: () -> Unit,
     onRetryIpFetch: () -> Unit,
-    dnsServers: List<dev.rouzbeh.hybridvpn.core.vpn.dns.DnsServer> = emptyList(),
-    selectedDnsServer: dev.rouzbeh.hybridvpn.core.vpn.dns.DnsServer? = null,
-    onSelectDnsServer: (String) -> Unit = {},
-    onAddDnsServer: (String, String, String?) -> Unit = { _, _, _ -> },
-    onUpdateDnsServer: (String, String, String, String?) -> Unit = { _, _, _, _ -> },
-    onDeleteDnsServer: (String) -> Unit = {},
-    onTestDnsPing: (String) -> Unit = {},
-    onTestAllDnsPing: () -> Unit = {},
+    onImportWireGuardUri: ((android.net.Uri) -> Unit)? = null,
     toastFlow: kotlinx.coroutines.flow.Flow<String>,
     subscriptionToastFlow: kotlinx.coroutines.flow.Flow<String> = kotlinx.coroutines.flow.emptyFlow()
 ) {
     var showAddServerSheet by remember { mutableStateOf(false) }
     var showServerListSheet by remember { mutableStateOf(false) }
-    // REMOVED LOCAL STATE for isPerAppEnabled and isBypassMode
     var showSplitSheet by remember { mutableStateOf(false) }
     var showAppRoutingScreen by remember { mutableStateOf(false) }
     var showLiveLogScreen by remember { mutableStateOf(false) }
     var editingProfile by remember { mutableStateOf<VpnProfile?>(null) }
-    var editingDnsServer by remember { mutableStateOf<dev.rouzbeh.hybridvpn.core.vpn.dns.DnsServer?>(null) }
-    var showDnsAddSheet by remember { mutableStateOf(false) }
     var dashboardToastMessage by remember { mutableStateOf<String?>(null) }
     val onShowToast = { msg: String -> dashboardToastMessage = msg }
 
     val currentProtocolDisplay = VpnProtocolDisplay.entries.find { it.title == selectedProtocol }
         ?: VpnProtocolDisplay.OpenConnect
 
-    val isDnsSelected = currentProtocolDisplay == VpnProtocolDisplay.Dns
-
     androidx.activity.compose.BackHandler(enabled = showAppRoutingScreen) {
         showAppRoutingScreen = false
     }
-    androidx.activity.compose.BackHandler(enabled = showServerListSheet && (isDnsSelected || filteredProfiles.isNotEmpty())) {
+    androidx.activity.compose.BackHandler(enabled = showServerListSheet && filteredProfiles.isNotEmpty()) {
         showServerListSheet = false
     }
     androidx.activity.compose.BackHandler(enabled = showLiveLogScreen) {
@@ -506,7 +492,7 @@ fun DashboardContent(
 
     LaunchedEffect(dashboardToastMessage) {
         if (dashboardToastMessage != null) {
-            delay(4000)
+            delay(2500L)
             dashboardToastMessage = null
         }
     }
@@ -522,23 +508,10 @@ fun DashboardContent(
         androidx.compose.material3.rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val context = LocalContext.current
 
-    // The DNS method is "active" when its tab is selected OR a DNS session is
-    // actually connected (detailed-state is authoritative for the latter).
-    // detailedConnectionStateFlow is collected as Compose state so this value
-    // recomposes the moment the connected protocol changes — reading
-    // .value inside remember{} left it stale until app re-entry.
-    val detailedState by VpnStateManager.detailedConnectionStateFlow.collectAsStateWithLifecycle()
-    val isDnsActive = isDnsSelected ||
-        ((detailedState as? dev.rouzbeh.hybridvpn.service.DetailedState.Connected)
-            ?.activeProtocol == dev.rouzbeh.hybridvpn.service.VpnProtocol.Dns)
-
     val currentActiveProfile =
         if (activeProfile?.protocol == selectedProtocol) activeProfile else null
 
-    // DNS mode has no VpnProfile; treat the selected DnsServer as the "active"
-    // selection so the connect button + status boxes behave like a chosen server.
-    val hasDnsSelection = isDnsSelected && selectedDnsServer != null
-    val canConnect = if (isDnsSelected) hasDnsSelection else currentActiveProfile != null
+    val canConnect = currentActiveProfile != null
 
     val vpnPermissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.StartActivityForResult()
@@ -561,9 +534,7 @@ fun DashboardContent(
     }
 
     val isUiUnlocked = connectionState.isTerminal
-    // DNS always has a selectable server list (built-ins), so its list opens
-    // even when there are no Room profiles for the other protocols.
-    val hasServers = if (isDnsSelected) dnsServers.isNotEmpty() else filteredProfiles.isNotEmpty()
+    val hasServers = filteredProfiles.isNotEmpty()
 
     androidx.compose.animation.AnimatedVisibility(
         visible = showAppRoutingScreen,
@@ -574,7 +545,6 @@ fun DashboardContent(
             apps = installedApps,
             isPerAppEnabled = isPerAppEnabled,
             isBypassMode = isBypassMode,
-            isDnsMode = isDnsSelected,
             isPending = isRoutingPending,
             onReconnect = { onReconnectWithLatestPolicy(context) },
             onBypassModeChange = onSetBypassMode,
@@ -594,43 +564,27 @@ fun DashboardContent(
         enter = androidx.compose.animation.slideInVertically(initialOffsetY = { it }) + androidx.compose.animation.fadeIn(),
         exit = androidx.compose.animation.slideOutVertically(targetOffsetY = { it }) + androidx.compose.animation.fadeOut()
     ) {
-        if (isDnsSelected) {
-            DnsServerListScreen(
-                servers = dnsServers,
-                selectedServerId = selectedDnsServer?.id,
-                connectionState = connectionState,
-                onSelect = { id -> onSelectDnsServer(id); showServerListSheet = false },
-                onDelete = { server -> onDeleteDnsServer(server.id) },
-                onEdit = { server -> editingDnsServer = server },
-                onTestPing = { server -> onTestDnsPing(server.id) },
-                onTestAllPing = onTestAllDnsPing,
-                onNavigateBack = { showServerListSheet = false },
-                toastMessage = dashboardToastMessage,
-                onShowToast = onShowToast
-            )
-        } else {
-            ServerListFullScreen(
-                protocol = selectedProtocol,
-                servers = filteredProfiles,
-                activeProfile = activeProfile,
-                connectionState = connectionState,
-                onSelect = { profileId -> onSelectServer(profileId, context) },
-                onDelete = onDeleteServer,
-                onDeleteSubGroup = onDeleteSubGroup,
-                onRenameSubGroup = onRenameSubGroup,
-                onTestSinglePing = onTestSinglePing,
-                onTestAllV2rayPing = onTestAllV2rayPing,
-                onSortV2ray = onSortV2ray,
-                onDeleteInvalidV2ray = onDeleteInvalidV2ray,
-                onUpdateSub = onUpdateSub,
-                v2rayPingTabs = v2rayPingTabs,
-                onEdit = { profile -> editingProfile = profile },
-                onNavigateBack = { showServerListSheet = false },
-                toastMessage = dashboardToastMessage,
-                onShowToast = onShowToast,
-                subscriptionToastFlow = subscriptionToastFlow
-            )
-        }
+        ServerListFullScreen(
+            protocol = selectedProtocol,
+            servers = filteredProfiles,
+            activeProfile = activeProfile,
+            connectionState = connectionState,
+            onSelect = { profileId -> onSelectServer(profileId, context) },
+            onDelete = onDeleteServer,
+            onDeleteSubGroup = onDeleteSubGroup,
+            onRenameSubGroup = onRenameSubGroup,
+            onTestSinglePing = onTestSinglePing,
+            onTestAllV2rayPing = onTestAllV2rayPing,
+            onSortV2ray = onSortV2ray,
+            onDeleteInvalidV2ray = onDeleteInvalidV2ray,
+            onUpdateSub = onUpdateSub,
+            v2rayPingTabs = v2rayPingTabs,
+            onEdit = { profile -> editingProfile = profile },
+            onNavigateBack = { showServerListSheet = false },
+            toastMessage = dashboardToastMessage,
+            onShowToast = onShowToast,
+            subscriptionToastFlow = subscriptionToastFlow
+        )
     }
 
     androidx.compose.animation.AnimatedVisibility(
@@ -670,7 +624,6 @@ fun DashboardContent(
                     modifier = Modifier.weight(1f),
                     networkInfo = networkInfo,
                     connectionState = connectionState,
-                    isDnsMode = isDnsActive,
                     onMoreClick = {
                         val intent =
                             Intent(Intent.ACTION_VIEW, "https://browserleaks.com/ip".toUri())
@@ -689,16 +642,10 @@ fun DashboardContent(
                 )
 
                 // NEW: App Routing / Split Tunneling Button.
-                // The wording follows the SELECTED protocol tab (isDnsSelected),
-                // not the connected session, so it updates the instant the user
-                // switches protocols — DNS has no tunnel/VPN, so it says "DNS".
                 val currentMode = when {
-                    !isPerAppEnabled ->
-                        if (isDnsSelected) "All apps use DNS" else "All apps use VPN"
-                    isBypassMode ->
-                        if (isDnsSelected) "All apps except those selected use DNS" else "All apps except those selected use VPN"
-                    else ->
-                        if (isDnsSelected) "Only selected apps use DNS" else "Only selected apps use VPN"
+                    !isPerAppEnabled -> "All apps use VPN"
+                    isBypassMode -> "All apps except those selected use VPN"
+                    else -> "Only selected apps use VPN"
                 }
                 RoutingSelectorButton(
                     currentMode = currentMode,
@@ -717,24 +664,15 @@ fun DashboardContent(
                     }
                 )
 
-                // 5. Server Selector (Using the updated signature with onAddClick)
-                if (isDnsSelected) {
-                    DnsServerSelectorButton(
-                        selectedServer = selectedDnsServer,
-                        isEnabled = isUiUnlocked,
-                        onClick = { showServerListSheet = true },
-                        onAddClick = { if (isUiUnlocked) showDnsAddSheet = true }
-                    )
-                } else {
-                    ServerSelectorButton(
-                        activeProfile = activeProfile,
-                        selectedProtocol = currentProtocolDisplay,
-                        hasProfiles = filteredProfiles.isNotEmpty(),
-                        isEnabled = isUiUnlocked,
-                        onClick = { showServerListSheet = true },
-                        onAddClick = { if (isUiUnlocked) showAddServerSheet = true }
-                    )
-                }
+                // 5. Server Selector
+                ServerSelectorButton(
+                    activeProfile = activeProfile,
+                    selectedProtocol = currentProtocolDisplay,
+                    hasProfiles = filteredProfiles.isNotEmpty(),
+                    isEnabled = isUiUnlocked,
+                    onClick = { showServerListSheet = true },
+                    onAddClick = { if (isUiUnlocked) showAddServerSheet = true }
+                )
 
                 // 6. Bottom Grid (4 boxes: Status, Ping, Uptime, Power)
                 Row(
@@ -1008,7 +946,8 @@ fun DashboardContent(
                             onAdd = onAddServer,
                             onUpdate = onUpdateServer,
                             onClose = { showAddServerSheet = false },
-                            onShowToast = onShowToast
+                            onShowToast = onShowToast,
+                            onImportWireGuardUri = onImportWireGuardUri
                         )
                     }
                 }
@@ -1072,6 +1011,12 @@ fun DashboardContent(
                     }
                 }
             }
+            CustomGlassToast(
+                message = dashboardToastMessage,
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .padding(bottom = 32.dp)
+            )
         }
     }
 
@@ -1089,41 +1034,8 @@ fun DashboardContent(
                 onAdd = onAddServer,
                 onUpdate = onUpdateServer,
                 onClose = { editingProfile = null },
-                onShowToast = onShowToast
-            )
-        }
-    }
-
-    // DNS add / edit sheets (custom servers only; built-ins are never edited).
-    if (showDnsAddSheet) {
-        ModalBottomSheet(
-            onDismissRequest = { showDnsAddSheet = false },
-            sheetState = sheetState,
-            containerColor = SurfaceMenu,
-            dragHandle = null
-        ) {
-            DnsServerSheetContent(
-                onAdd = onAddDnsServer,
-                onUpdate = onUpdateDnsServer,
-                onClose = { showDnsAddSheet = false },
-                onShowToast = onShowToast
-            )
-        }
-    }
-
-    if (editingDnsServer != null) {
-        ModalBottomSheet(
-            onDismissRequest = { editingDnsServer = null },
-            sheetState = sheetState,
-            containerColor = SurfaceMenu,
-            dragHandle = null
-        ) {
-            DnsServerSheetContent(
-                editingServer = editingDnsServer,
-                onAdd = onAddDnsServer,
-                onUpdate = onUpdateDnsServer,
-                onClose = { editingDnsServer = null },
-                onShowToast = onShowToast
+                onShowToast = onShowToast,
+                onImportWireGuardUri = onImportWireGuardUri
             )
         }
     }
@@ -1340,107 +1252,6 @@ fun ServerSelectorButton(
             Icon(
                 imageVector = Icons.Default.Add,
                 contentDescription = "Add Server",
-                tint = if (isEnabled) PrimaryCyan else Color.Gray.copy(alpha = 0.5f)
-            )
-        }
-    }
-}
-
-/**
- * Server-list row for the DNS method. Same chrome as [ServerSelectorButton]
- * but driven by the selected [dev.rouzbeh.hybridvpn.core.vpn.dns.DnsServer]
- * (no Room profile). The [+] box opens the add-DNS sheet.
- */
-@Composable
-fun DnsServerSelectorButton(
-    modifier: Modifier = Modifier,
-    selectedServer: dev.rouzbeh.hybridvpn.core.vpn.dns.DnsServer?,
-    isEnabled: Boolean,
-    onClick: () -> Unit,
-    onAddClick: () -> Unit
-) {
-    val haptic = LocalHapticFeedback.current
-    val serverText = selectedServer?.name ?: "Select DNS Server"
-
-    Row(
-        modifier = modifier
-            .fillMaxWidth()
-            .height(64.dp),
-        horizontalArrangement = Arrangement.spacedBy(12.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Row(
-            modifier = Modifier
-                .weight(1f)
-                .fillMaxHeight()
-                .alpha(if (isEnabled) 1f else 0.5f)
-                .clip(RoundedCornerShape(16.dp))
-                .background(SurfaceGlass)
-                .border(1.dp, BorderGlass, RoundedCornerShape(16.dp))
-                .clickable(enabled = isEnabled) {
-                    haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                    onClick()
-                }
-                .padding(horizontal = 16.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Column(
-                modifier = Modifier.weight(1f),
-                verticalArrangement = Arrangement.Center
-            ) {
-                Text(
-                    text = "DNS Server",
-                    color = TextSecondary,
-                    fontSize = 10.sp,
-                    fontFamily = SoraFamily
-                )
-                Spacer(modifier = Modifier.height(4.dp))
-                var nameFontSize by remember(serverText) { mutableStateOf(14.sp) }
-                Text(
-                    text = serverText,
-                    color = if (selectedServer != null) PrimaryCyan else Color.Gray,
-                    fontSize = nameFontSize,
-                    fontWeight = FontWeight.Bold,
-                    maxLines = 1,
-                    softWrap = false,
-                    overflow = TextOverflow.Ellipsis,
-                    onTextLayout = { result ->
-                        val minFontSize = 10.sp
-                        if (result.hasVisualOverflow && nameFontSize.value > minFontSize.value) {
-                            nameFontSize = (nameFontSize.value - 1f).coerceAtLeast(minFontSize.value).sp
-                        }
-                    },
-                    fontFamily = SoraFamily
-                )
-            }
-            Spacer(modifier = Modifier.width(12.dp))
-            Icon(
-                imageVector = Icons.Default.Dns,
-                contentDescription = "Server",
-                tint = PrimaryCyan,
-                modifier = Modifier.size(24.dp)
-            )
-        }
-
-        // Right: Add (+) Button Box — same chrome as the Server List "+" used
-        // by the profile protocols; opens the add-DNS sheet.
-        Box(
-            modifier = Modifier
-                .size(64.dp)
-                .alpha(if (isEnabled) 1f else 0.5f)
-                .clip(RoundedCornerShape(16.dp))
-                .background(SurfaceGlass)
-                .border(1.dp, BorderGlass, RoundedCornerShape(16.dp))
-                .clickable(enabled = isEnabled) {
-                    haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                    onAddClick()
-                },
-            contentAlignment = Alignment.Center
-        ) {
-            Icon(
-                imageVector = Icons.Default.Add,
-                contentDescription = "Add DNS Server",
                 tint = if (isEnabled) PrimaryCyan else Color.Gray.copy(alpha = 0.5f)
             )
         }
@@ -2210,7 +2021,8 @@ fun AddServerSheetContent(
     onAdd: (String, String, String, String, String) -> Unit,
     onUpdate: (VpnProfile) -> Unit,
     onClose: () -> Unit,
-    onShowToast: (String) -> Unit
+    onShowToast: (String) -> Unit,
+    onImportWireGuardUri: ((android.net.Uri) -> Unit)? = null
 ) {
     val context = LocalContext.current
     val currentProtocol = editingProfile?.protocol?.let { pName ->
@@ -2223,6 +2035,45 @@ fun AddServerSheetContent(
     var password by remember { mutableStateOf(editingProfile?.password ?: "") }
     var passwordVisible by remember { mutableStateOf(false) }
 
+    val editingWg = remember(editingProfile) {
+        if (editingProfile != null && editingProfile.protocol == "WireGuard") {
+            try {
+                dev.rouzbeh.hybridvpn.core.vpn.wireguard.WireGuardConfig.fromConfig(editingProfile.serverAddress)
+            } catch (_: Exception) { null }
+        } else null
+    }
+
+    var wgName by remember(editingWg) { mutableStateOf(editingProfile?.name ?: editingWg?.remark ?: "") }
+    var wgSecretKey by remember(editingWg) { mutableStateOf(editingWg?.secretKey ?: "") }
+    val wgInterfacePublicKey = remember(wgSecretKey) { dev.rouzbeh.hybridvpn.core.vpn.wireguard.WireGuardKeyUtils.derivePublicKey(wgSecretKey.trim()) ?: "" }
+    var wgLocalAddress by remember(editingWg) { mutableStateOf(editingWg?.localAddresses?.joinToString(", ") ?: "") }
+    var wgListenPort by remember(editingWg) { mutableStateOf(editingWg?.listenPort?.toString() ?: "") }
+    var wgDns by remember(editingWg) { mutableStateOf(editingWg?.dns ?: "") }
+    var wgMtu by remember(editingWg) { mutableStateOf(editingWg?.mtu?.toString() ?: "") }
+    var wgPublicKey by remember(editingWg) { mutableStateOf(editingWg?.publicKey ?: "") }
+    var wgPresharedKey by remember(editingWg) { mutableStateOf(editingWg?.preSharedKey ?: "") }
+    var wgKeepAlive by remember(editingWg) { mutableStateOf(editingWg?.keepAlive?.takeIf { it > 0 }?.toString() ?: "") }
+    var wgEndpoint by remember(editingWg) { mutableStateOf(if (editingWg != null) "${editingWg.endpointHost}:${editingWg.endpointPort}" else "") }
+    var wgAllowedIps by remember(editingWg) { mutableStateOf(editingWg?.allowedIps?.joinToString(", ") ?: "") }
+    var wgReserved by remember(editingWg) { mutableStateOf(editingWg?.reserved?.joinToString(",") ?: "") }
+    var showPeerSection by remember(editingProfile) { mutableStateOf(editingProfile != null) }
+
+    fun applyParsedWg(parsed: dev.rouzbeh.hybridvpn.core.vpn.wireguard.WireGuardParsedConfig, nameOverride: String? = null) {
+        wgName = nameOverride?.takeIf { it.isNotBlank() } ?: parsed.remark
+        wgSecretKey = parsed.secretKey
+        wgLocalAddress = parsed.localAddresses.joinToString(", ")
+        wgListenPort = parsed.listenPort?.toString() ?: ""
+        wgDns = parsed.dns ?: ""
+        wgMtu = parsed.mtu.toString()
+        wgPublicKey = parsed.publicKey
+        wgPresharedKey = parsed.preSharedKey ?: ""
+        wgKeepAlive = if (parsed.keepAlive > 0) parsed.keepAlive.toString() else ""
+        wgEndpoint = "${parsed.endpointHost}:${parsed.endpointPort}"
+        wgAllowedIps = parsed.allowedIps.joinToString(", ")
+        wgReserved = parsed.reserved?.joinToString(",") ?: ""
+        showPeerSection = true
+    }
+
     val barcodeScanner = remember { com.google.mlkit.vision.barcode.BarcodeScanning.getClient() }
     val galleryLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
         contract = androidx.activity.result.contract.ActivityResultContracts.GetContent()
@@ -2231,18 +2082,123 @@ fun AddServerSheetContent(
             try {
                 val image = com.google.mlkit.vision.common.InputImage.fromFilePath(context, it)
                 barcodeScanner.process(image).addOnSuccessListener { barcodes ->
-                    barcodes.firstOrNull()?.rawValue?.let { value -> serverAddress = value }
+                    val raw = barcodes.firstOrNull()?.rawValue
+                    if (!raw.isNullOrBlank()) {
+                        if (currentProtocol == VpnProtocolDisplay.WireGuard) {
+                            try {
+                                val parsed = dev.rouzbeh.hybridvpn.core.vpn.wireguard.WireGuardConfig.fromConfig(raw)
+                                applyParsedWg(parsed)
+                                onShowToast("WireGuard config loaded from QR!")
+                            } catch (_: Exception) {
+                                onShowToast("QR is not a valid WireGuard configuration")
+                            }
+                        } else {
+                            serverAddress = raw
+                        }
+                    }
                 }
             } catch (e: Exception) {
                 e.printStackTrace()
             }
         }
     }
+
+    val wgFileLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
+        contract = androidx.activity.result.contract.ActivityResultContracts.GetContent()
+    ) { uri ->
+        uri?.let { fileUri ->
+            try {
+                var displayName: String? = null
+                runCatching {
+                    context.contentResolver.query(fileUri, arrayOf(android.provider.OpenableColumns.DISPLAY_NAME), null, null, null)?.use { cursor ->
+                        if (cursor.moveToFirst()) {
+                            val idx = cursor.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
+                            if (idx >= 0) displayName = cursor.getString(idx)
+                        }
+                    }
+                }
+                if (displayName.isNullOrBlank()) {
+                    displayName = fileUri.lastPathSegment ?: "wireguard.conf"
+                }
+
+                val inputStream = context.contentResolver.openInputStream(fileUri)
+                if (inputStream == null) {
+                    onShowToast("Unable to open selected file")
+                    return@rememberLauncherForActivityResult
+                }
+
+                val buffered = java.io.BufferedInputStream(inputStream)
+                buffered.mark(4)
+                val header = ByteArray(4)
+                val bytesRead = buffered.read(header)
+                buffered.reset()
+
+                val isZip = (bytesRead == 4 && header[0] == 0x50.toByte() && header[1] == 0x4B.toByte() && header[2] == 0x03.toByte() && header[3] == 0x04.toByte())
+                    || displayName.endsWith(".zip", ignoreCase = true)
+
+                if (isZip) {
+                    val zipEntries = mutableListOf<Pair<String, String>>()
+                    val zipStream = java.util.zip.ZipInputStream(buffered)
+                    var entry = zipStream.nextEntry
+                    while (entry != null) {
+                        val name = entry.name
+                        val isDir = entry.isDirectory
+                        val isMacMeta = name.contains("__MACOSX") || java.io.File(name).name.startsWith(".")
+                        if (!isDir && !isMacMeta && (name.endsWith(".conf", ignoreCase = true) || name.endsWith(".txt", ignoreCase = true))) {
+                            val baseName = java.io.File(name).name.substringBeforeLast('.')
+                            val baos = java.io.ByteArrayOutputStream()
+                            val buffer = ByteArray(4096)
+                            var len: Int
+                            var total = 0
+                            while (zipStream.read(buffer).also { len = it } > 0) {
+                                baos.write(buffer, 0, len)
+                                total += len
+                                if (total > 65536) break
+                            }
+                            val text = baos.toString("UTF-8").trim()
+                            if (dev.rouzbeh.hybridvpn.core.vpn.wireguard.WireGuardConfig.isWireGuardConfig(text)) {
+                                zipEntries.add(Pair(baseName, text))
+                            }
+                        }
+                        zipStream.closeEntry()
+                        entry = zipStream.nextEntry
+                    }
+                    zipStream.close()
+
+                    if (zipEntries.isEmpty()) {
+                        onShowToast("No WireGuard configs found in archive")
+                    } else if (zipEntries.size == 1) {
+                        val (baseName, text) = zipEntries.first()
+                        val parsed = dev.rouzbeh.hybridvpn.core.vpn.wireguard.WireGuardConfig.parseConf(text, defaultRemark = baseName)
+                        applyParsedWg(parsed, nameOverride = baseName)
+                        onShowToast("Config loaded from file!")
+                    } else {
+                        onImportWireGuardUri?.invoke(fileUri)
+                        onClose()
+                    }
+                } else {
+                    val baseFileName = displayName.substringBeforeLast('.')
+                    val text = buffered.bufferedReader(Charsets.UTF_8).use { it.readText() }.trim()
+                    if (dev.rouzbeh.hybridvpn.core.vpn.wireguard.WireGuardConfig.isWireGuardConfig(text)) {
+                        val parsed = dev.rouzbeh.hybridvpn.core.vpn.wireguard.WireGuardConfig.parse(text, defaultRemark = baseFileName)
+                        applyParsedWg(parsed, nameOverride = baseFileName)
+                        onShowToast("Config loaded from file!")
+                    } else {
+                        onShowToast("Selected file is not a valid WireGuard configuration")
+                    }
+                }
+            } catch (e: Exception) {
+                onShowToast(e.message ?: "Failed to read configuration file")
+            }
+        }
+    }
+
     val clipboardManager = androidx.compose.ui.platform.LocalClipboardManager.current
 
     Column(
         modifier = Modifier
             .fillMaxWidth()
+            .verticalScroll(rememberScrollState())
             .padding(start = 24.dp, end = 24.dp, bottom = 48.dp, top = 8.dp)
     ) {
         Box(
@@ -2359,6 +2315,345 @@ fun AddServerSheetContent(
                 )
             }
 
+            VpnProtocolDisplay.WireGuard -> {
+                // Top: Interface Card
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(16.dp))
+                        .background(SurfaceGlass)
+                        .border(1.dp, BorderGlass, RoundedCornerShape(16.dp))
+                        .padding(16.dp)
+                ) {
+                    Text(
+                        text = "Interface",
+                        color = TextPrimary,
+                        fontSize = 16.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        fontFamily = SoraFamily
+                    )
+                    Spacer(modifier = Modifier.height(12.dp))
+                    OutlinedTextField(
+                        value = wgName,
+                        onValueChange = { wgName = it },
+                        label = { Text("Name", color = TextSecondary, fontFamily = SoraFamily) },
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = PrimaryCyan,
+                            unfocusedBorderColor = BorderGlass,
+                            focusedTextColor = TextPrimary,
+                            unfocusedTextColor = TextPrimary
+                        ),
+                        textStyle = TextStyle(fontFamily = SoraFamily),
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true
+                    )
+                    Spacer(modifier = Modifier.height(10.dp))
+                    OutlinedTextField(
+                        value = wgSecretKey,
+                        onValueChange = { wgSecretKey = it.trim() },
+                        label = { Text("Private key", color = TextSecondary, fontFamily = SoraFamily) },
+                        trailingIcon = {
+                            IconButton(
+                                onClick = {
+                                    wgSecretKey = dev.rouzbeh.hybridvpn.core.vpn.wireguard.WireGuardKeyUtils.generatePrivateKey()
+                                }
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Refresh,
+                                    contentDescription = "Generate Key",
+                                    tint = PrimaryCyan
+                                )
+                            }
+                        },
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = PrimaryCyan,
+                            unfocusedBorderColor = BorderGlass,
+                            focusedTextColor = TextPrimary,
+                            unfocusedTextColor = TextPrimary
+                        ),
+                        textStyle = TextStyle(fontFamily = SoraFamily),
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true
+                    )
+                    Spacer(modifier = Modifier.height(10.dp))
+                    OutlinedTextField(
+                        value = if (wgInterfacePublicKey.isNotEmpty()) wgInterfacePublicKey else "(generated)",
+                        onValueChange = {},
+                        readOnly = true,
+                        label = { Text("Public key", color = TextSecondary, fontFamily = SoraFamily) },
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = PrimaryCyan,
+                            unfocusedBorderColor = BorderGlass,
+                            focusedTextColor = if (wgInterfacePublicKey.isNotEmpty()) TextPrimary else TextSecondary.copy(alpha = 0.7f),
+                            unfocusedTextColor = if (wgInterfacePublicKey.isNotEmpty()) TextPrimary else TextSecondary.copy(alpha = 0.7f)
+                        ),
+                        textStyle = TextStyle(fontFamily = SoraFamily),
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true
+                    )
+                    Spacer(modifier = Modifier.height(10.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        OutlinedTextField(
+                            value = wgLocalAddress,
+                            onValueChange = { wgLocalAddress = it },
+                            label = { Text("Addresses", color = TextSecondary, fontFamily = SoraFamily) },
+                            placeholder = { Text("10.0.0.2/32", color = Color.Gray, fontFamily = SoraFamily) },
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedBorderColor = PrimaryCyan,
+                                unfocusedBorderColor = BorderGlass,
+                                focusedTextColor = TextPrimary,
+                                unfocusedTextColor = TextPrimary
+                            ),
+                            textStyle = TextStyle(fontFamily = SoraFamily),
+                            modifier = Modifier.weight(0.6f),
+                            singleLine = true
+                        )
+                        OutlinedTextField(
+                            value = wgListenPort,
+                            onValueChange = { wgListenPort = it.filter { ch -> ch.isDigit() } },
+                            label = { Text("Listen port", color = TextSecondary, fontFamily = SoraFamily) },
+                            placeholder = { Text("(random)", color = Color.Gray, fontFamily = SoraFamily) },
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedBorderColor = PrimaryCyan,
+                                unfocusedBorderColor = BorderGlass,
+                                focusedTextColor = TextPrimary,
+                                unfocusedTextColor = TextPrimary
+                            ),
+                            textStyle = TextStyle(fontFamily = SoraFamily),
+                            modifier = Modifier.weight(0.4f),
+                            singleLine = true,
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
+                        )
+                    }
+                    Spacer(modifier = Modifier.height(10.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        OutlinedTextField(
+                            value = wgDns,
+                            onValueChange = { wgDns = it },
+                            label = { Text("DNS servers", color = TextSecondary, fontFamily = SoraFamily) },
+                            placeholder = { Text("1.1.1.1", color = Color.Gray, fontFamily = SoraFamily) },
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedBorderColor = PrimaryCyan,
+                                unfocusedBorderColor = BorderGlass,
+                                focusedTextColor = TextPrimary,
+                                unfocusedTextColor = TextPrimary
+                            ),
+                            textStyle = TextStyle(fontFamily = SoraFamily),
+                            modifier = Modifier.weight(0.6f),
+                            singleLine = true
+                        )
+                        OutlinedTextField(
+                            value = wgMtu,
+                            onValueChange = { wgMtu = it.filter { ch -> ch.isDigit() } },
+                            label = { Text("MTU", color = TextSecondary, fontFamily = SoraFamily) },
+                            placeholder = { Text("(auto)", color = Color.Gray, fontFamily = SoraFamily) },
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedBorderColor = PrimaryCyan,
+                                unfocusedBorderColor = BorderGlass,
+                                focusedTextColor = TextPrimary,
+                                unfocusedTextColor = TextPrimary
+                            ),
+                            textStyle = TextStyle(fontFamily = SoraFamily),
+                            modifier = Modifier.weight(0.4f),
+                            singleLine = true,
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
+                        )
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(16.dp))
+
+                // Middle: Add Peer button / Peer Card
+                if (!showPeerSection) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(14.dp))
+                            .background(SurfaceGlass)
+                            .border(1.dp, BorderGlass, RoundedCornerShape(14.dp))
+                            .clickable { showPeerSection = true }
+                            .padding(vertical = 14.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = "Add peer",
+                            color = PrimaryCyan,
+                            fontSize = 15.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            fontFamily = SoraFamily
+                        )
+                    }
+                } else {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(16.dp))
+                            .background(SurfaceGlass)
+                            .border(1.dp, BorderGlass, RoundedCornerShape(16.dp))
+                            .padding(16.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = "Peer",
+                                color = TextPrimary,
+                                fontSize = 16.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                fontFamily = SoraFamily
+                            )
+                            IconButton(
+                                onClick = {
+                                    wgPublicKey = ""
+                                    wgPresharedKey = ""
+                                    wgKeepAlive = ""
+                                    wgEndpoint = ""
+                                    wgAllowedIps = ""
+                                    showPeerSection = false
+                                }
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Delete,
+                                    contentDescription = "Delete Peer",
+                                    tint = TextSecondary
+                                )
+                            }
+                        }
+                        Spacer(modifier = Modifier.height(10.dp))
+                        OutlinedTextField(
+                            value = wgPublicKey,
+                            onValueChange = { wgPublicKey = it.trim() },
+                            label = { Text("Public key", color = TextSecondary, fontFamily = SoraFamily) },
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedBorderColor = PrimaryCyan,
+                                unfocusedBorderColor = BorderGlass,
+                                focusedTextColor = TextPrimary,
+                                unfocusedTextColor = TextPrimary
+                            ),
+                            textStyle = TextStyle(fontFamily = SoraFamily),
+                            modifier = Modifier.fillMaxWidth(),
+                            singleLine = true
+                        )
+                        Spacer(modifier = Modifier.height(10.dp))
+                        OutlinedTextField(
+                            value = wgPresharedKey,
+                            onValueChange = { wgPresharedKey = it.trim() },
+                            label = { Text("Pre-shared key", color = TextSecondary, fontFamily = SoraFamily) },
+                            placeholder = { Text("(optional)", color = Color.Gray, fontFamily = SoraFamily) },
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedBorderColor = PrimaryCyan,
+                                unfocusedBorderColor = BorderGlass,
+                                focusedTextColor = TextPrimary,
+                                unfocusedTextColor = TextPrimary
+                            ),
+                            textStyle = TextStyle(fontFamily = SoraFamily),
+                            modifier = Modifier.fillMaxWidth(),
+                            singleLine = true
+                        )
+                        Spacer(modifier = Modifier.height(10.dp))
+                        OutlinedTextField(
+                            value = wgKeepAlive,
+                            onValueChange = { wgKeepAlive = it.filter { ch -> ch.isDigit() } },
+                            label = { Text("Persistent keepalive", color = TextSecondary, fontFamily = SoraFamily) },
+                            placeholder = { Text("(optional, not recommended)", color = Color.Gray, fontFamily = SoraFamily) },
+                            suffix = { Text("seconds", color = TextSecondary, fontSize = 12.sp, fontFamily = SoraFamily) },
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedBorderColor = PrimaryCyan,
+                                unfocusedBorderColor = BorderGlass,
+                                focusedTextColor = TextPrimary,
+                                unfocusedTextColor = TextPrimary
+                            ),
+                            textStyle = TextStyle(fontFamily = SoraFamily),
+                            modifier = Modifier.fillMaxWidth(),
+                            singleLine = true,
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
+                        )
+                        Spacer(modifier = Modifier.height(10.dp))
+                        OutlinedTextField(
+                            value = wgEndpoint,
+                            onValueChange = { wgEndpoint = it.trim() },
+                            label = { Text("Endpoint", color = TextSecondary, fontFamily = SoraFamily) },
+                            placeholder = { Text("host:51820", color = Color.Gray, fontFamily = SoraFamily) },
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedBorderColor = PrimaryCyan,
+                                unfocusedBorderColor = BorderGlass,
+                                focusedTextColor = TextPrimary,
+                                unfocusedTextColor = TextPrimary
+                            ),
+                            textStyle = TextStyle(fontFamily = SoraFamily),
+                            modifier = Modifier.fillMaxWidth(),
+                            singleLine = true
+                        )
+                        Spacer(modifier = Modifier.height(10.dp))
+                        OutlinedTextField(
+                            value = wgAllowedIps,
+                            onValueChange = { wgAllowedIps = it },
+                            label = { Text("Allowed IPs", color = TextSecondary, fontFamily = SoraFamily) },
+                            placeholder = { Text("0.0.0.0/0", color = Color.Gray, fontFamily = SoraFamily) },
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedBorderColor = PrimaryCyan,
+                                unfocusedBorderColor = BorderGlass,
+                                focusedTextColor = TextPrimary,
+                                unfocusedTextColor = TextPrimary
+                            ),
+                            textStyle = TextStyle(fontFamily = SoraFamily),
+                            modifier = Modifier.fillMaxWidth(),
+                            singleLine = true
+                        )
+                    }
+                }
+
+                // Bottom: Import buttons row (matching V2rayNG)
+                if (editingProfile == null) {
+                    Spacer(modifier = Modifier.height(16.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        Button(
+                            onClick = { wgFileLauncher.launch("*/*") },
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(50.dp),
+                            colors = ButtonDefaults.buttonColors(containerColor = SurfaceGlass),
+                            shape = RoundedCornerShape(12.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Description,
+                                contentDescription = "Config File",
+                                tint = PrimaryCyan
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text("Config File", color = Color.White, fontFamily = SoraFamily)
+                        }
+                        Button(
+                            onClick = { galleryLauncher.launch("image/*") },
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(50.dp),
+                            colors = ButtonDefaults.buttonColors(containerColor = SurfaceGlass),
+                            shape = RoundedCornerShape(12.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.QrCode,
+                                contentDescription = "QR Code",
+                                tint = PrimaryCyan
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text("QR Code", color = Color.White, fontFamily = SoraFamily)
+                        }
+                    }
+                }
+            }
+
             VpnProtocolDisplay.V2rayNG -> {
                 if (editingProfile != null) {
                     OutlinedTextField(
@@ -2445,38 +2740,83 @@ fun AddServerSheetContent(
                     }
                 }
             }
-
-            VpnProtocolDisplay.Dns -> {
-                // DNS mode has no VpnProfile fields — the add/edit form is not
-                // reachable from the DNS server list, but the branch must exist
-                // for exhaustiveness. Show a placeholder body.
-                Text(
-                    text = "DNS servers are managed from the DNS server list.",
-                    color = TextSecondary,
-                    fontFamily = SoraFamily,
-                    fontSize = 14.sp
-                )
-            }
         }
 
         Spacer(modifier = Modifier.height(24.dp))
-        val isFormValid = if (currentProtocol == VpnProtocolDisplay.V2rayNG) {
-            serverAddress.isNotBlank()
-        } else {
-            name.isNotBlank() && serverAddress.isNotBlank() && username.isNotBlank() && password.isNotBlank()
+        val isFormValid = when (currentProtocol) {
+            VpnProtocolDisplay.V2rayNG -> serverAddress.isNotBlank()
+            VpnProtocolDisplay.WireGuard -> {
+                val ep = wgEndpoint.trim()
+                val hasEndpoint = if (ep.isNotBlank()) {
+                    val (h, p) = dev.rouzbeh.hybridvpn.core.vpn.wireguard.WireGuardConfig.parseHostAndPort(ep) ?: Pair("", -1)
+                    h.isNotBlank() && p in 1..65535
+                } else false
+                hasEndpoint && wgSecretKey.isNotBlank() && wgPublicKey.isNotBlank()
+            }
+            VpnProtocolDisplay.OpenConnect -> name.isNotBlank() && serverAddress.isNotBlank() && username.isNotBlank() && password.isNotBlank()
         }
         val hasChanges = editingProfile == null || (
+            if (currentProtocol == VpnProtocolDisplay.WireGuard) {
+                true
+            } else {
                 name != editingProfile.name ||
-                        serverAddress != editingProfile.serverAddress ||
-                        username != editingProfile.username ||
-                        password != editingProfile.password ||
-                        currentProtocol.title != editingProfile.protocol
-                )
+                serverAddress != editingProfile.serverAddress ||
+                username != editingProfile.username ||
+                password != editingProfile.password ||
+                currentProtocol.title != editingProfile.protocol
+            }
+        )
         val isButtonEnabled = isFormValid && hasChanges
 
         Button(
             onClick = {
                 if (isButtonEnabled) {
+                    if (currentProtocol == VpnProtocolDisplay.WireGuard) {
+                        try {
+                            val (host, port) = dev.rouzbeh.hybridvpn.core.vpn.wireguard.WireGuardConfig.parseHostAndPort(wgEndpoint.trim())
+                                ?: error("Invalid Endpoint. Expected host:port (e.g. 192.0.2.1:51820)")
+                            val addrs = wgLocalAddress.split(',').map { it.trim() }.filter { it.isNotEmpty() }.ifEmpty { listOf("10.0.0.2/32") }
+                            val allowedIpsList = wgAllowedIps.split(',').map { it.trim() }.filter { it.isNotEmpty() }.ifEmpty { listOf("0.0.0.0/0") }
+                            val parsed = dev.rouzbeh.hybridvpn.core.vpn.wireguard.WireGuardParsedConfig(
+                                remark = wgName.trim().ifEmpty { "WireGuard Server" },
+                                secretKey = wgSecretKey.trim(),
+                                publicKey = wgPublicKey.trim(),
+                                preSharedKey = wgPresharedKey.trim().ifEmpty { null },
+                                endpointHost = host,
+                                endpointPort = port,
+                                localAddresses = addrs,
+                                listenPort = wgListenPort.trim().toIntOrNull(),
+                                dns = wgDns.trim().ifEmpty { null },
+                                mtu = wgMtu.trim().toIntOrNull()?.coerceIn(1280, 1500) ?: 1420,
+                                keepAlive = wgKeepAlive.trim().toIntOrNull()?.coerceAtLeast(0) ?: 0,
+                                allowedIps = allowedIpsList,
+                                reserved = wgReserved.trim().takeIf { it.isNotEmpty() }?.let { dev.rouzbeh.hybridvpn.core.vpn.wireguard.WireGuardConfig.parseReserved(it) }
+                            )
+                            parsed.requireValid()
+                            val canonicalUri = parsed.toUri()
+                            if (editingProfile == null) {
+                                val isDuplicate = servers.any { it.protocol == "WireGuard" && it.serverAddress == canonicalUri }
+                                if (isDuplicate) {
+                                    onShowToast("This configuration already exists!")
+                                    return@Button
+                                }
+                                onAdd(parsed.remark, canonicalUri, "single", "", "WireGuard")
+                            } else {
+                                onUpdate(
+                                    editingProfile.copy(
+                                        name = parsed.remark,
+                                        serverAddress = canonicalUri,
+                                        protocol = "WireGuard"
+                                    )
+                                )
+                            }
+                            onClose()
+                        } catch (e: Exception) {
+                            onShowToast(e.message ?: "Invalid WireGuard configuration")
+                        }
+                        return@Button
+                    }
+
                     if (editingProfile == null) {
                         val isDuplicate = servers.any {
                             when (currentProtocol) {
@@ -2489,7 +2829,7 @@ fun AddServerSheetContent(
                                         it.protocol == "v2rayNG" && it.serverAddress == serverAddress
                                     }
                                 }
-                                VpnProtocolDisplay.Dns -> false
+                                VpnProtocolDisplay.WireGuard -> false
                             }
                         }
                         if (isDuplicate) {
@@ -2632,7 +2972,6 @@ fun NetworkInfoCard(
     modifier: Modifier = Modifier,
     networkInfo: NetworkInfo,
     connectionState: ConnectionState,
-    isDnsMode: Boolean = false,
     onMoreClick: () -> Unit,
     onRetryClick: () -> Unit
 ) {
@@ -2769,7 +3108,7 @@ fun NetworkInfoCard(
                 ) { ipState ->
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Text(
-                            text = if (isConnected && !isDnsMode) "Virtual IP: " else "Public IP: ",
+                            text = if (isConnected) "Virtual IP: " else "Public IP: ",
                             color = TextSecondary,
                             fontSize = 14.sp,
                             style = textShadow
@@ -3009,7 +3348,6 @@ fun AppRoutingScreen(
     apps: List<dev.rouzbeh.hybridvpn.data.model.AppInfo>,
     isPerAppEnabled: Boolean,
     isBypassMode: Boolean,
-    isDnsMode: Boolean = false,
     isPending: Boolean,
     onReconnect: () -> Unit,
     onBypassModeChange: (Boolean) -> Unit,
@@ -3178,9 +3516,7 @@ fun AppRoutingScreen(
                                 modifier = Modifier
                                     .size(18.dp)
                                     .bounceClick {
-                                        toastMessage =
-                                            if (isDnsMode) "Disable this option to have\nall apps use DNS."
-                                            else "Disable this option to have\nall apps use the VPN."
+                                        toastMessage = "Disable this option to have\nall apps use the VPN."
                                     }
                             )
                         }
@@ -3225,11 +3561,9 @@ fun AppRoutingScreen(
                                     .bounceClick {
                                         toastMessage =
                                             if (isBypassMode) {
-                                                if (isDnsMode) "Disable this option to only allow apps you select to use DNS."
-                                                else "Disable this option to only allow apps you select to use the VPN."
+                                                "Disable this option to only allow apps you select to use the VPN."
                                             } else {
-                                                if (isDnsMode) "Enable this option to prevent apps you select from using DNS and allow other apps you don't select to use DNS."
-                                                else "Enable this option to prevent apps you select from using the VPN and allow other apps you don't select to use the VPN."
+                                                "Enable this option to prevent apps you select from using the VPN and allow other apps you don't select to use the VPN."
                                             }
                                     }
                             )
@@ -3603,17 +3937,32 @@ fun ServerListFullScreen(
     var expandedTabMenu by androidx.compose.runtime.remember { mutableStateOf<String?>(null) }
     var renamingSubKey by androidx.compose.runtime.remember { mutableStateOf<String?>(null) }
 
-    // 2. Smart Default Tab Logic (Avoids empty SingleLinks if subs exist)
+    // 2. Smart Default Tab Logic (Remembers last viewed tab or avoids empty SingleLinks if subs exist)
     var selectedTab by androidx.compose.runtime.remember { 
-        mutableStateOf(if (singleLinks.isNotEmpty() || subKeys.isEmpty()) "SingleLinks" else subKeys.first()) 
+        val saved = prefs.getString("last_selected_tab", null)
+        val initial = if (saved != null && (saved == "SingleLinks" || subKeys.contains(saved))) {
+            saved
+        } else if (singleLinks.isNotEmpty() || subKeys.isEmpty()) {
+            "SingleLinks"
+        } else {
+            subKeys.first()
+        }
+        mutableStateOf(initial)
     }
 
     androidx.compose.runtime.LaunchedEffect(subKeys, singleLinks.size) {
-        if (selectedTab == "SingleLinks" && singleLinks.isEmpty() && subKeys.isNotEmpty()) {
+        if (selectedTab != "SingleLinks" && !subKeys.contains(selectedTab)) {
+            val fallback = if (singleLinks.isNotEmpty() || subKeys.isEmpty()) "SingleLinks" else subKeys.first()
+            selectedTab = fallback
+            prefs.edit().putString("last_selected_tab", fallback).apply()
+        } else if (prefs.getString("last_selected_tab", null) == null && selectedTab == "SingleLinks" && singleLinks.isEmpty() && subKeys.isNotEmpty()) {
             selectedTab = subKeys.first()
-        } else if (selectedTab != "SingleLinks" && !subKeys.contains(selectedTab)) {
-            selectedTab = if (singleLinks.isNotEmpty() || subKeys.isEmpty()) "SingleLinks" else subKeys.first()
+            prefs.edit().putString("last_selected_tab", subKeys.first()).apply()
         }
+    }
+
+    androidx.compose.runtime.LaunchedEffect(selectedTab) {
+        prefs.edit().putString("last_selected_tab", selectedTab).apply()
     }
 
     val displayServers = if (protocol == "v2rayNG") {
@@ -3630,6 +3979,10 @@ fun ServerListFullScreen(
         displayServers.take(infoNames.size).filter { isSubscriptionInfoName(it.name) }
     }
     val leadingInfoIds = leadingInfoProfiles.map { it.id }.toSet()
+    val firstInfoId = leadingInfoProfiles.firstOrNull()?.id
+    val visibleServers = androidx.compose.runtime.remember(displayServers, leadingInfoIds, firstInfoId) {
+        displayServers.filter { profile -> !leadingInfoIds.contains(profile.id) || profile.id == firstInfoId }
+    }
     val mergedSubMeta = androidx.compose.runtime.remember(displayServers) {
         parseSubscriptionMeta(displayServers.map { it.name })
     }
@@ -3650,7 +4003,11 @@ fun ServerListFullScreen(
 
             if (!isReorderMode) {
                 Text(
-                    if (protocol == "v2rayNG") "v2rayNG Server List" else "AnyConnect Server List",
+                    when (protocol) {
+                        "v2rayNG" -> "v2rayNG Server List"
+                        "WireGuard" -> "WireGuard Server List"
+                        else -> "AnyConnect Server List"
+                    },
                     color = Color.White, fontSize = 20.sp, fontWeight = FontWeight.Bold, fontFamily = SoraFamily
                 )
                 Spacer(modifier = Modifier.weight(1f))
@@ -3813,17 +4170,13 @@ fun ServerListFullScreen(
             // its first entry (carrying the merged meta); the remaining info
             // entries are hidden entirely — not selectable, connectable, pingable,
             // or counted. Info ids are also excluded from the list below.
-            items(displayServers, key = { it.id }) { profile ->
+            items(visibleServers, key = { it.id }) { profile ->
                 val isInfoEntry = leadingInfoIds.contains(profile.id)
-                // Non-first info entries are fully hidden (consumed into the box).
-                if (isInfoEntry && profile.id != leadingInfoProfiles.firstOrNull()?.id) {
-                    return@items
-                }
                 val isSelected = !isInfoEntry && profile.id == activeProfile?.id
                 val isSub = profile.username.startsWith("sub:")
                 // Only the first leading info entry renders the merged box; a
                 // non-leading info-looking name (a real server) is left alone.
-                val isInfoCard = isInfoEntry && profile.id == leadingInfoProfiles.firstOrNull()?.id
+                val isInfoCard = isInfoEntry && profile.id == firstInfoId
                 val groupLabel = if (isInfoCard) {
                     (subGroups[profile.username]?.firstOrNull()?.subName?.takeIf { it.isNotBlank() })
                         ?: "Subscription"
@@ -3926,92 +4279,125 @@ fun LiveLogFullScreen(
 ) {
     // Title: Sora font; log lines: keep Monospace (user explicitly requested).
     val titleFont = SoraFamily
-    Column(modifier = Modifier
-        .fillMaxSize()
-        .background(SurfaceDark)) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(top = 48.dp, start = 16.dp, end = 16.dp, bottom = 16.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Icon(
-                imageVector = androidx.compose.material.icons.Icons.AutoMirrored.Filled.ArrowBack,
-                contentDescription = "Back",
-                tint = Color.White,
-                modifier = Modifier
-                    .size(28.dp)
-                    .bounceClick { onNavigateBack() }
-            )
-            Spacer(modifier = Modifier.width(16.dp))
-            val displayProtocol = if (protocol == "OpenConnect") "AnyConnect" else protocol
-            Text(
-                "$displayProtocol Logs",
-                color = Color.White,
-                fontSize = 20.sp,
-                fontWeight = FontWeight.Bold,
-                fontFamily = titleFont
-            )
-            Spacer(modifier = Modifier.weight(1f))
-            Icon(
-                imageVector = androidx.compose.material.icons.Icons.Outlined.Delete,
-                contentDescription = "Clear Logs",
-                tint = Color(0xFFFF5252),
-                modifier = Modifier
-                    .size(28.dp)
-                    .bounceClick { onClear() }
-            )
+    val clipboardManager = androidx.compose.ui.platform.LocalClipboardManager.current
+    var copyToastMessage by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(copyToastMessage) {
+        if (copyToastMessage != null) {
+            kotlinx.coroutines.delay(2000L)
+            copyToastMessage = null
         }
+    }
 
-        val symbolRegex = remember { Regex("[\\p{Punct}]+") }
-        androidx.compose.foundation.lazy.LazyColumn(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(horizontal = 16.dp),
-            contentPadding = PaddingValues(bottom = 24.dp, top = 24.dp),
-            reverseLayout = true // The secret to zero-lag log rendering
-        ) {
-            items(logs.asReversed()) { log ->
-                val annotatedLog = remember(log) {
-                    buildAnnotatedString {
-                        var lastIndex = 0
-                        symbolRegex.findAll(log).forEach { matchResult ->
-                            withStyle(SpanStyle(color = Color(0xFFE0E0E0))) {
-                                append(log.substring(lastIndex, matchResult.range.first))
-                            }
-                            withStyle(SpanStyle(color = PrimaryCyan)) {
-                                append(matchResult.value)
-                            }
-                            lastIndex = matchResult.range.last + 1
-                        }
-                        withStyle(SpanStyle(color = Color(0xFFE0E0E0))) {
-                            append(log.substring(lastIndex))
-                        }
-                    }
-                }
+    Box(modifier = Modifier.fillMaxSize()) {
+        Column(modifier = Modifier
+            .fillMaxSize()
+            .background(SurfaceDark)) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 48.dp, start = 16.dp, end = 16.dp, bottom = 16.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(
+                    imageVector = androidx.compose.material.icons.Icons.AutoMirrored.Filled.ArrowBack,
+                    contentDescription = "Back",
+                    tint = Color.White,
+                    modifier = Modifier
+                        .size(28.dp)
+                        .bounceClick { onNavigateBack() }
+                )
+                Spacer(modifier = Modifier.width(16.dp))
+                val displayProtocol = if (protocol == "OpenConnect") "AnyConnect" else protocol
                 Text(
-                    text = annotatedLog,
-                    fontSize = 11.sp,
-                    fontFamily = FontFamily.Monospace,
-                    modifier = Modifier.padding(vertical = 2.dp)
+                    "$displayProtocol Logs",
+                    color = Color.White,
+                    fontSize = 20.sp,
+                    fontWeight = FontWeight.Bold,
+                    fontFamily = titleFont
+                )
+                Spacer(modifier = Modifier.weight(1f))
+                Icon(
+                    imageVector = androidx.compose.material.icons.Icons.Default.ContentCopy,
+                    contentDescription = "Copy Logs",
+                    tint = PrimaryCyan,
+                    modifier = Modifier
+                        .size(26.dp)
+                        .bounceClick {
+                            if (logs.isNotEmpty()) {
+                                clipboardManager.setText(androidx.compose.ui.text.AnnotatedString(logs.joinToString("\n")))
+                                copyToastMessage = "Logs copied to clipboard"
+                            } else {
+                                copyToastMessage = "No logs to copy"
+                            }
+                        }
+                )
+                Spacer(modifier = Modifier.width(16.dp))
+                Icon(
+                    imageVector = androidx.compose.material.icons.Icons.Outlined.Delete,
+                    contentDescription = "Clear Logs",
+                    tint = Color(0xFFFF5252),
+                    modifier = Modifier
+                        .size(28.dp)
+                        .bounceClick { onClear() }
                 )
             }
-            if (logs.isEmpty()) {
-                item {
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(bottom = 64.dp),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Text(
-                            "No logs available.",
-                            color = TextSecondary,
-                            fontFamily = SoraFamily
-                        )
+
+            val symbolRegex = remember { Regex("[\\p{Punct}]+") }
+            androidx.compose.foundation.lazy.LazyColumn(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(horizontal = 16.dp),
+                contentPadding = PaddingValues(bottom = 24.dp, top = 24.dp),
+                reverseLayout = true // The secret to zero-lag log rendering
+            ) {
+                items(logs.asReversed()) { log ->
+                    val annotatedLog = remember(log) {
+                        buildAnnotatedString {
+                            var lastIndex = 0
+                            symbolRegex.findAll(log).forEach { matchResult ->
+                                withStyle(SpanStyle(color = Color(0xFFE0E0E0))) {
+                                    append(log.substring(lastIndex, matchResult.range.first))
+                                }
+                                withStyle(SpanStyle(color = PrimaryCyan)) {
+                                    append(matchResult.value)
+                                }
+                                lastIndex = matchResult.range.last + 1
+                            }
+                            withStyle(SpanStyle(color = Color(0xFFE0E0E0))) {
+                                append(log.substring(lastIndex))
+                            }
+                        }
+                    }
+                    Text(
+                        text = annotatedLog,
+                        fontSize = 11.sp,
+                        fontFamily = FontFamily.Monospace,
+                        modifier = Modifier.padding(vertical = 2.dp)
+                    )
+                }
+                if (logs.isEmpty()) {
+                    item {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(bottom = 64.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                "No logs available.",
+                                color = TextSecondary,
+                                fontFamily = SoraFamily
+                            )
+                        }
                     }
                 }
             }
         }
+        CustomGlassToast(
+            message = copyToastMessage,
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .padding(bottom = 32.dp)
+        )
     }
 }

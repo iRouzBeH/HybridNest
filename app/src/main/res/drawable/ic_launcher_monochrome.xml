@@ -4,7 +4,13 @@
     android:height="108dp"
     android:viewportWidth="108"
     android:viewportHeight="108">
-    <path
-        android:fillColor="#FFFFFFFF"
-        android:pathData="M51.01,78.16 L51.01,55.36 L37.08,55.36 L37.08,73.24 L28.00,68.85 L28.00,29.84 L37.08,29.84 L37.08,46.70 L54.46,46.70 L59.84,52.23 L59.84,74.37 Z M80.00,70.56 L55.75,44.55 L51.01,44.55 L51.01,29.84 L51.86,29.84 L71.12,47.22 L71.12,29.84 L80.00,29.84 Z" />
+    <group
+        android:scaleX="0.95"
+        android:scaleY="0.95"
+        android:pivotX="54"
+        android:pivotY="54">
+        <path
+            android:fillColor="#FFFFFFFF"
+            android:pathData="M51.01,78.16 L51.01,55.36 L37.08,55.36 L37.08,73.24 L28.00,68.85 L28.00,29.84 L37.08,29.84 L37.08,46.70 L54.46,46.70 L59.84,52.23 L59.84,74.37 Z M80.00,70.56 L55.75,44.55 L51.01,44.55 L51.01,29.84 L51.86,29.84 L71.12,47.22 L71.12,29.84 L80.00,29.84 Z" />
+    </group>
 </vector>

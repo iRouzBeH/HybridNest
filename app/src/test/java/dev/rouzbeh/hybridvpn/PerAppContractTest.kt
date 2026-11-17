@@ -3,7 +3,6 @@ package dev.rouzbeh.hybridvpn
 import dev.rouzbeh.hybridvpn.core.routing.RoutingDecision
 import dev.rouzbeh.hybridvpn.core.routing.RoutingPolicy
 import dev.rouzbeh.hybridvpn.core.routing.RoutingPolicyResolver
-import dev.rouzbeh.hybridvpn.core.vpn.dns.DnsTunnelConfig
 import dev.rouzbeh.hybridvpn.core.vpn.v2ray.V2raySettings
 import dev.rouzbeh.hybridvpn.core.vpn.v2ray.XrayConfigGenerator
 import dev.rouzbeh.hybridvpn.data.local.VpnProfile
@@ -29,7 +28,7 @@ class PerAppContractTest {
 
     private val installed = setOf(ownPackage, chrome, telegram, maps)
 
-    private enum class Method { V2RAY, OPEN_CONNECT, DNS }
+    private enum class Method { V2RAY, OPEN_CONNECT, WIREGUARD }
 
     private enum class Mode { GLOBAL, ALLOW, BYPASS }
 
@@ -47,7 +46,7 @@ class PerAppContractTest {
     private fun builderCalls(method: Method, decision: RoutingDecision): BuilderCalls = when (decision) {
         RoutingDecision.Global -> BuilderCalls(
             allowedApplications = emptySet(),
-            disallowedApplications = if (method == Method.V2RAY || method == Method.DNS) {
+            disallowedApplications = if (method == Method.V2RAY || method == Method.WIREGUARD) {
                 setOf(ownPackage)
             } else {
                 emptySet()
@@ -63,7 +62,7 @@ class PerAppContractTest {
         is RoutingDecision.Bypass -> BuilderCalls(
             allowedApplications = emptySet(),
             disallowedApplications = decision.disallowedPackages +
-                if (method == Method.V2RAY || method == Method.DNS) setOf(ownPackage) else emptySet(),
+                if (method == Method.V2RAY || method == Method.WIREGUARD) setOf(ownPackage) else emptySet(),
         )
 
         is RoutingDecision.Refused -> throw AssertionError("refused policies have no Builder calls")
@@ -96,7 +95,7 @@ class PerAppContractTest {
     }
 
     @Test
-    fun `global mode has no package rules for OpenConnect and excludes self for proxy and DNS`() {
+    fun `global mode has no package rules for OpenConnect and excludes self for v2rayNG and WireGuard`() {
         val global = decision(Mode.GLOBAL)
         assertEquals(RoutingDecision.Global, global)
 
@@ -135,7 +134,7 @@ class PerAppContractTest {
     }
 
     @Test
-    fun `bypass mode disallows selected apps and only proxy and DNS exclude self`() {
+    fun `bypass mode disallows selected apps and only v2rayNG and WireGuard exclude self`() {
         val bypass = decision(Mode.BYPASS, setOf(chrome))
         assertTrue(bypass is RoutingDecision.Bypass)
         bypass as RoutingDecision.Bypass
@@ -196,16 +195,17 @@ class PerAppContractTest {
                 assertEquals("ipv4-default-except-proxy-endpoint", v2ray.routeShape)
             }
 
+            val wireguard = networkContract(Method.WIREGUARD, mode)
+            assertEquals(listOf(V2raySettings.VPN_DNS), wireguard.dnsServers)
+            if (mode == Mode.ALLOW) {
+                assertEquals("ipv4-default", wireguard.routeShape)
+            } else {
+                assertEquals("ipv4-default-except-proxy-endpoint", wireguard.routeShape)
+            }
+
             val openConnect = networkContract(Method.OPEN_CONNECT, mode, "10.0.0.53, 10.0.0.54")
             assertEquals("ipv4-default", openConnect.routeShape)
             assertEquals(listOf("10.0.0.53", "10.0.0.54"), openConnect.dnsServers)
-
-            val dnsOnly = networkContract(Method.DNS, mode)
-            assertEquals("fake-dns-only-routes", dnsOnly.routeShape)
-            assertEquals(
-                listOf(DnsTunnelConfig.FAKE_DNS_V4, DnsTunnelConfig.FAKE_DNS_V6),
-                dnsOnly.dnsServers,
-            )
         }
         assertEquals(listOf("8.8.8.8"), networkContract(Method.OPEN_CONNECT, Mode.GLOBAL, "").dnsServers)
     }
@@ -215,7 +215,7 @@ class PerAppContractTest {
         mode: Mode,
         openConnectDns: String = "",
     ): NetworkContract = when (method) {
-        Method.V2RAY -> NetworkContract(
+        Method.V2RAY, Method.WIREGUARD -> NetworkContract(
             routeShape = if (mode == Mode.ALLOW) {
                 "ipv4-default"
             } else {
@@ -227,10 +227,6 @@ class PerAppContractTest {
             routeShape = "ipv4-default",
             dnsServers = openConnectDns.split(',').map { it.trim() }.filter { it.isNotEmpty() }
                 .ifEmpty { listOf("8.8.8.8") },
-        )
-        Method.DNS -> NetworkContract(
-            routeShape = "fake-dns-only-routes",
-            dnsServers = listOf(DnsTunnelConfig.FAKE_DNS_V4, DnsTunnelConfig.FAKE_DNS_V6),
         )
     }
 
