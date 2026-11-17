@@ -1,0 +1,14 @@
+Bundled Country Flags — Licenses & Attribution
+
+1. General Country Flag Set (all flags except ir.webp):
+   Source: country-flags (https://github.com/hampusborgos/country-flags)
+   License: Public Domain (PD)
+   Details: Accurate native-proportion SVG renders of world flags sourced from
+   Wikimedia Commons and national flag specifications (same upstream source used
+   by flagcdn.com). Rendered at 1280px width in native aspect ratio as lossless WebP.
+
+2. Custom Iran Lion and Sun Flag (ir.webp):
+   Source: Wikimedia Commons — "File:State flag of Iran (1964–1980).svg"
+   URL: https://commons.wikimedia.org/wiki/File:State_flag_of_Iran_(1964%E2%80%931980).svg
+   License: Public Domain (PD-Iran / Public domain worldwide; no copyright restrictions)
+   Details: Rendered at 1280x731 (native 7:4 aspect ratio) as lossless WebP.
