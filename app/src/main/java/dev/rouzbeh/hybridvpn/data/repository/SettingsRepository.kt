@@ -5,6 +5,9 @@ import android.content.SharedPreferences
 import dev.rouzbeh.hybridvpn.core.routing.RoutingPolicy
 import dev.rouzbeh.hybridvpn.core.utils.LogRedactor
 import dev.rouzbeh.hybridvpn.core.vpn.v2ray.V2raySettings
+import java.net.IDN
+import java.net.URLDecoder
+import java.util.Locale
 
 /**
  * Source of truth for user settings and protocol configurations.
@@ -256,7 +259,7 @@ class SettingsRepository(context: Context) {
         prefs.getStringSet(KEY_BYPASSED_DOMAINS, emptySet()) ?: emptySet()
 
     fun setBypassedDomains(domains: Set<String>) {
-        val normalized = domains.map { normalizeDomainEntry(it) }
+        val normalized = domains.flatMap { parseAndNormalizeDomainEntries(it) }
             .filter { it.isNotBlank() }
             .toSet()
         prefs.edit().putStringSet(KEY_BYPASSED_DOMAINS, normalized).apply()
@@ -306,16 +309,184 @@ class SettingsRepository(context: Context) {
     }
 
     companion object {
-        fun normalizeDomainEntry(entry: String): String {
-            var s = entry.trim().lowercase()
-            if (s.startsWith("geosite:") || s.startsWith("domain:") || s.startsWith("full:") || s.startsWith("regexp:")) {
-                return s
+        /**
+         * Parses a potentially multi-domain or complex input string (e.g. Google redirect URLs,
+         * comma/space/newline separated domains) into a deduplicated list of valid normalized domains.
+         */
+        fun parseAndNormalizeDomainEntries(rawInput: String): List<String> {
+            if (rawInput.isBlank()) return emptyList()
+
+            val initialTokens = rawInput.trim().split(Regex("[\\s;]+")).filter { it.isNotBlank() }
+            val candidateTokens = mutableListOf<String>()
+
+            for (token in initialTokens) {
+                val isComplexUrl = token.contains("://") ||
+                    token.startsWith("www.google.", ignoreCase = true) ||
+                    token.startsWith("google.", ignoreCase = true)
+
+                if (isComplexUrl) {
+                    val clean = token.trim().trimEnd(',')
+                    if (clean.contains(",http://", ignoreCase = true) || clean.contains(",https://", ignoreCase = true)) {
+                        val splitUrls = clean.split(Regex(",(?=https?://)", RegexOption.IGNORE_CASE))
+                        for (u in splitUrls) {
+                            val cu = u.trim().trimEnd(',')
+                            if (cu.isNotBlank()) candidateTokens.add(cu)
+                        }
+                    } else {
+                        if (clean.isNotBlank()) candidateTokens.add(clean)
+                    }
+                } else {
+                    val subTokens = token.split(',').map { it.trim() }.filter { it.isNotBlank() }
+                    candidateTokens.addAll(subTokens)
+                }
             }
-            if (s.startsWith("http://")) s = s.removePrefix("http://")
-            if (s.startsWith("https://")) s = s.removePrefix("https://")
-            if (s.contains('/')) s = s.substringBefore('/')
-            if (s.contains(':')) s = s.substringBefore(':')
-            return s
+
+            return candidateTokens
+                .map { normalizeDomainEntry(it) }
+                .filter { it.isNotBlank() }
+                .distinct()
+        }
+
+        /**
+         * Normalizes a single domain or URL entry into a clean domain rule (e.g. "shad.ir" or ".ir").
+         * Returns an empty string "" if the input is malformed, invalid, or cannot be resolved.
+         */
+        fun normalizeDomainEntry(entry: String): String {
+            return normalizeDomainEntryInternal(entry, depth = 0)
+        }
+
+        private fun normalizeDomainEntryInternal(entry: String, depth: Int): String {
+            if (depth > 3) return ""
+            var s = entry.trim().trim('"', '\'')
+            if (s.isEmpty()) return ""
+
+            // 1. Explicit Xray routing prefixes (geosite:, domain:, full:, regexp:)
+            val xrayPrefixes = listOf("geosite:", "domain:", "full:", "regexp:")
+            for (prefix in xrayPrefixes) {
+                if (s.startsWith(prefix, ignoreCase = true)) {
+                    val ruleType = prefix.lowercase(Locale.ROOT)
+                    val rest = s.substring(prefix.length).trim().lowercase(Locale.ROOT)
+                    return if (rest.isNotEmpty() && !rest.any { it.isWhitespace() || it.isISOControl() }) {
+                        "$ruleType$rest"
+                    } else {
+                        ""
+                    }
+                }
+            }
+
+            // 2. Google Redirect URL Extraction
+            val googleCandidate = s.replace(Regex("^[a-zA-Z][a-zA-Z0-9+.-]*://"), "")
+            if (googleCandidate.contains('?')) {
+                val beforeQuery = googleCandidate.substringBefore('?')
+                val query = googleCandidate.substringAfter('?')
+                if (beforeQuery.contains('/')) {
+                    val host = beforeQuery.substringBefore('/').lowercase(Locale.ROOT)
+                    val path = "/" + beforeQuery.substringAfter('/')
+                    val isGoogleHost = host == "google.com" ||
+                        host == "www.google.com" ||
+                        host.startsWith("google.") ||
+                        host.startsWith("www.google.") ||
+                        host.contains(".google.")
+
+                    if (isGoogleHost && (path == "/url" || path == "/url/")) {
+                        val params = query.substringBefore('#').split('&').mapNotNull { param ->
+                            val eq = param.indexOf('=')
+                            if (eq != -1) {
+                                val k = param.substring(0, eq).trim()
+                                val v = param.substring(eq + 1).trim()
+                                k to v
+                            } else null
+                        }
+                        val rawTarget = params.firstOrNull { it.first == "url" && it.second.isNotEmpty() }?.second
+                            ?: params.firstOrNull { it.first == "q" && it.second.isNotEmpty() }?.second
+
+                        if (rawTarget.isNullOrBlank()) {
+                            return "" // Reject: Google redirect link missing target URL
+                        }
+                        val decodedTarget = try {
+                            URLDecoder.decode(rawTarget, "UTF-8")
+                        } catch (_: Exception) {
+                            rawTarget
+                        }
+                        return normalizeDomainEntryInternal(decodedTarget, depth + 1)
+                    }
+                }
+            }
+
+            // 3. Scheme removal
+            s = s.replace(Regex("^[a-zA-Z][a-zA-Z0-9+.-]*://"), "")
+
+            // 4. Credentials removal
+            if (s.contains('@')) {
+                s = s.substringAfterLast('@')
+            }
+
+            // 5. Path, query, fragment removal
+            s = s.substringBefore('/').substringBefore('?').substringBefore('#')
+
+            // 6. Port removal (and reject bracketed IPv6)
+            if (s.startsWith('[') || s.endsWith(']')) return ""
+            if (s.contains(':')) {
+                s = s.substringBefore(':')
+            }
+            s = s.trim()
+            if (s.isEmpty()) return ""
+
+            // 7. Case conversion & trailing dots
+            s = s.lowercase(Locale.ROOT).trimEnd('.')
+            if (s.isEmpty()) return ""
+
+            // 8. Leading dot & www. prefix handling
+            val hasLeadingDot = s.startsWith('.')
+            var coreDomain = s.trimStart('.')
+            if (coreDomain.startsWith("www.")) {
+                coreDomain = coreDomain.removePrefix("www.")
+            }
+            coreDomain = coreDomain.trim()
+            if (coreDomain.isEmpty()) return ""
+
+            // 9. IDN / Punycode conversion
+            val asciiDomain = try {
+                IDN.toASCII(coreDomain, IDN.ALLOW_UNASSIGNED).lowercase(Locale.ROOT)
+            } catch (_: Exception) {
+                return ""
+            }
+
+            // 10. Strict domain validation
+            if (asciiDomain.isEmpty() || asciiDomain.any { it.isWhitespace() || it.isISOControl() }) {
+                return ""
+            }
+
+            // Reject raw IPv4 literals (4 numeric octets)
+            if (asciiDomain.matches(Regex("""^\d{1,3}(\.\d{1,3}){3}$"""))) {
+                return ""
+            }
+
+            val labels = asciiDomain.split('.')
+
+            // Case A: Single-label TLD rule with leading dot (e.g. .ir or .xn--mgba3a4f16a)
+            if (hasLeadingDot && labels.size == 1) {
+                val tld = labels[0]
+                val isValidTld = tld.matches(Regex("^[a-z]{2,63}$")) || tld.matches(Regex("^xn--[a-z0-9-]{1,59}$"))
+                return if (isValidTld) ".$tld" else ""
+            }
+
+            // Case B: Full domain (requires at least 2 labels)
+            if (labels.size < 2) {
+                return ""
+            }
+
+            for (label in labels) {
+                if (label.isEmpty() || label.length > 63) return ""
+                if (label.startsWith('-') || label.endsWith('-')) return ""
+                if (!label.matches(Regex("^[a-z0-9-]+$"))) return ""
+            }
+
+            val tld = labels.last()
+            val isValidTld = tld.matches(Regex("^[a-z]{2,63}$")) || tld.matches(Regex("^xn--[a-z0-9-]{1,59}$"))
+            if (!isValidTld) return ""
+
+            return asciiDomain
         }
 
         private const val KEY_PER_APP_ENABLED = "per_app_enabled"

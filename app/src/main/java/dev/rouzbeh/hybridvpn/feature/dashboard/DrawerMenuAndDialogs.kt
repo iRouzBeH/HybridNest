@@ -982,7 +982,7 @@ fun FeaturesDialog(
             OutlinedTextField(
                 value = domainInput,
                 onValueChange = { domainInput = it },
-                placeholder = { Text("e.g. .ir, shaparak.ir, mydomain.com", color = TextSecondary, fontSize = 12.sp, fontFamily = SoraFamily) },
+                placeholder = { Text("e.g. .ir, shaparak.ir", color = TextSecondary, fontSize = 12.sp, fontFamily = SoraFamily) },
                 singleLine = true,
                 colors = OutlinedTextFieldDefaults.colors(
                     focusedBorderColor = PrimaryCyan,
@@ -993,7 +993,7 @@ fun FeaturesDialog(
                     unfocusedContainerColor = SurfaceDark
                 ),
                 shape = RoundedCornerShape(10.dp),
-                textStyle = TextStyle(fontFamily = SoraFamily, fontSize = 12.sp),
+                textStyle = TextStyle(fontFamily = SoraFamily, fontSize = 12.sp, textDirection = androidx.compose.ui.text.style.TextDirection.Ltr),
                 modifier = Modifier
                     .weight(1f)
                     .height(48.dp)
@@ -1001,10 +1001,12 @@ fun FeaturesDialog(
             Spacer(modifier = Modifier.width(8.dp))
             Button(
                 onClick = {
-                    val normalized = SettingsRepository.normalizeDomainEntry(domainInput)
-                    if (normalized.isNotEmpty()) {
-                        bypassedDomains = bypassedDomains + normalized
+                    val entries = SettingsRepository.parseAndNormalizeDomainEntries(domainInput)
+                    if (entries.isNotEmpty()) {
+                        bypassedDomains = bypassedDomains + entries
                         domainInput = ""
+                    } else if (domainInput.isNotBlank()) {
+                        viewModel.showDashboardToast("Invalid domain format")
                     }
                 },
                 colors = ButtonDefaults.buttonColors(containerColor = PrimaryCyan),
@@ -1025,10 +1027,7 @@ fun FeaturesDialog(
 
         // Preset Chips
         val presetDomains = listOf(
-            "+ .ir" to ".ir",
-            "+ shaparak.ir" to "shaparak.ir",
-            "+ digikala.com" to "digikala.com",
-            "+ snapp.ir" to "snapp.ir"
+            "+ .ir" to ".ir"
         )
         Row(
             modifier = Modifier
