@@ -89,6 +89,7 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
     val connectionState: StateFlow<ConnectionState> = VpnStateManager.connectionState
     val speed: StateFlow<Pair<String, String>> = VpnStateManager.speed
     val networkInfo: StateFlow<NetworkInfo> = VpnStateManager.networkInfo
+    val connectivityDegraded: StateFlow<Boolean> = VpnStateManager.connectivityDegraded
 
     /** Live Log now backed by process-scoped LogStore so it survives re-entry. */
     val currentLogs: StateFlow<List<String>> = combine(

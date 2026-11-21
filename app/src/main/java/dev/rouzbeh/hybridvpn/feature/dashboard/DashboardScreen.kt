@@ -57,6 +57,7 @@ import androidx.compose.material.icons.automirrored.filled.AltRoute
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowLeft
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
+import androidx.compose.material.icons.automirrored.filled.Undo
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
@@ -78,11 +79,13 @@ import androidx.compose.material.icons.filled.Sort
 import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
+import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.outlined.Sort
 import androidx.compose.material.icons.outlined.Sync
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -340,6 +343,7 @@ fun DashboardScreen(
     val rawSpeed by VpnStateManager.rawSpeed.collectAsStateWithLifecycle()
     val pingResult by viewModel.pingResult.collectAsStateWithLifecycle()
     val selectedProtocol by viewModel.selectedProtocol.collectAsStateWithLifecycle()
+    val isConnectivityDegraded by viewModel.connectivityDegraded.collectAsStateWithLifecycle()
     val installedApps by viewModel.installedApps.collectAsStateWithLifecycle()
     val isPerAppEnabled by viewModel.isPerAppEnabled.collectAsStateWithLifecycle()
     val isBypassMode by viewModel.isBypassMode.collectAsStateWithLifecycle()
@@ -395,6 +399,7 @@ fun DashboardScreen(
             uptimeFlow = viewModel.uptime,
             connectionState = connectionState,
             networkInfo = networkInfo,
+            isConnectivityDegraded = isConnectivityDegraded,
             filteredProfiles = filteredProfiles,
             activeProfile = activeProfile,
             speed = speed,
@@ -475,6 +480,7 @@ fun DashboardContent(
     uptimeFlow: StateFlow<Long>,
     connectionState: ConnectionState,
     networkInfo: NetworkInfo,
+    isConnectivityDegraded: Boolean = false,
     filteredProfiles: List<VpnProfile>,
     activeProfile: VpnProfile?,
     speed: Pair<String, String>,
@@ -670,8 +676,12 @@ fun DashboardContent(
                     .displayCutoutPadding()
                     .navigationBarsPadding()
             ) {
+                val activeProtocolName = activeProfile?.protocol ?: selectedProtocol
+                val showWireGuardDegradedHint = connectionState == ConnectionState.CONNECTED &&
+                    isConnectivityDegraded &&
+                    activeProtocolName == "WireGuard"
                 val density = LocalDensity.current
-                val needsScroll = maxHeight < 640.dp || density.fontScale > 1.15f
+                val needsScroll = maxHeight < 640.dp || density.fontScale > 1.15f || (showWireGuardDegradedHint && maxHeight < 700.dp)
                 val columnModifier = if (needsScroll) {
                     Modifier
                         .fillMaxSize()
@@ -710,6 +720,41 @@ fun DashboardContent(
                         },
                         onRetryClick = onRetryIpFetch
                     )
+
+                    androidx.compose.animation.AnimatedVisibility(
+                        visible = showWireGuardDegradedHint,
+                        enter = androidx.compose.animation.fadeIn() + androidx.compose.animation.expandVertically(),
+                        exit = androidx.compose.animation.fadeOut() + androidx.compose.animation.shrinkVertically()
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(14.dp))
+                                .background(Color(0xFFFFA000).copy(alpha = 0.12f))
+                                .border(1.dp, Color(0xFFFFA000).copy(alpha = 0.35f), RoundedCornerShape(14.dp))
+                                .padding(horizontal = 14.dp, vertical = 10.dp)
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(10.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Warning,
+                                    contentDescription = "Connectivity Degraded",
+                                    tint = Color(0xFFFFA000),
+                                    modifier = Modifier.size(20.dp)
+                                )
+                                Text(
+                                    text = "Handshake may have failed; check that the server has your public key.",
+                                    color = Color(0xFFFFD54F),
+                                    fontSize = 12.sp,
+                                    lineHeight = 16.sp,
+                                    fontFamily = SoraFamily,
+                                    fontWeight = FontWeight.Medium
+                                )
+                            }
+                        }
+                    }
 
                 // 3. Speed Tracker (Only ONE instance, remove duplicates)
                 SpeedTrackerRow(
@@ -2158,6 +2203,17 @@ fun AddServerSheetContent(
     var wgName by remember(editingWg) { mutableStateOf(editingProfile?.name ?: editingWg?.remark ?: "") }
     var wgSecretKey by remember(editingWg) { mutableStateOf(editingWg?.secretKey ?: "") }
     val wgInterfacePublicKey = remember(wgSecretKey) { dev.rouzbeh.hybridvpn.core.vpn.wireguard.WireGuardKeyUtils.derivePublicKey(wgSecretKey.trim()) ?: "" }
+    var showWgSecretKey by remember(editingWg) { mutableStateOf(false) }
+    var wgSecretKeyHistory by remember(editingWg) { mutableStateOf<List<String>>(emptyList()) }
+    var showRegenerateWgKeyDialog by remember(editingWg) { mutableStateOf(false) }
+    var localSheetToast by remember { mutableStateOf<String?>(null) }
+
+    LaunchedEffect(localSheetToast) {
+        if (localSheetToast != null) {
+            kotlinx.coroutines.delay(2200L)
+            localSheetToast = null
+        }
+    }
     var wgLocalAddress by remember(editingWg) { mutableStateOf(editingWg?.localAddresses?.joinToString(", ") ?: "") }
     var wgListenPort by remember(editingWg) { mutableStateOf(editingWg?.listenPort?.toString() ?: "") }
     var wgDns by remember(editingWg) { mutableStateOf(editingWg?.dns ?: "") }
@@ -2327,7 +2383,8 @@ fun AddServerSheetContent(
 
     val clipboardManager = androidx.compose.ui.platform.LocalClipboardManager.current
 
-    Column(
+    Box(modifier = Modifier.fillMaxWidth()) {
+        Column(
         modifier = Modifier
             .fillMaxWidth()
             .statusBarsPadding()
@@ -2487,18 +2544,31 @@ fun AddServerSheetContent(
                     OutlinedTextField(
                         value = wgSecretKey,
                         onValueChange = { wgSecretKey = it.trim() },
+                        visualTransformation = if (showWgSecretKey) VisualTransformation.None else PasswordVisualTransformation(),
                         label = { Text("Private key", color = TextSecondary, fontFamily = SoraFamily) },
                         trailingIcon = {
-                            IconButton(
-                                onClick = {
-                                    wgSecretKey = dev.rouzbeh.hybridvpn.core.vpn.wireguard.WireGuardKeyUtils.generatePrivateKey()
-                                }
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier.padding(end = 4.dp)
                             ) {
-                                Icon(
-                                    imageVector = Icons.Default.Refresh,
-                                    contentDescription = "Generate Key",
-                                    tint = PrimaryCyan
-                                )
+                                IconButton(
+                                    onClick = { showWgSecretKey = !showWgSecretKey }
+                                ) {
+                                    Icon(
+                                        imageVector = if (showWgSecretKey) Icons.Default.VisibilityOff else Icons.Default.Visibility,
+                                        contentDescription = if (showWgSecretKey) "Hide private key" else "Show private key",
+                                        tint = PrimaryCyan
+                                    )
+                                }
+                                IconButton(
+                                    onClick = { showRegenerateWgKeyDialog = true }
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Refresh,
+                                        contentDescription = "Regenerate private key",
+                                        tint = PrimaryCyan
+                                    )
+                                }
                             }
                         },
                         colors = OutlinedTextFieldDefaults.colors(
@@ -2511,12 +2581,77 @@ fun AddServerSheetContent(
                         modifier = Modifier.fillMaxWidth(),
                         singleLine = true
                     )
+                    if (wgSecretKeyHistory.isNotEmpty()) {
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(Color(0xFFFFA000).copy(alpha = 0.10f))
+                                .border(1.dp, Color(0xFFFFA000).copy(alpha = 0.25f), RoundedCornerShape(8.dp))
+                                .padding(horizontal = 10.dp, vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Text(
+                                text = "Key changed — update public key on server",
+                                color = Color(0xFFFFD54F),
+                                fontSize = 11.sp,
+                                fontFamily = SoraFamily,
+                                modifier = Modifier.weight(1f)
+                            )
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(6.dp))
+                                    .clickable {
+                                        val lastKey = wgSecretKeyHistory.last()
+                                        wgSecretKeyHistory = wgSecretKeyHistory.dropLast(1)
+                                        wgSecretKey = lastKey
+                                        localSheetToast = "Previous private key restored"
+                                    }
+                                    .padding(horizontal = 6.dp, vertical = 4.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.AutoMirrored.Filled.Undo,
+                                    contentDescription = "Undo",
+                                    tint = PrimaryCyan,
+                                    modifier = Modifier.size(14.dp)
+                                )
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text(
+                                    text = "Undo",
+                                    color = PrimaryCyan,
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    fontFamily = SoraFamily
+                                )
+                            }
+                        }
+                    }
                     Spacer(modifier = Modifier.height(10.dp))
                     OutlinedTextField(
                         value = if (wgInterfacePublicKey.isNotEmpty()) wgInterfacePublicKey else "(generated)",
                         onValueChange = {},
                         readOnly = true,
                         label = { Text("Public key", color = TextSecondary, fontFamily = SoraFamily) },
+                        trailingIcon = {
+                            IconButton(
+                                onClick = {
+                                    if (wgInterfacePublicKey.isNotEmpty()) {
+                                        clipboardManager.setText(androidx.compose.ui.text.AnnotatedString(wgInterfacePublicKey))
+                                        localSheetToast = "Public key copied"
+                                    }
+                                },
+                                enabled = wgInterfacePublicKey.isNotEmpty()
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.ContentCopy,
+                                    contentDescription = "Copy public key",
+                                    tint = if (wgInterfacePublicKey.isNotEmpty()) PrimaryCyan else TextSecondary.copy(alpha = 0.5f)
+                                )
+                            }
+                        },
                         colors = OutlinedTextFieldDefaults.colors(
                             focusedBorderColor = PrimaryCyan,
                             unfocusedBorderColor = BorderGlass,
@@ -3010,6 +3145,102 @@ fun AddServerSheetContent(
                 fontWeight = FontWeight.Bold,
                 fontFamily = SoraFamily
             )
+        }
+    }
+
+        CustomGlassToast(
+            message = localSheetToast,
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .navigationBarsPadding()
+                .imePadding()
+                .padding(bottom = 24.dp)
+        )
+    }
+
+    if (showRegenerateWgKeyDialog) {
+        androidx.compose.ui.window.Dialog(
+            onDismissRequest = { showRegenerateWgKeyDialog = false },
+            properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false)
+        ) {
+            CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .safeDrawingPadding()
+                        .padding(horizontal = 24.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(24.dp))
+                            .background(SurfaceMenu)
+                            .border(1.dp, BorderGlass, RoundedCornerShape(24.dp))
+                            .padding(24.dp)
+                    ) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .verticalScroll(rememberScrollState())
+                        ) {
+                            Text(
+                                text = "Generate New Private Key?",
+                                color = TextPrimary,
+                                fontSize = 18.sp,
+                                fontWeight = FontWeight.Bold,
+                                fontFamily = SoraFamily
+                            )
+                            Spacer(modifier = Modifier.height(12.dp))
+                            Text(
+                                text = "Generating a new private key changes your derived public key. You must register the new public key on your WireGuard server, otherwise the VPN connection will not work.",
+                                color = TextSecondary,
+                                fontSize = 14.sp,
+                                lineHeight = 20.sp,
+                                fontFamily = SoraFamily
+                            )
+                            Spacer(modifier = Modifier.height(24.dp))
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(12.dp, Alignment.End)
+                            ) {
+                                Button(
+                                    onClick = { showRegenerateWgKeyDialog = false },
+                                    colors = ButtonDefaults.buttonColors(containerColor = Color.Transparent),
+                                    border = androidx.compose.foundation.BorderStroke(1.dp, BorderGlass),
+                                    shape = RoundedCornerShape(12.dp)
+                                ) {
+                                    Text(
+                                        text = "Cancel",
+                                        color = TextSecondary,
+                                        fontFamily = SoraFamily,
+                                        fontWeight = FontWeight.SemiBold
+                                    )
+                                }
+                                Button(
+                                    onClick = {
+                                        if (wgSecretKey.isNotBlank()) {
+                                            wgSecretKeyHistory = wgSecretKeyHistory + wgSecretKey
+                                        }
+                                        wgSecretKey = dev.rouzbeh.hybridvpn.core.vpn.wireguard.WireGuardKeyUtils.generatePrivateKey()
+                                        showRegenerateWgKeyDialog = false
+                                        localSheetToast = "New key generated — copy public key to server"
+                                    },
+                                    colors = ButtonDefaults.buttonColors(containerColor = PrimaryCyan),
+                                    shape = RoundedCornerShape(12.dp)
+                                ) {
+                                    Text(
+                                        text = "Generate",
+                                        color = BackgroundDark,
+                                        fontFamily = SoraFamily,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 }
