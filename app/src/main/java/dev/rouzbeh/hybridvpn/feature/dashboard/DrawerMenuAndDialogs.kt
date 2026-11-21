@@ -16,12 +16,16 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.displayCutoutPadding
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
@@ -122,6 +126,9 @@ fun HybridNestDrawerContent(
     Column(
         modifier = modifier
             .fillMaxSize()
+            .statusBarsPadding()
+            .displayCutoutPadding()
+            .navigationBarsPadding()
             .padding(horizontal = 16.dp, vertical = 16.dp)
     ) {
         // 1. Static Header
@@ -301,6 +308,7 @@ private fun DialogShell(
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
+                    .safeDrawingPadding()
                     .padding(horizontal = 18.dp, vertical = 24.dp)
                     .clip(RoundedCornerShape(24.dp))
                     .background(SurfaceMenu)
@@ -1957,6 +1965,7 @@ fun ActiveConnectionWarningDialog(
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
+                    .safeDrawingPadding()
                     .padding(horizontal = 24.dp),
                 contentAlignment = Alignment.Center
             ) {
@@ -1968,7 +1977,11 @@ fun ActiveConnectionWarningDialog(
                         .border(1.dp, BorderGlass, RoundedCornerShape(24.dp))
                         .padding(24.dp)
                 ) {
-                    Column {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .verticalScroll(rememberScrollState())
+                    ) {
                         Row(
                             verticalAlignment = Alignment.CenterVertically
                         ) {

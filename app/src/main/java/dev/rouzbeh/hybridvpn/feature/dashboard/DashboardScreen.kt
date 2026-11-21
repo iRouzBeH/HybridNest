@@ -28,17 +28,23 @@ import androidx.compose.foundation.interaction.PressInteraction
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.displayCutoutPadding
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -115,6 +121,7 @@ import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.res.painterResource
@@ -355,7 +362,8 @@ fun DashboardScreen(
         drawerContent = {
             androidx.compose.material3.ModalDrawerSheet(
                 modifier = Modifier.fillMaxWidth(0.80f),
-                drawerContainerColor = SurfaceMenu
+                drawerContainerColor = SurfaceMenu,
+                windowInsets = androidx.compose.foundation.layout.WindowInsets(0, 0, 0, 0)
             ) {
                 HybridNestDrawerContent(
                     isDrawerOpen = drawerState.isOpen,
@@ -650,36 +658,58 @@ fun DashboardContent(
     }
 
     if (!showAppRoutingScreen && !(showServerListSheet && hasServers) && !showLiveLogScreen) {
-        Box(modifier = Modifier.fillMaxSize()) {
-            Column(
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(SurfaceDark)
+        ) {
+            BoxWithConstraints(
                 modifier = Modifier
                     .fillMaxSize()
-                    .background(SurfaceDark)
-                    .padding(horizontal = 16.dp)
-                    .padding(bottom = 8.dp), // Keep bottom safe area
-                verticalArrangement = Arrangement.spacedBy(16.dp)
+                    .statusBarsPadding()
+                    .displayCutoutPadding()
+                    .navigationBarsPadding()
             ) {
-                // 1. TOP HEADER (Replaces the weight-based spacer)
-                TopHeader(
-                    onStopVpn = { onStopVpn(context) },
-                    connectionState = connectionState,
-                    hasActiveProfile = activeProfile != null,
-                    onLiveLogClick = { showLiveLogScreen = true },
-                    onOpenDrawer = onOpenDrawer
-                )
+                val density = LocalDensity.current
+                val needsScroll = maxHeight < 640.dp || density.fontScale > 1.15f
+                val columnModifier = if (needsScroll) {
+                    Modifier
+                        .fillMaxSize()
+                        .verticalScroll(rememberScrollState())
+                        .padding(horizontal = 16.dp)
+                        .padding(bottom = 12.dp)
+                } else {
+                    Modifier
+                        .fillMaxSize()
+                        .padding(horizontal = 16.dp)
+                        .padding(bottom = 12.dp)
+                }
 
-                // 2. Network Info Card
-                NetworkInfoCard(
-                    modifier = Modifier.weight(1f),
-                    networkInfo = networkInfo,
-                    connectionState = connectionState,
-                    onMoreClick = {
-                        val intent =
-                            Intent(Intent.ACTION_VIEW, "https://browserleaks.com/ip".toUri())
-                        context.startActivity(intent)
-                    },
-                    onRetryClick = onRetryIpFetch
-                )
+                Column(
+                    modifier = columnModifier,
+                    verticalArrangement = Arrangement.spacedBy(16.dp)
+                ) {
+                    // 1. TOP HEADER (Replaces the weight-based spacer)
+                    TopHeader(
+                        onStopVpn = { onStopVpn(context) },
+                        connectionState = connectionState,
+                        hasActiveProfile = activeProfile != null,
+                        onLiveLogClick = { showLiveLogScreen = true },
+                        onOpenDrawer = onOpenDrawer
+                    )
+
+                    // 2. Network Info Card
+                    NetworkInfoCard(
+                        modifier = if (needsScroll) Modifier.height(160.dp) else Modifier.weight(1f).heightIn(min = 140.dp),
+                        networkInfo = networkInfo,
+                        connectionState = connectionState,
+                        onMoreClick = {
+                            val intent =
+                                Intent(Intent.ACTION_VIEW, "https://browserleaks.com/ip".toUri())
+                            context.startActivity(intent)
+                        },
+                        onRetryClick = onRetryIpFetch
+                    )
 
                 // 3. Speed Tracker (Only ONE instance, remove duplicates)
                 SpeedTrackerRow(
@@ -1001,13 +1031,12 @@ fun DashboardContent(
                     }
                 }
 
-                Spacer(modifier = Modifier.height(16.dp))
-
                 if (showAddServerSheet) {
                     ModalBottomSheet(
                         onDismissRequest = { showAddServerSheet = false },
                         sheetState = sheetState,
                         containerColor = SurfaceMenu,
+                        contentWindowInsets = { androidx.compose.foundation.layout.WindowInsets(0, 0, 0, 0) },
                         dragHandle = null
                     ) {
                         CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
@@ -1029,6 +1058,7 @@ fun DashboardContent(
                         onDismissRequest = { showServerListSheet = false },
                         sheetState = sheetState,
                         containerColor = SurfaceMenu,
+                        contentWindowInsets = { androidx.compose.foundation.layout.WindowInsets(0, 0, 0, 0) },
                         dragHandle = null
                     ) {
                         CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
@@ -1087,11 +1117,10 @@ fun DashboardContent(
                     }
                 }
             }
+            }
             CustomGlassToast(
                 message = dashboardToastMessage,
-                modifier = Modifier
-                    .align(Alignment.BottomCenter)
-                    .padding(bottom = 32.dp)
+                modifier = Modifier.align(Alignment.BottomCenter)
             )
         }
     }
@@ -1101,6 +1130,7 @@ fun DashboardContent(
             onDismissRequest = { editingProfile = null },
             sheetState = sheetState,
             containerColor = SurfaceMenu,
+            contentWindowInsets = { androidx.compose.foundation.layout.WindowInsets(0, 0, 0, 0) },
             dragHandle = null
         ) {
             CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
@@ -1346,9 +1376,15 @@ fun ServerListSheetContent(
     onTestSinglePing: (VpnProfile) -> Unit = {},
     onShowToast: (String) -> Unit = {}
 ) {
-    Column(modifier = Modifier
-        .fillMaxWidth()
-        .padding(bottom = 48.dp, top = 8.dp)) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .statusBarsPadding()
+            .displayCutoutPadding()
+            .navigationBarsPadding()
+            .imePadding()
+            .padding(bottom = 16.dp, top = 8.dp)
+    ) {
         Box(
             modifier = Modifier
                 .fillMaxWidth()
@@ -2294,8 +2330,12 @@ fun AddServerSheetContent(
     Column(
         modifier = Modifier
             .fillMaxWidth()
+            .statusBarsPadding()
+            .displayCutoutPadding()
+            .navigationBarsPadding()
+            .imePadding()
             .verticalScroll(rememberScrollState())
-            .padding(start = 24.dp, end = 24.dp, bottom = 48.dp, top = 8.dp)
+            .padding(start = 24.dp, end = 24.dp, bottom = 24.dp, top = 8.dp)
     ) {
         Box(
             modifier = Modifier
@@ -3382,9 +3422,15 @@ fun RoutingSelectorButton(
 
 @Composable
 fun SplitTunnelingSheetContent(isPerAppEnabled: Boolean, onEnable: () -> Unit) {
-    Column(modifier = Modifier
-        .fillMaxWidth()
-        .padding(bottom = 48.dp)) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .statusBarsPadding()
+            .displayCutoutPadding()
+            .navigationBarsPadding()
+            .imePadding()
+            .padding(bottom = 24.dp)
+    ) {
         Box(
             modifier = Modifier
                 .fillMaxWidth()
@@ -3478,12 +3524,19 @@ fun AppRoutingScreen(
     Box(modifier = Modifier
         .fillMaxSize()
         .background(SurfaceMenu)) {
-        Column(modifier = Modifier.fillMaxSize()) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .statusBarsPadding()
+                .displayCutoutPadding()
+                .navigationBarsPadding()
+                .imePadding()
+        ) {
             // ... (top bar code stays same)
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(top = 48.dp, start = 16.dp, end = 16.dp, bottom = 16.dp),
+                    .padding(top = 8.dp, start = 16.dp, end = 16.dp, bottom = 16.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Icon(
@@ -3807,7 +3860,7 @@ fun TopHeader(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(top = 48.dp),
+            .padding(top = 8.dp),
         horizontalArrangement = Arrangement.spacedBy(16.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
@@ -3930,7 +3983,10 @@ fun CustomGlassToast(message: String?, modifier: Modifier = Modifier) {
             initialOffsetY = { it }),
         exit = androidx.compose.animation.fadeOut() + androidx.compose.animation.slideOutVertically(
             targetOffsetY = { it }),
-        modifier = modifier.padding(bottom = 64.dp, start = 24.dp, end = 24.dp)
+        modifier = modifier
+            .navigationBarsPadding()
+            .imePadding()
+            .padding(bottom = 32.dp, start = 24.dp, end = 24.dp)
     ) {
         Box(
             modifier = Modifier
@@ -4085,12 +4141,24 @@ fun ServerListFullScreen(
         parseSubscriptionMeta(displayServers.map { it.name })
     }
 
-    Box(modifier = Modifier.fillMaxSize()) {
-        Column(modifier = Modifier.fillMaxSize().background(SurfaceDark)) {
-        Row(
-            modifier = Modifier.fillMaxWidth().padding(top = 48.dp, start = 16.dp, end = 16.dp, bottom = 16.dp),
-            verticalAlignment = Alignment.CenterVertically
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(SurfaceDark)
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .statusBarsPadding()
+                .displayCutoutPadding()
+                .navigationBarsPadding()
         ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 8.dp, start = 16.dp, end = 16.dp, bottom = 16.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
             Icon(
                 imageVector = androidx.compose.material.icons.Icons.AutoMirrored.Filled.ArrowBack,
                 contentDescription = "Back",
@@ -4307,17 +4375,26 @@ fun ServerListFullScreen(
         // FIX: Only enable button if text is not blank and is actually changed
         val isButtonEnabled = customName.isNotBlank() && customName != originalName
 
-        androidx.compose.ui.window.Dialog(onDismissRequest = { renamingSubKey = null }) {
+        androidx.compose.ui.window.Dialog(
+            onDismissRequest = { renamingSubKey = null },
+            properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false)
+        ) {
             CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
+                        .safeDrawingPadding()
+                        .padding(horizontal = 24.dp)
                         .clip(RoundedCornerShape(24.dp))
                         .background(SurfaceMenu)
                         .border(1.dp, BorderGlass, RoundedCornerShape(24.dp))
                         .padding(24.dp)
                 ) {
-                    Column {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .verticalScroll(rememberScrollState())
+                    ) {
                         Text("Rename Subscription", color = Color.White, fontSize = 18.sp, fontWeight = FontWeight.Bold, fontFamily = SoraFamily)
                         Spacer(modifier = Modifier.height(16.dp))
                         OutlinedTextField(
@@ -4392,14 +4469,22 @@ fun LiveLogFullScreen(
         }
     }
 
-    Box(modifier = Modifier.fillMaxSize()) {
-        Column(modifier = Modifier
+    Box(
+        modifier = Modifier
             .fillMaxSize()
-            .background(SurfaceDark)) {
+            .background(SurfaceDark)
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .statusBarsPadding()
+                .displayCutoutPadding()
+                .navigationBarsPadding()
+        ) {
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(top = 48.dp, start = 16.dp, end = 16.dp, bottom = 16.dp),
+                    .padding(top = 8.dp, start = 16.dp, end = 16.dp, bottom = 16.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Icon(
@@ -4499,9 +4584,7 @@ fun LiveLogFullScreen(
         }
         CustomGlassToast(
             message = copyToastMessage,
-            modifier = Modifier
-                .align(Alignment.BottomCenter)
-                .padding(bottom = 32.dp)
+            modifier = Modifier.align(Alignment.BottomCenter)
         )
     }
 }

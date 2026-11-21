@@ -7,7 +7,6 @@ import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.SideEffect
-import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.TextStyle
@@ -67,8 +66,9 @@ fun OpenNestTheme(
     if (!view.isInEditMode) {
         SideEffect {
             val window = (view.context as Activity).window
-            window.statusBarColor = BackgroundDark.toArgb()
-            WindowCompat.getInsetsController(window, view).isAppearanceLightStatusBars = false
+            val insetsController = WindowCompat.getInsetsController(window, view)
+            insetsController.isAppearanceLightStatusBars = false
+            insetsController.isAppearanceLightNavigationBars = false
         }
     }
 
