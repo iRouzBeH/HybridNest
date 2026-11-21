@@ -31,6 +31,7 @@ import java.net.InetSocketAddress
 import java.net.Socket
 import java.net.URL
 import java.nio.ByteBuffer
+import java.util.Locale
 
 class HybridVpnService : VpnService() {
 
@@ -203,8 +204,8 @@ class HybridVpnService : VpnService() {
 
     private fun getFlagEmoji(countryCode: String?): String {
         if (countryCode.isNullOrBlank() || countryCode.length != 2 || countryCode == "un") return "🌍"
-        val first = Character.codePointAt(countryCode.uppercase(), 0) - 0x41 + 0x1F1E6
-        val second = Character.codePointAt(countryCode.uppercase(), 1) - 0x41 + 0x1F1E6
+        val first = Character.codePointAt(countryCode.uppercase(Locale.ROOT), 0) - 0x41 + 0x1F1E6
+        val second = Character.codePointAt(countryCode.uppercase(Locale.ROOT), 1) - 0x41 + 0x1F1E6
         return String(Character.toChars(first)) + String(Character.toChars(second))
     }
 

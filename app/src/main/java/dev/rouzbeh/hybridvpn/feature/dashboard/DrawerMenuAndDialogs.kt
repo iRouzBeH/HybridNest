@@ -52,6 +52,7 @@ import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -67,13 +68,16 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.style.TextDirection
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import dev.rouzbeh.hybridvpn.R
@@ -293,65 +297,67 @@ private fun DialogShell(
         onDismissRequest = onDismiss,
         properties = DialogProperties(usePlatformDefaultWidth = false)
     ) {
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 18.dp, vertical = 24.dp)
-                .clip(RoundedCornerShape(24.dp))
-                .background(SurfaceMenu)
-                .border(1.dp, BorderGlass, RoundedCornerShape(24.dp))
-                .padding(20.dp)
-        ) {
-            Column(
+        CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
+            Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .verticalScroll(rememberScrollState())
+                    .padding(horizontal = 18.dp, vertical = 24.dp)
+                    .clip(RoundedCornerShape(24.dp))
+                    .background(SurfaceMenu)
+                    .border(1.dp, BorderGlass, RoundedCornerShape(24.dp))
+                    .padding(20.dp)
             ) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .verticalScroll(rememberScrollState())
                 ) {
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = title,
-                            color = Color.White,
-                            fontSize = 18.sp,
-                            fontWeight = FontWeight.Bold,
-                            fontFamily = SoraFamily
-                        )
-                        if (subtitle != null) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
                             Text(
-                                text = subtitle,
-                                color = TextSecondary,
-                                fontSize = 11.sp,
+                                text = title,
+                                color = Color.White,
+                                fontSize = 18.sp,
+                                fontWeight = FontWeight.Bold,
                                 fontFamily = SoraFamily
+                            )
+                            if (subtitle != null) {
+                                Text(
+                                    text = subtitle,
+                                    color = TextSecondary,
+                                    fontSize = 11.sp,
+                                    fontFamily = SoraFamily
+                                )
+                            }
+                        }
+
+                        Box(
+                            modifier = Modifier
+                                .size(32.dp)
+                                .clip(CircleShape)
+                                .background(SurfaceGlass)
+                                .clickable { onDismiss() },
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Close,
+                                contentDescription = "Close",
+                                tint = TextSecondary,
+                                modifier = Modifier.size(18.dp)
                             )
                         }
                     }
 
-                    Box(
-                        modifier = Modifier
-                            .size(32.dp)
-                            .clip(CircleShape)
-                            .background(SurfaceGlass)
-                            .clickable { onDismiss() },
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Close,
-                            contentDescription = "Close",
-                            tint = TextSecondary,
-                            modifier = Modifier.size(18.dp)
-                        )
-                    }
+                    Spacer(modifier = Modifier.height(16.dp))
+                    HorizontalDivider(color = BorderGlass)
+                    Spacer(modifier = Modifier.height(16.dp))
+
+                    content()
                 }
-
-                Spacer(modifier = Modifier.height(16.dp))
-                HorizontalDivider(color = BorderGlass)
-                Spacer(modifier = Modifier.height(16.dp))
-
-                content()
             }
         }
     }
@@ -476,7 +482,7 @@ private fun GlassOutlinedTextField(
             focusedTextColor = Color.White,
             unfocusedTextColor = Color.White
         ),
-        textStyle = TextStyle(fontFamily = SoraFamily, fontSize = 13.sp),
+        textStyle = TextStyle(fontFamily = SoraFamily, fontSize = 13.sp, textDirection = TextDirection.Ltr),
         modifier = Modifier.fillMaxWidth(),
         singleLine = true,
         keyboardOptions = KeyboardOptions(keyboardType = keyboardType)
@@ -1947,94 +1953,96 @@ fun ActiveConnectionWarningDialog(
         onDismissRequest = onDismiss,
         properties = DialogProperties(usePlatformDefaultWidth = false)
     ) {
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 24.dp),
-            contentAlignment = Alignment.Center
-        ) {
+        CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .clip(RoundedCornerShape(24.dp))
-                    .background(SurfaceMenu)
-                    .border(1.dp, BorderGlass, RoundedCornerShape(24.dp))
-                    .padding(24.dp)
+                    .padding(horizontal = 24.dp),
+                contentAlignment = Alignment.Center
             ) {
-                Column {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Box(
-                            modifier = Modifier
-                                .size(40.dp)
-                                .clip(RoundedCornerShape(12.dp))
-                                .background(PrimaryCyan.copy(alpha = 0.15f))
-                                .border(1.dp, PrimaryCyan.copy(alpha = 0.35f), RoundedCornerShape(12.dp)),
-                            contentAlignment = Alignment.Center
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(24.dp))
+                        .background(SurfaceMenu)
+                        .border(1.dp, BorderGlass, RoundedCornerShape(24.dp))
+                        .padding(24.dp)
+                ) {
+                    Column {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Icon(
-                                imageVector = Icons.Default.Info,
-                                contentDescription = "Active VPN",
-                                tint = PrimaryCyan,
-                                modifier = Modifier.size(22.dp)
-                            )
-                        }
-                        Spacer(modifier = Modifier.width(14.dp))
-                        Text(
-                            text = "Active VPN Connection",
-                            color = TextPrimary,
-                            fontSize = 18.sp,
-                            fontWeight = FontWeight.Bold,
-                            fontFamily = SoraFamily
-                        )
-                    }
-
-                    Spacer(modifier = Modifier.height(16.dp))
-
-                    Text(
-                        text = message,
-                        color = TextSecondary,
-                        fontSize = 14.sp,
-                        fontFamily = SoraFamily,
-                        lineHeight = 20.sp
-                    )
-
-                    Spacer(modifier = Modifier.height(24.dp))
-
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(12.dp)
-                    ) {
-                        Button(
-                            onClick = onDismiss,
-                            colors = ButtonDefaults.buttonColors(containerColor = SurfaceGlass),
-                            border = BorderStroke(1.dp, BorderGlass),
-                            shape = RoundedCornerShape(12.dp),
-                            modifier = Modifier.weight(1f).height(44.dp)
-                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(40.dp)
+                                    .clip(RoundedCornerShape(12.dp))
+                                    .background(PrimaryCyan.copy(alpha = 0.15f))
+                                    .border(1.dp, PrimaryCyan.copy(alpha = 0.35f), RoundedCornerShape(12.dp)),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Info,
+                                    contentDescription = "Active VPN",
+                                    tint = PrimaryCyan,
+                                    modifier = Modifier.size(22.dp)
+                                )
+                            }
+                            Spacer(modifier = Modifier.width(14.dp))
                             Text(
-                                text = "Cancel",
+                                text = "Active VPN Connection",
                                 color = TextPrimary,
-                                fontSize = 13.sp,
-                                fontWeight = FontWeight.SemiBold,
-                                fontFamily = SoraFamily
-                            )
-                        }
-
-                        Button(
-                            onClick = onDisconnect,
-                            colors = ButtonDefaults.buttonColors(containerColor = PrimaryCyan),
-                            shape = RoundedCornerShape(12.dp),
-                            modifier = Modifier.weight(1f).height(44.dp)
-                        ) {
-                            Text(
-                                text = "Disconnect",
-                                color = BackgroundDark,
-                                fontSize = 13.sp,
+                                fontSize = 18.sp,
                                 fontWeight = FontWeight.Bold,
                                 fontFamily = SoraFamily
                             )
+                        }
+
+                        Spacer(modifier = Modifier.height(16.dp))
+
+                        Text(
+                            text = message,
+                            color = TextSecondary,
+                            fontSize = 14.sp,
+                            fontFamily = SoraFamily,
+                            lineHeight = 20.sp
+                        )
+
+                        Spacer(modifier = Modifier.height(24.dp))
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            Button(
+                                onClick = onDismiss,
+                                colors = ButtonDefaults.buttonColors(containerColor = SurfaceGlass),
+                                border = BorderStroke(1.dp, BorderGlass),
+                                shape = RoundedCornerShape(12.dp),
+                                modifier = Modifier.weight(1f).height(44.dp)
+                            ) {
+                                Text(
+                                    text = "Cancel",
+                                    color = TextPrimary,
+                                    fontSize = 13.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    fontFamily = SoraFamily
+                                )
+                            }
+
+                            Button(
+                                onClick = onDisconnect,
+                                colors = ButtonDefaults.buttonColors(containerColor = PrimaryCyan),
+                                shape = RoundedCornerShape(12.dp),
+                                modifier = Modifier.weight(1f).height(44.dp)
+                            ) {
+                                Text(
+                                    text = "Disconnect",
+                                    color = BackgroundDark,
+                                    fontSize = 13.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    fontFamily = SoraFamily
+                                )
+                            }
                         }
                     }
                 }

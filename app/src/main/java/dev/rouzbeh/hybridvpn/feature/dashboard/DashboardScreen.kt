@@ -90,6 +90,7 @@ import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -115,6 +116,7 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextStyle
@@ -122,9 +124,11 @@ import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.VisualTransformation
+import androidx.compose.ui.text.style.TextDirection
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.tooling.preview.Preview
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -1006,15 +1010,17 @@ fun DashboardContent(
                         containerColor = SurfaceMenu,
                         dragHandle = null
                     ) {
-                        AddServerSheetContent(
-                            protocol = currentProtocolDisplay,
-                            servers = filteredProfiles,
-                            onAdd = onAddServer,
-                            onUpdate = onUpdateServer,
-                            onClose = { showAddServerSheet = false },
-                            onShowToast = onShowToast,
-                            onImportWireGuardUri = onImportWireGuardUri
-                        )
+                        CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
+                            AddServerSheetContent(
+                                protocol = currentProtocolDisplay,
+                                servers = filteredProfiles,
+                                onAdd = onAddServer,
+                                onUpdate = onUpdateServer,
+                                onClose = { showAddServerSheet = false },
+                                onShowToast = onShowToast,
+                                onImportWireGuardUri = onImportWireGuardUri
+                            )
+                        }
                     }
                 }
 
@@ -1025,22 +1031,24 @@ fun DashboardContent(
                         containerColor = SurfaceMenu,
                         dragHandle = null
                     ) {
-                        ServerListSheetContent(
-                            profiles = filteredProfiles,
-                            activeProfile = activeProfile,
-                            connectionState = connectionState,
-                            onSelect = { profileId ->
-                                onSelectServer(profileId, context)
-                                showServerListSheet = false
-                            },
-                            onDelete = { profile -> onDeleteServer(profile) },
-                            onEdit = { profile ->
-                                editingProfile = profile
-                                showServerListSheet = false
-                            },
-                            onTestSinglePing = onTestSinglePing,
-                            onShowToast = onShowToast
-                        )
+                        CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
+                            ServerListSheetContent(
+                                profiles = filteredProfiles,
+                                activeProfile = activeProfile,
+                                connectionState = connectionState,
+                                onSelect = { profileId ->
+                                    onSelectServer(profileId, context)
+                                    showServerListSheet = false
+                                },
+                                onDelete = { profile -> onDeleteServer(profile) },
+                                onEdit = { profile ->
+                                    editingProfile = profile
+                                    showServerListSheet = false
+                                },
+                                onTestSinglePing = onTestSinglePing,
+                                onShowToast = onShowToast
+                            )
+                        }
                     }
                 }
 
@@ -1059,20 +1067,22 @@ fun DashboardContent(
                         }, // Kills the extra navigation bar gap
                         dragHandle = null
                     ) {
-                        Box(modifier = Modifier.fillMaxWidth()) {
-                            SplitTunnelingSheetContent(
-                                isPerAppEnabled = isPerAppEnabled,
-                                onEnable = {
-                                    onSetPerAppEnabled(true)
-                                    showSplitSheet = false
-                                    showAppRoutingScreen = true
-                                }
-                            )
-                            // Custom Toast Overlay inside the sheet
-                            CustomGlassToast(
-                                message = dashboardToastMessage,
-                                modifier = Modifier.align(Alignment.BottomCenter)
-                            )
+                        CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
+                            Box(modifier = Modifier.fillMaxWidth()) {
+                                SplitTunnelingSheetContent(
+                                    isPerAppEnabled = isPerAppEnabled,
+                                    onEnable = {
+                                        onSetPerAppEnabled(true)
+                                        showSplitSheet = false
+                                        showAppRoutingScreen = true
+                                    }
+                                )
+                                // Custom Toast Overlay inside the sheet
+                                CustomGlassToast(
+                                    message = dashboardToastMessage,
+                                    modifier = Modifier.align(Alignment.BottomCenter)
+                                )
+                            }
                         }
                     }
                 }
@@ -1093,16 +1103,18 @@ fun DashboardContent(
             containerColor = SurfaceMenu,
             dragHandle = null
         ) {
-            AddServerSheetContent(
-                protocol = currentProtocolDisplay,
-                servers = filteredProfiles,
-                editingProfile = editingProfile,
-                onAdd = onAddServer,
-                onUpdate = onUpdateServer,
-                onClose = { editingProfile = null },
-                onShowToast = onShowToast,
-                onImportWireGuardUri = onImportWireGuardUri
-            )
+            CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
+                AddServerSheetContent(
+                    protocol = currentProtocolDisplay,
+                    servers = filteredProfiles,
+                    editingProfile = editingProfile,
+                    onAdd = onAddServer,
+                    onUpdate = onUpdateServer,
+                    onClose = { editingProfile = null },
+                    onShowToast = onShowToast,
+                    onImportWireGuardUri = onImportWireGuardUri
+                )
+            }
         }
     }
 }
@@ -2325,7 +2337,7 @@ fun AddServerSheetContent(
                         focusedTextColor = TextPrimary,
                         unfocusedTextColor = TextPrimary
                     ),
-                    textStyle = TextStyle(fontFamily = SoraFamily),
+                    textStyle = TextStyle(fontFamily = SoraFamily, textDirection = TextDirection.Ltr),
                     modifier = Modifier.fillMaxWidth(), singleLine = true
                 )
                 Spacer(modifier = Modifier.height(12.dp))
@@ -2344,7 +2356,7 @@ fun AddServerSheetContent(
                         focusedTextColor = TextPrimary,
                         unfocusedTextColor = TextPrimary
                     ),
-                    textStyle = TextStyle(fontFamily = SoraFamily),
+                    textStyle = TextStyle(fontFamily = SoraFamily, textDirection = TextDirection.Ltr),
                     modifier = Modifier.fillMaxWidth(), singleLine = true
                 )
                 Spacer(modifier = Modifier.height(12.dp))
@@ -2363,7 +2375,7 @@ fun AddServerSheetContent(
                         focusedTextColor = TextPrimary,
                         unfocusedTextColor = TextPrimary
                     ),
-                    textStyle = TextStyle(fontFamily = SoraFamily),
+                    textStyle = TextStyle(fontFamily = SoraFamily, textDirection = TextDirection.Ltr),
                     modifier = Modifier.fillMaxWidth(), singleLine = true
                 )
                 Spacer(modifier = Modifier.height(12.dp))
@@ -2394,7 +2406,7 @@ fun AddServerSheetContent(
                         focusedTextColor = TextPrimary,
                         unfocusedTextColor = TextPrimary
                     ),
-                    textStyle = TextStyle(fontFamily = SoraFamily),
+                    textStyle = TextStyle(fontFamily = SoraFamily, textDirection = TextDirection.Ltr),
                     modifier = Modifier.fillMaxWidth(), singleLine = true
                 )
             }
@@ -2427,7 +2439,7 @@ fun AddServerSheetContent(
                             focusedTextColor = TextPrimary,
                             unfocusedTextColor = TextPrimary
                         ),
-                        textStyle = TextStyle(fontFamily = SoraFamily),
+                        textStyle = TextStyle(fontFamily = SoraFamily, textDirection = TextDirection.Ltr),
                         modifier = Modifier.fillMaxWidth(),
                         singleLine = true
                     )
@@ -2455,7 +2467,7 @@ fun AddServerSheetContent(
                             focusedTextColor = TextPrimary,
                             unfocusedTextColor = TextPrimary
                         ),
-                        textStyle = TextStyle(fontFamily = SoraFamily),
+                        textStyle = TextStyle(fontFamily = SoraFamily, textDirection = TextDirection.Ltr),
                         modifier = Modifier.fillMaxWidth(),
                         singleLine = true
                     )
@@ -2471,7 +2483,7 @@ fun AddServerSheetContent(
                             focusedTextColor = if (wgInterfacePublicKey.isNotEmpty()) TextPrimary else TextSecondary.copy(alpha = 0.7f),
                             unfocusedTextColor = if (wgInterfacePublicKey.isNotEmpty()) TextPrimary else TextSecondary.copy(alpha = 0.7f)
                         ),
-                        textStyle = TextStyle(fontFamily = SoraFamily),
+                        textStyle = TextStyle(fontFamily = SoraFamily, textDirection = TextDirection.Ltr),
                         modifier = Modifier.fillMaxWidth(),
                         singleLine = true
                     )
@@ -2491,7 +2503,7 @@ fun AddServerSheetContent(
                                 focusedTextColor = TextPrimary,
                                 unfocusedTextColor = TextPrimary
                             ),
-                            textStyle = TextStyle(fontFamily = SoraFamily),
+                            textStyle = TextStyle(fontFamily = SoraFamily, textDirection = TextDirection.Ltr),
                             modifier = Modifier.weight(0.6f),
                             singleLine = true
                         )
@@ -2506,7 +2518,7 @@ fun AddServerSheetContent(
                                 focusedTextColor = TextPrimary,
                                 unfocusedTextColor = TextPrimary
                             ),
-                            textStyle = TextStyle(fontFamily = SoraFamily),
+                            textStyle = TextStyle(fontFamily = SoraFamily, textDirection = TextDirection.Ltr),
                             modifier = Modifier.weight(0.4f),
                             singleLine = true,
                             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
@@ -2528,7 +2540,7 @@ fun AddServerSheetContent(
                                 focusedTextColor = TextPrimary,
                                 unfocusedTextColor = TextPrimary
                             ),
-                            textStyle = TextStyle(fontFamily = SoraFamily),
+                            textStyle = TextStyle(fontFamily = SoraFamily, textDirection = TextDirection.Ltr),
                             modifier = Modifier.weight(0.6f),
                             singleLine = true
                         )
@@ -2543,7 +2555,7 @@ fun AddServerSheetContent(
                                 focusedTextColor = TextPrimary,
                                 unfocusedTextColor = TextPrimary
                             ),
-                            textStyle = TextStyle(fontFamily = SoraFamily),
+                            textStyle = TextStyle(fontFamily = SoraFamily, textDirection = TextDirection.Ltr),
                             modifier = Modifier.weight(0.4f),
                             singleLine = true,
                             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
@@ -2622,7 +2634,7 @@ fun AddServerSheetContent(
                                 focusedTextColor = TextPrimary,
                                 unfocusedTextColor = TextPrimary
                             ),
-                            textStyle = TextStyle(fontFamily = SoraFamily),
+                            textStyle = TextStyle(fontFamily = SoraFamily, textDirection = TextDirection.Ltr),
                             modifier = Modifier.fillMaxWidth(),
                             singleLine = true
                         )
@@ -2638,7 +2650,7 @@ fun AddServerSheetContent(
                                 focusedTextColor = TextPrimary,
                                 unfocusedTextColor = TextPrimary
                             ),
-                            textStyle = TextStyle(fontFamily = SoraFamily),
+                            textStyle = TextStyle(fontFamily = SoraFamily, textDirection = TextDirection.Ltr),
                             modifier = Modifier.fillMaxWidth(),
                             singleLine = true
                         )
@@ -2655,7 +2667,7 @@ fun AddServerSheetContent(
                                 focusedTextColor = TextPrimary,
                                 unfocusedTextColor = TextPrimary
                             ),
-                            textStyle = TextStyle(fontFamily = SoraFamily),
+                            textStyle = TextStyle(fontFamily = SoraFamily, textDirection = TextDirection.Ltr),
                             modifier = Modifier.fillMaxWidth(),
                             singleLine = true,
                             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
@@ -2672,7 +2684,7 @@ fun AddServerSheetContent(
                                 focusedTextColor = TextPrimary,
                                 unfocusedTextColor = TextPrimary
                             ),
-                            textStyle = TextStyle(fontFamily = SoraFamily),
+                            textStyle = TextStyle(fontFamily = SoraFamily, textDirection = TextDirection.Ltr),
                             modifier = Modifier.fillMaxWidth(),
                             singleLine = true
                         )
@@ -2688,7 +2700,7 @@ fun AddServerSheetContent(
                                 focusedTextColor = TextPrimary,
                                 unfocusedTextColor = TextPrimary
                             ),
-                            textStyle = TextStyle(fontFamily = SoraFamily),
+                            textStyle = TextStyle(fontFamily = SoraFamily, textDirection = TextDirection.Ltr),
                             modifier = Modifier.fillMaxWidth(),
                             singleLine = true
                         )
@@ -2749,7 +2761,7 @@ fun AddServerSheetContent(
                             focusedTextColor = TextPrimary,
                             unfocusedTextColor = TextPrimary
                         ),
-                        textStyle = TextStyle(fontFamily = SoraFamily),
+                        textStyle = TextStyle(fontFamily = SoraFamily, textDirection = TextDirection.Ltr),
                         modifier = Modifier.fillMaxWidth(), singleLine = true
                     )
                 } else {
@@ -2776,7 +2788,7 @@ fun AddServerSheetContent(
                             focusedTextColor = TextPrimary,
                             unfocusedTextColor = TextPrimary
                         ),
-                        textStyle = TextStyle(fontFamily = SoraFamily),
+                        textStyle = TextStyle(fontFamily = SoraFamily, textDirection = TextDirection.Ltr),
                         modifier = Modifier
                             .fillMaxWidth()
                             .height(140.dp),
@@ -3509,24 +3521,26 @@ fun AppRoutingScreen(
                             .background(SurfaceMenu)
                             .border(1.dp, BorderGlass, RoundedCornerShape(8.dp))
                     ) {
-                        androidx.compose.material3.DropdownMenuItem(
-                            text = {
-                                Text(
-                                    if (showSystemApps) "Hide System Apps" else "Show System Apps",
-                                    color = Color.White,
-                                    fontFamily = SoraFamily
-                                )
-                            },
-                            onClick = { showSystemApps = !showSystemApps; showMenu = false }
-                        )
-                        androidx.compose.material3.DropdownMenuItem(
-                            text = { Text("Select All", color = Color.White, fontFamily = SoraFamily) },
-                            onClick = { onSelectAllApps(); showMenu = false }
-                        )
-                        androidx.compose.material3.DropdownMenuItem(
-                            text = { Text("Deselect All", color = Color.White, fontFamily = SoraFamily) },
-                            onClick = { onDeselectAllApps(); showMenu = false }
-                        )
+                        CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
+                            androidx.compose.material3.DropdownMenuItem(
+                                text = {
+                                    Text(
+                                        if (showSystemApps) "Hide System Apps" else "Show System Apps",
+                                        color = Color.White,
+                                        fontFamily = SoraFamily
+                                    )
+                                },
+                                onClick = { showSystemApps = !showSystemApps; showMenu = false }
+                            )
+                            androidx.compose.material3.DropdownMenuItem(
+                                text = { Text("Select All", color = Color.White, fontFamily = SoraFamily) },
+                                onClick = { onSelectAllApps(); showMenu = false }
+                            )
+                            androidx.compose.material3.DropdownMenuItem(
+                                text = { Text("Deselect All", color = Color.White, fontFamily = SoraFamily) },
+                                onClick = { onDeselectAllApps(); showMenu = false }
+                            )
+                        }
                     }
                 }
             }
@@ -3674,7 +3688,8 @@ fun AppRoutingScreen(
                     textStyle = androidx.compose.ui.text.TextStyle(
                         color = Color.White,
                         fontSize = 14.sp,
-                        fontFamily = SoraFamily
+                        fontFamily = SoraFamily,
+                        textDirection = TextDirection.Ltr
                     ),
                     cursorBrush = androidx.compose.ui.graphics.SolidColor(PrimaryCyan),
                     decorationBox = { innerTextField ->
@@ -4109,28 +4124,30 @@ fun ServerListFullScreen(
                             onDismissRequest = { showV2rayMenu = false },
                             modifier = Modifier.background(SurfaceDark).border(1.dp, BorderGlass, RoundedCornerShape(8.dp))
                         ) {
-                            // Every action captures the currently-selected tab at tap time
-                            // so a mid-operation tab switch can't redirect it elsewhere.
-                            androidx.compose.material3.DropdownMenuItem(
-                                text = { Text("Sorting by test results", color = Color.White, fontFamily = SoraFamily) },
-                                leadingIcon = { Icon(androidx.compose.material.icons.Icons.Default.Sort, contentDescription = null, tint = Color.White) },
-                                onClick = { val tab = selectedTab; showV2rayMenu = false; onSortV2ray(tab) }
-                            )
-                            androidx.compose.material3.DropdownMenuItem(
-                                text = { Text("Test Real delay config", color = Color.White, fontFamily = SoraFamily) },
-                                leadingIcon = { Icon(androidx.compose.material.icons.Icons.Default.Speed, contentDescription = null, tint = Color.White) },
-                                onClick = { val tab = selectedTab; showV2rayMenu = false; onTestAllV2rayPing(tab) }
-                            )
-                            androidx.compose.material3.DropdownMenuItem(
-                                text = { Text("Update subscription", color = Color.White, fontFamily = SoraFamily) },
-                                leadingIcon = { Icon(androidx.compose.material.icons.Icons.Outlined.Sync, contentDescription = null, tint = Color.White) },
-                                onClick = { val tab = selectedTab; showV2rayMenu = false; if (tab != "SingleLinks") onUpdateSub(tab) }
-                            )
-                            androidx.compose.material3.DropdownMenuItem(
-                                text = { Text("Delete invalid config", color = Color(0xFFE53935), fontFamily = SoraFamily) },
-                                leadingIcon = { Icon(androidx.compose.material.icons.Icons.Outlined.Delete, contentDescription = null, tint = Color(0xFFE53935)) },
-                                onClick = { val tab = selectedTab; showV2rayMenu = false; onDeleteInvalidV2ray(tab) }
-                            )
+                            CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
+                                // Every action captures the currently-selected tab at tap time
+                                // so a mid-operation tab switch can't redirect it elsewhere.
+                                androidx.compose.material3.DropdownMenuItem(
+                                    text = { Text("Sorting by test results", color = Color.White, fontFamily = SoraFamily) },
+                                    leadingIcon = { Icon(androidx.compose.material.icons.Icons.Default.Sort, contentDescription = null, tint = Color.White) },
+                                    onClick = { val tab = selectedTab; showV2rayMenu = false; onSortV2ray(tab) }
+                                )
+                                androidx.compose.material3.DropdownMenuItem(
+                                    text = { Text("Test Real delay config", color = Color.White, fontFamily = SoraFamily) },
+                                    leadingIcon = { Icon(androidx.compose.material.icons.Icons.Default.Speed, contentDescription = null, tint = Color.White) },
+                                    onClick = { val tab = selectedTab; showV2rayMenu = false; onTestAllV2rayPing(tab) }
+                                )
+                                androidx.compose.material3.DropdownMenuItem(
+                                    text = { Text("Update subscription", color = Color.White, fontFamily = SoraFamily) },
+                                    leadingIcon = { Icon(androidx.compose.material.icons.Icons.Outlined.Sync, contentDescription = null, tint = Color.White) },
+                                    onClick = { val tab = selectedTab; showV2rayMenu = false; if (tab != "SingleLinks") onUpdateSub(tab) }
+                                )
+                                androidx.compose.material3.DropdownMenuItem(
+                                    text = { Text("Delete invalid config", color = Color(0xFFE53935), fontFamily = SoraFamily) },
+                                    leadingIcon = { Icon(androidx.compose.material.icons.Icons.Outlined.Delete, contentDescription = null, tint = Color(0xFFE53935)) },
+                                    onClick = { val tab = selectedTab; showV2rayMenu = false; onDeleteInvalidV2ray(tab) }
+                                )
+                            }
                         }
                     }
                 }
@@ -4218,26 +4235,28 @@ fun ServerListFullScreen(
                             onDismissRequest = { expandedTabMenu = null },
                             modifier = Modifier.background(SurfaceDark).border(1.dp, BorderGlass, RoundedCornerShape(8.dp))
                         ) {
-                            androidx.compose.material3.DropdownMenuItem(
-                                text = { Text("Reorder", color = Color.White, fontFamily = SoraFamily) },
-                                leadingIcon = { Icon(TelegramReorderIcon, contentDescription = null, tint = Color.White) },
-                                onClick = { expandedTabMenu = null; isReorderMode = true }
-                            )
-                            if (tabKey != "SingleLinks") {
+                            CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
                                 androidx.compose.material3.DropdownMenuItem(
-                                    text = { Text("Rename", color = Color.White, fontFamily = SoraFamily) },
-                                    leadingIcon = { Icon(androidx.compose.material.icons.Icons.Default.Edit, contentDescription = null, tint = Color.White) },
-                                    onClick = { expandedTabMenu = null; renamingSubKey = tabKey }
+                                    text = { Text("Reorder", color = Color.White, fontFamily = SoraFamily) },
+                                    leadingIcon = { Icon(TelegramReorderIcon, contentDescription = null, tint = Color.White) },
+                                    onClick = { expandedTabMenu = null; isReorderMode = true }
                                 )
-                                androidx.compose.material3.DropdownMenuItem(
-                                    text = { Text("Delete Sub", color = Color(0xFFE53935), fontFamily = SoraFamily) },
-                                    leadingIcon = { Icon(androidx.compose.material.icons.Icons.Outlined.Delete, contentDescription = null, tint = Color(0xFFE53935)) },
-                                    onClick = {
-                                        expandedTabMenu = null
-                                        onDeleteSubGroup(tabKey)
-                                        if (selectedTab == tabKey) selectedTab = "SingleLinks" // Fallback will be handled by LaunchedEffect
-                                    }
-                                )
+                                if (tabKey != "SingleLinks") {
+                                    androidx.compose.material3.DropdownMenuItem(
+                                        text = { Text("Rename", color = Color.White, fontFamily = SoraFamily) },
+                                        leadingIcon = { Icon(androidx.compose.material.icons.Icons.Default.Edit, contentDescription = null, tint = Color.White) },
+                                        onClick = { expandedTabMenu = null; renamingSubKey = tabKey }
+                                    )
+                                    androidx.compose.material3.DropdownMenuItem(
+                                        text = { Text("Delete Sub", color = Color(0xFFE53935), fontFamily = SoraFamily) },
+                                        leadingIcon = { Icon(androidx.compose.material.icons.Icons.Outlined.Delete, contentDescription = null, tint = Color(0xFFE53935)) },
+                                        onClick = {
+                                            expandedTabMenu = null
+                                            onDeleteSubGroup(tabKey)
+                                            if (selectedTab == tabKey) selectedTab = "SingleLinks" // Fallback will be handled by LaunchedEffect
+                                        }
+                                    )
+                                }
                             }
                         }
                     }
@@ -4289,55 +4308,57 @@ fun ServerListFullScreen(
         val isButtonEnabled = customName.isNotBlank() && customName != originalName
 
         androidx.compose.ui.window.Dialog(onDismissRequest = { renamingSubKey = null }) {
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clip(RoundedCornerShape(24.dp))
-                    .background(SurfaceMenu)
-                    .border(1.dp, BorderGlass, RoundedCornerShape(24.dp))
-                    .padding(24.dp)
-            ) {
-                Column {
-                    Text("Rename Subscription", color = Color.White, fontSize = 18.sp, fontWeight = FontWeight.Bold, fontFamily = SoraFamily)
-                    Spacer(modifier = Modifier.height(16.dp))
-                    OutlinedTextField(
-                        value = customName,
-                        onValueChange = { customName = it },
-                        label = { Text("Subscription Name", color = TextSecondary, fontFamily = SoraFamily) },
-                        colors = OutlinedTextFieldDefaults.colors(
-                            focusedBorderColor = PrimaryCyan,
-                            unfocusedBorderColor = BorderGlass,
-                            focusedTextColor = Color.White,
-                            unfocusedTextColor = Color.White
-                        ),
-                        textStyle = TextStyle(fontFamily = SoraFamily),
-                        modifier = Modifier.fillMaxWidth(),
-                        singleLine = true
-                    )
-                    Spacer(modifier = Modifier.height(24.dp))
-                    Button(
-                        onClick = {
-                            if (isButtonEnabled) {
-                                onRenameSubGroup(renamingSubKey!!, customName)
-                            }
-                            renamingSubKey = null
-                        },
-                        enabled = isButtonEnabled,
-                        modifier = Modifier.fillMaxWidth().height(56.dp),
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = PrimaryCyan,
-                            disabledContainerColor = SurfaceGlass
-                        ),
-                        shape = RoundedCornerShape(16.dp),
-                        border = if (isButtonEnabled) null else androidx.compose.foundation.BorderStroke(1.dp, BorderGlass)
-                    ) {
-                        Text(
-                            "Apply", 
-                            color = if (isButtonEnabled) BackgroundDark else TextSecondary, 
-                            fontSize = 16.sp, 
-                            fontWeight = FontWeight.Bold, 
-                            fontFamily = SoraFamily
+            CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(24.dp))
+                        .background(SurfaceMenu)
+                        .border(1.dp, BorderGlass, RoundedCornerShape(24.dp))
+                        .padding(24.dp)
+                ) {
+                    Column {
+                        Text("Rename Subscription", color = Color.White, fontSize = 18.sp, fontWeight = FontWeight.Bold, fontFamily = SoraFamily)
+                        Spacer(modifier = Modifier.height(16.dp))
+                        OutlinedTextField(
+                            value = customName,
+                            onValueChange = { customName = it },
+                            label = { Text("Subscription Name", color = TextSecondary, fontFamily = SoraFamily) },
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedBorderColor = PrimaryCyan,
+                                unfocusedBorderColor = BorderGlass,
+                                focusedTextColor = Color.White,
+                                unfocusedTextColor = Color.White
+                            ),
+                            textStyle = TextStyle(fontFamily = SoraFamily, textDirection = TextDirection.Ltr),
+                            modifier = Modifier.fillMaxWidth(),
+                            singleLine = true
                         )
+                        Spacer(modifier = Modifier.height(24.dp))
+                        Button(
+                            onClick = {
+                                if (isButtonEnabled) {
+                                    onRenameSubGroup(renamingSubKey!!, customName)
+                                }
+                                renamingSubKey = null
+                            },
+                            enabled = isButtonEnabled,
+                            modifier = Modifier.fillMaxWidth().height(56.dp),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = PrimaryCyan,
+                                disabledContainerColor = SurfaceGlass
+                            ),
+                            shape = RoundedCornerShape(16.dp),
+                            border = if (isButtonEnabled) null else androidx.compose.foundation.BorderStroke(1.dp, BorderGlass)
+                        ) {
+                            Text(
+                                "Apply", 
+                                color = if (isButtonEnabled) BackgroundDark else TextSecondary, 
+                                fontSize = 16.sp, 
+                                fontWeight = FontWeight.Bold, 
+                                fontFamily = SoraFamily
+                            )
+                        }
                     }
                 }
             }

@@ -2,6 +2,7 @@ package dev.rouzbeh.hybridvpn.core.vpn.wireguard
 
 import java.net.URLDecoder
 import java.net.URLEncoder
+import java.util.Locale
 
 /**
  * Parsed representation of a WireGuard client configuration.
@@ -192,7 +193,7 @@ object WireGuardConfig {
                 if (eq != -1) {
                     val rawKey = part.substring(0, eq)
                     val rawVal = part.substring(eq + 1)
-                    val k = runCatching { URLDecoder.decode(rawKey, "UTF-8") }.getOrDefault(rawKey).trim().lowercase()
+                    val k = runCatching { URLDecoder.decode(rawKey, "UTF-8") }.getOrDefault(rawKey).trim().lowercase(Locale.ROOT)
                     val v = runCatching { URLDecoder.decode(rawVal, "UTF-8") }.getOrDefault(rawVal).trim()
                     queryParams[k] = v
                 }
@@ -293,7 +294,7 @@ object WireGuardConfig {
             if (trimmed.startsWith("#") || trimmed.startsWith(";")) {
                 val commentContent = trimmed.substring(1).trim()
                 if (remark == null && commentContent.isNotEmpty()) {
-                    val lower = commentContent.lowercase()
+                    val lower = commentContent.lowercase(Locale.ROOT)
                     if (lower.startsWith("name") || lower.startsWith("remark") || lower.startsWith("title")) {
                         val candidate = commentContent.substringAfter('=').substringAfter(':').trim()
                         if (candidate.isNotEmpty()) remark = candidate
@@ -306,13 +307,13 @@ object WireGuardConfig {
 
             // Section header
             if (trimmed.startsWith("[") && trimmed.endsWith("]")) {
-                currentSection = trimmed.substring(1, trimmed.length - 1).trim().lowercase()
+                currentSection = trimmed.substring(1, trimmed.length - 1).trim().lowercase(Locale.ROOT)
                 continue
             }
 
             val eqIndex = trimmed.indexOf('=')
             if (eqIndex == -1) continue
-            val key = trimmed.substring(0, eqIndex).trim().lowercase()
+            val key = trimmed.substring(0, eqIndex).trim().lowercase(Locale.ROOT)
             val value = trimmed.substring(eqIndex + 1).trim()
             if (value.isEmpty()) continue
 

@@ -20,6 +20,7 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         installSplashScreen()
         super.onCreate(savedInstanceState)
+        window.decorView.layoutDirection = android.view.View.LAYOUT_DIRECTION_LTR
         enableEdgeToEdge()
         setContent {
             OpenNestTheme {
