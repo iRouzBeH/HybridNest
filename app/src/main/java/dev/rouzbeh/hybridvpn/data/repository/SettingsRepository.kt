@@ -266,6 +266,17 @@ class SettingsRepository(context: Context) {
         syncRuntimeSettings()
     }
 
+    fun addBypassedDomain(domain: String) {
+        val entries = parseAndNormalizeDomainEntries(domain)
+        if (entries.isNotEmpty()) {
+            setBypassedDomains(getBypassedDomains() + entries)
+        }
+    }
+
+    fun removeBypassedDomain(domain: String) {
+        setBypassedDomains(getBypassedDomains() - domain)
+    }
+
     fun isAllowLanHotspotEnabled(): Boolean =
         prefs.getBoolean(KEY_ALLOW_LAN_HOTSPOT, false)
 
@@ -320,21 +331,9 @@ class SettingsRepository(context: Context) {
             val candidateTokens = mutableListOf<String>()
 
             for (token in initialTokens) {
-                val isComplexUrl = token.contains("://") ||
-                    token.startsWith("www.google.", ignoreCase = true) ||
-                    token.startsWith("google.", ignoreCase = true)
-
-                if (isComplexUrl) {
+                if (token.startsWith("regexp:", ignoreCase = true)) {
                     val clean = token.trim().trimEnd(',')
-                    if (clean.contains(",http://", ignoreCase = true) || clean.contains(",https://", ignoreCase = true)) {
-                        val splitUrls = clean.split(Regex(",(?=https?://)", RegexOption.IGNORE_CASE))
-                        for (u in splitUrls) {
-                            val cu = u.trim().trimEnd(',')
-                            if (cu.isNotBlank()) candidateTokens.add(cu)
-                        }
-                    } else {
-                        if (clean.isNotBlank()) candidateTokens.add(clean)
-                    }
+                    if (clean.isNotBlank()) candidateTokens.add(clean)
                 } else {
                     val subTokens = token.split(',').map { it.trim() }.filter { it.isNotBlank() }
                     candidateTokens.addAll(subTokens)
@@ -374,22 +373,35 @@ class SettingsRepository(context: Context) {
                 }
             }
 
+            // Optional percent-decode for direct URL-encoded inputs (e.g. https%3A%2F%2F...)
+            if (s.contains('%')) {
+                s = try {
+                    URLDecoder.decode(s, "UTF-8")
+                } catch (_: Exception) {
+                    s
+                }
+            }
+
             // 2. Google Redirect URL Extraction
             val googleCandidate = s.replace(Regex("^[a-zA-Z][a-zA-Z0-9+.-]*://"), "")
             if (googleCandidate.contains('?')) {
                 val beforeQuery = googleCandidate.substringBefore('?')
                 val query = googleCandidate.substringAfter('?')
                 if (beforeQuery.contains('/')) {
-                    val host = beforeQuery.substringBefore('/').lowercase(Locale.ROOT)
-                    val path = "/" + beforeQuery.substringAfter('/')
+                    val rawHost = beforeQuery.substringBefore('/')
+                    val hostWithoutCreds = if (rawHost.contains('@')) rawHost.substringAfterLast('@') else rawHost
+                    val host = (if (hostWithoutCreds.contains(':')) hostWithoutCreds.substringBefore(':') else hostWithoutCreds).lowercase(Locale.ROOT)
+                    val path = "/" + beforeQuery.substringAfter('/').trim('/')
+
                     val isGoogleHost = host == "google.com" ||
                         host == "www.google.com" ||
                         host.startsWith("google.") ||
                         host.startsWith("www.google.") ||
                         host.contains(".google.")
 
-                    if (isGoogleHost && (path == "/url" || path == "/url/")) {
-                        val params = query.substringBefore('#').split('&').mapNotNull { param ->
+                    if (isGoogleHost && path == "/url") {
+                        val cleanQuery = query.substringBefore('#').replace("&amp;", "&")
+                        val params = cleanQuery.split('&').mapNotNull { param ->
                             val eq = param.indexOf('=')
                             if (eq != -1) {
                                 val k = param.substring(0, eq).trim()
@@ -403,10 +415,17 @@ class SettingsRepository(context: Context) {
                         if (rawTarget.isNullOrBlank()) {
                             return "" // Reject: Google redirect link missing target URL
                         }
-                        val decodedTarget = try {
+                        var decodedTarget = try {
                             URLDecoder.decode(rawTarget, "UTF-8")
                         } catch (_: Exception) {
                             rawTarget
+                        }
+                        if (decodedTarget.contains('%')) {
+                            decodedTarget = try {
+                                URLDecoder.decode(decodedTarget, "UTF-8")
+                            } catch (_: Exception) {
+                                decodedTarget
+                            }
                         }
                         return normalizeDomainEntryInternal(decodedTarget, depth + 1)
                     }
@@ -439,7 +458,7 @@ class SettingsRepository(context: Context) {
             // 8. Leading dot & www. prefix handling
             val hasLeadingDot = s.startsWith('.')
             var coreDomain = s.trimStart('.')
-            if (coreDomain.startsWith("www.")) {
+            if (coreDomain.startsWith("www.") && coreDomain.substringAfter("www.").contains('.')) {
                 coreDomain = coreDomain.removePrefix("www.")
             }
             coreDomain = coreDomain.trim()
@@ -453,7 +472,7 @@ class SettingsRepository(context: Context) {
             }
 
             // 10. Strict domain validation
-            if (asciiDomain.isEmpty() || asciiDomain.any { it.isWhitespace() || it.isISOControl() }) {
+            if (asciiDomain.isEmpty() || asciiDomain.length > 253 || asciiDomain.any { it.isWhitespace() || it.isISOControl() }) {
                 return ""
             }
 
