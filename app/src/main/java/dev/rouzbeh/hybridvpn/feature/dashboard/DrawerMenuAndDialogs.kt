@@ -31,6 +31,9 @@ import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.defaultMinSize
@@ -114,8 +117,6 @@ import dev.rouzbeh.hybridvpn.core.designsystem.TextSecondary
 import dev.rouzbeh.hybridvpn.core.vpn.v2ray.V2raySettings
 import dev.rouzbeh.hybridvpn.data.repository.SettingsRepository
 import dev.rouzbeh.hybridvpn.service.ConnectionState
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.launch
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
@@ -1131,11 +1132,11 @@ fun detectHotspotOrLanIp(): String {
     return "192.168.43.1"
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
-fun FeaturesDialog(
+fun FeaturesFullScreen(
     onDismiss: () -> Unit,
     viewModel: DashboardViewModel,
-    onOpenPerAppRouting: () -> Unit = {},
     connectionState: ConnectionState = ConnectionState.DISCONNECTED,
     onShowConnectionWarning: (String) -> Unit = {}
 ) {
@@ -1153,57 +1154,42 @@ fun FeaturesDialog(
     var strictRedaction by remember { mutableStateOf(settings.isStrictLogRedactionEnabled()) }
     var showExportWarningDialog by remember { mutableStateOf(false) }
 
-    DialogShell(
-        onDismiss = onDismiss,
-        title = "Features & Diagnostics",
-        subtitle = "Domain Bypass, Hotspot, Reachability & Backup"
-    ) {
-        // 1. Domain Bypass (Direct Sites)
-        SettingSectionHeader("Domain Bypass (Direct Sites)")
-        Text(
-            text = "Directly route traffic outside the VPN tunnel for Iranian websites, local banking, or custom domains.",
-            color = TextSecondary,
-            fontSize = 11.sp,
-            fontFamily = SoraFamily,
-            lineHeight = 15.sp
-        )
-        Spacer(modifier = Modifier.height(10.dp))
+    var detectedIp by remember { mutableStateOf(detectHotspotOrLanIp()) }
+    var localToastMessage by remember { mutableStateOf<String?>(null) }
 
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            OutlinedTextField(
-                value = domainInput,
-                onValueChange = { domainInput = it },
-                placeholder = { Text("e.g. .ir, shaparak.ir", color = TextSecondary, fontSize = 12.sp, fontFamily = SoraFamily) },
-                singleLine = true,
-                colors = OutlinedTextFieldDefaults.colors(
-                    focusedBorderColor = PrimaryCyan,
-                    unfocusedBorderColor = BorderGlass,
-                    focusedTextColor = Color.White,
-                    unfocusedTextColor = Color.White,
-                    focusedContainerColor = SurfaceDark,
-                    unfocusedContainerColor = SurfaceDark
-                ),
-                shape = RoundedCornerShape(10.dp),
-                textStyle = TextStyle(fontFamily = SoraFamily, fontSize = 12.sp, textDirection = androidx.compose.ui.text.style.TextDirection.Ltr),
-                modifier = Modifier
-                    .weight(1f)
-                    .height(48.dp)
-            )
-            Spacer(modifier = Modifier.width(8.dp))
-            Button(
-                onClick = {
+    LaunchedEffect(localToastMessage) {
+        if (localToastMessage != null) {
+            delay(2500L)
+            localToastMessage = null
+        }
+    }
+
+    LaunchedEffect(Unit) {
+        viewModel.toastMessage.collect { msg ->
+            // Avoid duplicate toast on screen exit when notifySettingsSaved emits
+            if (!msg.contains("saved", ignoreCase = true)) {
+                localToastMessage = msg
+            }
+        }
+    }
+
+    SettingsFullScreenScaffold(
+        title = "Features & Diagnostics",
+        subtitle = "Domain bypass, LAN sharing, privacy & backup",
+        iconVector = Icons.Default.Tune,
+        onBack = onDismiss,
+        toastMessage = localToastMessage,
+        bottomBar = {
+            SettingsActionFooter(
+                onReset = {
                     when (ConnectionLockGuard.evaluateControlTap(connectionState)) {
                         LockActionOutcome.ALLOW -> {
-                            val entries = SettingsRepository.parseAndNormalizeDomainEntries(domainInput)
-                            if (entries.isNotEmpty()) {
-                                bypassedDomains = bypassedDomains + entries
-                                domainInput = ""
-                            } else if (domainInput.isNotBlank()) {
-                                viewModel.showDashboardToast("Invalid domain format")
-                            }
+                            connectivityCheck = true
+                            pingUrl = "https://www.google.com/generate_204"
+                            subUa = "v2rayNG/1.8.23"
+                            strictRedaction = true
+                            bypassedDomains = emptySet()
+                            allowLanHotspot = false
                         }
                         LockActionOutcome.SHOW_LOCK_WARNING -> {
                             onShowConnectionWarning("Cannot modify settings while VPN is connected. Please disconnect your active connection and try again.\n\nWould you like to disconnect now?")
@@ -1211,576 +1197,668 @@ fun FeaturesDialog(
                         LockActionOutcome.IGNORE_WHILE_DISCONNECTING -> Unit
                     }
                 },
-                colors = ButtonDefaults.buttonColors(containerColor = PrimaryCyan),
-                shape = RoundedCornerShape(10.dp),
-                modifier = Modifier.height(48.dp)
+                onCancel = onDismiss,
+                onSave = {
+                    when (ConnectionLockGuard.evaluateControlTap(connectionState)) {
+                        LockActionOutcome.ALLOW -> {
+                            settings.setConnectivityCheckEnabled(connectivityCheck)
+                            settings.setPingTestUrl(pingUrl.trim().ifBlank { "https://www.google.com/generate_204" })
+                            settings.setSubUserAgent(subUa.trim().ifBlank { "v2rayNG/1.8.23" })
+                            settings.setStrictLogRedactionEnabled(strictRedaction)
+                            settings.setBypassedDomains(bypassedDomains)
+                            settings.setAllowLanHotspotEnabled(allowLanHotspot)
+                            viewModel.notifySettingsSaved("Features")
+                            onDismiss()
+                        }
+                        LockActionOutcome.SHOW_LOCK_WARNING -> {
+                            onShowConnectionWarning("Cannot modify settings while VPN is connected. Please disconnect your active connection and try again.\n\nWould you like to disconnect now?")
+                        }
+                        LockActionOutcome.IGNORE_WHILE_DISCONNECTING -> Unit
+                    }
+                }
+            )
+        }
+    ) {
+        // Section 1 — Domain Bypass (Direct Sites)
+        SettingsSectionCard(
+            title = "Domain Bypass (Direct Sites)",
+            subtitle = "Route traffic outside the VPN tunnel (Domestic DNS)"
+        ) {
+            Text(
+                text = "Domains added here will bypass the VPN tunnel entirely. Useful for local Iranian (.ir) services, banking, or domestic intranet resources.",
+                color = Color(0xFF94A3B8),
+                fontSize = 12.sp,
+                fontFamily = SoraFamily,
+                lineHeight = 17.sp
+            )
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
             ) {
+                OutlinedTextField(
+                    value = domainInput,
+                    onValueChange = { domainInput = it },
+                    placeholder = {
+                        Text(
+                            text = "example.com, .ir",
+                            color = Color(0xFF64748B),
+                            fontSize = 13.sp,
+                            fontFamily = SoraFamily
+                        )
+                    },
+                    singleLine = true,
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedBorderColor = PrimaryCyan,
+                        unfocusedBorderColor = Color.White.copy(alpha = 0.12f),
+                        focusedTextColor = Color.White,
+                        unfocusedTextColor = Color.White,
+                        cursorColor = PrimaryCyan,
+                        focusedContainerColor = Color.White.copy(alpha = 0.02f),
+                        unfocusedContainerColor = Color.Transparent
+                    ),
+                    shape = RoundedCornerShape(12.dp),
+                    textStyle = TextStyle(
+                        fontFamily = SoraFamily,
+                        fontSize = 13.sp,
+                        textDirection = TextDirection.Ltr
+                    ),
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(52.dp)
+                )
+                Spacer(modifier = Modifier.width(10.dp))
+                Button(
+                    onClick = {
+                        when (ConnectionLockGuard.evaluateControlTap(connectionState)) {
+                            LockActionOutcome.ALLOW -> {
+                                val entries = SettingsRepository.parseAndNormalizeDomainEntries(domainInput)
+                                if (entries.isNotEmpty()) {
+                                    bypassedDomains = bypassedDomains + entries
+                                    domainInput = ""
+                                } else if (domainInput.isNotBlank()) {
+                                    localToastMessage = "Invalid domain format"
+                                }
+                            }
+                            LockActionOutcome.SHOW_LOCK_WARNING -> {
+                                onShowConnectionWarning("Cannot modify settings while VPN is connected. Please disconnect your active connection and try again.\n\nWould you like to disconnect now?")
+                            }
+                            LockActionOutcome.IGNORE_WHILE_DISCONNECTING -> Unit
+                        }
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = PrimaryCyan),
+                    shape = RoundedCornerShape(12.dp),
+                    contentPadding = PaddingValues(horizontal = 18.dp, vertical = 0.dp),
+                    modifier = Modifier.height(52.dp)
+                ) {
+                    Text(
+                        text = "Add",
+                        color = BackgroundDark,
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.Bold,
+                        fontFamily = SoraFamily
+                    )
+                }
+            }
+
+            // Preset Chips
+            val presetDomains = listOf("+ .ir" to ".ir")
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                presetDomains.forEach { (label, domain) ->
+                    val isAdded = bypassedDomains.contains(domain)
+                    Box(
+                        modifier = Modifier
+                            .defaultMinSize(minHeight = 32.dp)
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(
+                                if (isAdded) PrimaryCyan.copy(alpha = 0.18f)
+                                else Color.White.copy(alpha = 0.04f)
+                            )
+                            .border(
+                                1.dp,
+                                if (isAdded) PrimaryCyan else Color.White.copy(alpha = 0.08f),
+                                RoundedCornerShape(10.dp)
+                            )
+                            .clickable {
+                                when (ConnectionLockGuard.evaluateControlTap(connectionState)) {
+                                    LockActionOutcome.ALLOW -> {
+                                        bypassedDomains = if (isAdded) {
+                                            bypassedDomains - domain
+                                        } else {
+                                            bypassedDomains + domain
+                                        }
+                                    }
+                                    LockActionOutcome.SHOW_LOCK_WARNING -> {
+                                        onShowConnectionWarning("Cannot modify settings while VPN is connected. Please disconnect your active connection and try again.\n\nWould you like to disconnect now?")
+                                    }
+                                    LockActionOutcome.IGNORE_WHILE_DISCONNECTING -> Unit
+                                }
+                            }
+                            .padding(horizontal = 12.dp, vertical = 6.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = if (isAdded) "✓ $domain" else label,
+                            color = if (isAdded) PrimaryCyan else Color(0xFFCBD5E1),
+                            fontSize = 12.sp,
+                            fontWeight = if (isAdded) FontWeight.Bold else FontWeight.Medium,
+                            fontFamily = SoraFamily
+                        )
+                    }
+                }
+            }
+
+            // Active Bypassed Domain Chips
+            if (bypassedDomains.isEmpty()) {
                 Text(
-                    text = "Add",
-                    color = BackgroundDark,
+                    text = "No custom domains bypassed. All traffic routes through VPN tunnel.",
+                    color = Color(0xFF64748B),
                     fontSize = 12.sp,
-                    fontWeight = FontWeight.Bold,
+                    fontFamily = SoraFamily,
+                    modifier = Modifier.padding(vertical = 4.dp)
+                )
+            } else {
+                FlowRow(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    bypassedDomains.sorted().forEach { domain ->
+                        Box(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(10.dp))
+                                .background(PrimaryCyan.copy(alpha = 0.08f))
+                                .border(1.dp, PrimaryCyan.copy(alpha = 0.35f), RoundedCornerShape(10.dp))
+                                .padding(start = 10.dp, end = 6.dp, top = 6.dp, bottom = 6.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                Text(
+                                    text = domain,
+                                    color = Color.White,
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    fontFamily = SoraFamily
+                                )
+                                Box(
+                                    modifier = Modifier
+                                        .size(20.dp)
+                                        .clip(CircleShape)
+                                        .background(Color.White.copy(alpha = 0.08f))
+                                        .clickable {
+                                            when (ConnectionLockGuard.evaluateControlTap(connectionState)) {
+                                                LockActionOutcome.ALLOW -> {
+                                                    bypassedDomains = bypassedDomains - domain
+                                                }
+                                                LockActionOutcome.SHOW_LOCK_WARNING -> {
+                                                    onShowConnectionWarning("Cannot modify settings while VPN is connected. Please disconnect your active connection and try again.\n\nWould you like to disconnect now?")
+                                                }
+                                                LockActionOutcome.IGNORE_WHILE_DISCONNECTING -> Unit
+                                            }
+                                        },
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Close,
+                                        contentDescription = "Remove $domain",
+                                        tint = Color(0xFFCBD5E1),
+                                        modifier = Modifier.size(12.dp)
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Section 2 — Hotspot & LAN VPN Sharing
+        SettingsSectionCard(
+            title = "Hotspot & LAN Sharing",
+            subtitle = "Bind proxy inbounds to 0.0.0.0 instead of 127.0.0.1"
+        ) {
+            SettingsToggleRow(
+                title = "Share VPN over Hotspot / LAN",
+                description = "Listen on all local network interfaces so other devices connected to your hotspot can route through this VPN.",
+                checked = allowLanHotspot,
+                onCheckedChange = { allowLanHotspot = it }
+            )
+
+            // Connection Guide (No Root Required) sub-card
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(16.dp))
+                    .background(Color.White.copy(alpha = 0.03f))
+                    .border(1.dp, Color.White.copy(alpha = 0.08f), RoundedCornerShape(16.dp))
+                    .padding(16.dp)
+            ) {
+                Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
+                    Column {
+                        Text(
+                            text = "Connection Guide (No Root Required)",
+                            color = PrimaryCyan,
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.Bold,
+                            fontFamily = SoraFamily
+                        )
+                        Spacer(modifier = Modifier.height(2.dp))
+                        Text(
+                            text = "Route secondary devices (PC, laptop, console, phone) through your active VPN without root.",
+                            color = Color(0xFF94A3B8),
+                            fontSize = 12.sp,
+                            fontFamily = SoraFamily,
+                            lineHeight = 16.sp
+                        )
+                    }
+
+                    // Proxy Host IP Row
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(Color(0xFF070D18))
+                            .border(1.dp, Color.White.copy(alpha = 0.08f), RoundedCornerShape(12.dp))
+                            .padding(horizontal = 14.dp, vertical = 10.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = "Proxy Host IP",
+                                    color = Color(0xFF94A3B8),
+                                    fontSize = 11.sp,
+                                    fontFamily = SoraFamily
+                                )
+                                Spacer(modifier = Modifier.height(2.dp))
+                                Text(
+                                    text = detectedIp,
+                                    color = Color.White,
+                                    fontSize = 15.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    fontFamily = SoraFamily,
+                                    style = TextStyle(textDirection = TextDirection.Ltr)
+                                )
+                            }
+
+                            Row(
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                // Refresh Button
+                                Box(
+                                    modifier = Modifier
+                                        .size(34.dp)
+                                        .clip(RoundedCornerShape(10.dp))
+                                        .background(Color.White.copy(alpha = 0.05f))
+                                        .border(1.dp, Color.White.copy(alpha = 0.10f), RoundedCornerShape(10.dp))
+                                        .clickable {
+                                            detectedIp = detectHotspotOrLanIp()
+                                            localToastMessage = "Detected IP: $detectedIp"
+                                        },
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Refresh,
+                                        contentDescription = "Refresh IP",
+                                        tint = PrimaryCyan,
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                }
+
+                                // Copy IP Button
+                                Button(
+                                    onClick = {
+                                        clipboardManager.setText(AnnotatedString(detectedIp))
+                                        localToastMessage = "IP copied: $detectedIp"
+                                    },
+                                    colors = ButtonDefaults.buttonColors(containerColor = PrimaryCyan),
+                                    shape = RoundedCornerShape(10.dp),
+                                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp),
+                                    modifier = Modifier.height(34.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.ContentCopy,
+                                        contentDescription = null,
+                                        tint = BackgroundDark,
+                                        modifier = Modifier.size(14.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Text(
+                                        text = "Copy IP",
+                                        color = BackgroundDark,
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        fontFamily = SoraFamily
+                                    )
+                                }
+                            }
+                        }
+                    }
+
+                    // 2-column Port Cards
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        // HTTP Proxy Port
+                        Box(
+                            modifier = Modifier
+                                .weight(1f)
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(Color(0xFF070D18))
+                                .border(1.dp, Color.White.copy(alpha = 0.08f), RoundedCornerShape(12.dp))
+                                .padding(12.dp)
+                        ) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Column {
+                                    Text(
+                                        text = "HTTP Proxy",
+                                        color = Color(0xFF94A3B8),
+                                        fontSize = 11.sp,
+                                        fontFamily = SoraFamily
+                                    )
+                                    Spacer(modifier = Modifier.height(2.dp))
+                                    Text(
+                                        text = "10809",
+                                        color = PrimaryCyan,
+                                        fontSize = 15.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        fontFamily = SoraFamily
+                                    )
+                                }
+                                Box(
+                                    modifier = Modifier
+                                        .size(30.dp)
+                                        .clip(RoundedCornerShape(8.dp))
+                                        .background(Color.White.copy(alpha = 0.05f))
+                                        .border(1.dp, Color.White.copy(alpha = 0.10f), RoundedCornerShape(8.dp))
+                                        .clickable {
+                                            clipboardManager.setText(AnnotatedString("10809"))
+                                            localToastMessage = "HTTP Port copied: 10809"
+                                        },
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.ContentCopy,
+                                        contentDescription = "Copy HTTP Port",
+                                        tint = PrimaryCyan,
+                                        modifier = Modifier.size(14.dp)
+                                    )
+                                }
+                            }
+                        }
+
+                        // SOCKS5 Port
+                        Box(
+                            modifier = Modifier
+                                .weight(1f)
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(Color(0xFF070D18))
+                                .border(1.dp, Color.White.copy(alpha = 0.08f), RoundedCornerShape(12.dp))
+                                .padding(12.dp)
+                        ) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Column {
+                                    Text(
+                                        text = "SOCKS5 Proxy",
+                                        color = Color(0xFF94A3B8),
+                                        fontSize = 11.sp,
+                                        fontFamily = SoraFamily
+                                    )
+                                    Spacer(modifier = Modifier.height(2.dp))
+                                    Text(
+                                        text = "10808",
+                                        color = PrimaryCyan,
+                                        fontSize = 15.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        fontFamily = SoraFamily
+                                    )
+                                }
+                                Box(
+                                    modifier = Modifier
+                                        .size(30.dp)
+                                        .clip(RoundedCornerShape(8.dp))
+                                        .background(Color.White.copy(alpha = 0.05f))
+                                        .border(1.dp, Color.White.copy(alpha = 0.10f), RoundedCornerShape(8.dp))
+                                        .clickable {
+                                            clipboardManager.setText(AnnotatedString("10808"))
+                                            localToastMessage = "SOCKS5 Port copied: 10808"
+                                        },
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.ContentCopy,
+                                        contentDescription = "Copy SOCKS5 Port",
+                                        tint = PrimaryCyan,
+                                        modifier = Modifier.size(14.dp)
+                                    )
+                                }
+                            }
+                        }
+                    }
+
+                    // 4-step numbered guide
+                    Column(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Text(
+                            text = "How to connect other devices:",
+                            color = Color.White,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            fontFamily = SoraFamily
+                        )
+                        GuideStepItem(number = "1", text = "Enable \"Share VPN over Hotspot / LAN\" above, save, and connect the VPN.")
+                        GuideStepItem(number = "2", text = "Turn on your phone's Wi-Fi Hotspot.")
+                        GuideStepItem(number = "3", text = "On the other phone or laptop, open Wi-Fi settings for your hotspot -> Proxy -> Manual.")
+                        GuideStepItem(number = "4", text = "Enter Hostname: $detectedIp and Port: 10809, then save.")
+                    }
+                }
+            }
+        }
+
+        // Section 3 — Connectivity & Delay Diagnostics
+        SettingsSectionCard(
+            title = "Connectivity Diagnostics",
+            subtitle = "Public internet reachability & delay testing"
+        ) {
+            SettingsToggleRow(
+                title = "Post-Connect Reachability Check",
+                description = "Run non-fatal diagnostics after tunnel connects to verify public internet reachability.",
+                checked = connectivityCheck,
+                onCheckedChange = { connectivityCheck = it }
+            )
+
+            HorizontalDivider(
+                thickness = 1.dp,
+                color = Color.White.copy(alpha = 0.06f)
+            )
+
+            SettingsTextFieldWithPresets(
+                value = pingUrl,
+                onValueChange = { pingUrl = it },
+                label = "Real-Delay (Ping) Test URL",
+                caption = "HTTP 204 endpoint used to measure tunnel round-trip latency",
+                presets = listOf(
+                    "Google 204" to "https://www.google.com/generate_204",
+                    "Cloudflare 204" to "http://cp.cloudflare.com/generate_204",
+                    "Gstatic 204" to "http://www.gstatic.com/generate_204"
+                )
+            )
+        }
+
+        // Section 4 — Subscription Client
+        SettingsSectionCard(
+            title = "Subscription Client",
+            subtitle = "Subscription update identification header"
+        ) {
+            SettingsTextFieldWithPresets(
+                value = subUa,
+                onValueChange = { subUa = it },
+                label = "Subscription User-Agent",
+                caption = "HTTP User-Agent header sent when fetching subscription nodes",
+                presets = listOf(
+                    "v2rayNG/1.8.23" to "v2rayNG/1.8.23",
+                    "HybridNest/1.0" to "HybridNest/1.0",
+                    "Clash.Meta" to "Clash.Meta"
+                )
+            )
+        }
+
+        // Section 5 — Privacy & Logs
+        SettingsSectionCard(
+            title = "Privacy & Logs",
+            subtitle = "Security redaction and session log buffers"
+        ) {
+            SettingsToggleRow(
+                title = "Strict Log Redaction",
+                description = "Automatically mask credentials, session cookies, and private keys in Live Logs and logcat.",
+                checked = strictRedaction,
+                onCheckedChange = { strictRedaction = it }
+            )
+
+            HorizontalDivider(
+                thickness = 1.dp,
+                color = Color.White.copy(alpha = 0.06f)
+            )
+
+            Button(
+                onClick = {
+                    viewModel.clearAllProtocolLogs()
+                    localToastMessage = "All logs cleared"
+                },
+                colors = ButtonDefaults.buttonColors(containerColor = Color.White.copy(alpha = 0.04f)),
+                border = BorderStroke(1.dp, Color.White.copy(alpha = 0.10f)),
+                shape = RoundedCornerShape(12.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(44.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.Default.DeleteOutline,
+                    contentDescription = null,
+                    tint = Color(0xFFCBD5E1),
+                    modifier = Modifier.size(18.dp)
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(
+                    text = "Clear All Protocol Logs",
+                    color = Color(0xFFCBD5E1),
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.Medium,
                     fontFamily = SoraFamily
                 )
             }
         }
 
-        Spacer(modifier = Modifier.height(8.dp))
-
-        // Preset Chips
-        val presetDomains = listOf(
-            "+ .ir" to ".ir"
-        )
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .horizontalScroll(rememberScrollState()),
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        // Section 6 — Backup & Restore All Profiles
+        SettingsSectionCard(
+            title = "Backup & Restore",
+            subtitle = "Export or restore all saved protocol profiles"
         ) {
-            presetDomains.forEach { (label, domain) ->
-                val isAdded = bypassedDomains.contains(domain)
-                Box(
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(8.dp))
-                        .background(if (isAdded) PrimaryCyan.copy(alpha = 0.18f) else SurfaceGlass)
-                        .border(1.dp, if (isAdded) PrimaryCyan else BorderGlass, RoundedCornerShape(8.dp))
-                        .clickable {
-                            when (ConnectionLockGuard.evaluateControlTap(connectionState)) {
-                                LockActionOutcome.ALLOW -> {
-                                    bypassedDomains = if (isAdded) {
-                                        bypassedDomains - domain
-                                    } else {
-                                        bypassedDomains + domain
-                                    }
-                                }
-                                LockActionOutcome.SHOW_LOCK_WARNING -> {
-                                    onShowConnectionWarning("Cannot modify settings while VPN is connected. Please disconnect your active connection and try again.\n\nWould you like to disconnect now?")
-                                }
-                                LockActionOutcome.IGNORE_WHILE_DISCONNECTING -> Unit
+            Text(
+                text = "Backup covers all saved AnyConnect, WireGuard, and v2rayNG profiles as plaintext JSON.",
+                color = Color(0xFF94A3B8),
+                fontSize = 12.sp,
+                fontFamily = SoraFamily,
+                lineHeight = 17.sp
+            )
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Button(
+                    onClick = {
+                        when (ConnectionLockGuard.evaluateControlTap(connectionState)) {
+                            LockActionOutcome.ALLOW -> {
+                                showExportWarningDialog = true
                             }
+                            LockActionOutcome.SHOW_LOCK_WARNING -> {
+                                onShowConnectionWarning("Cannot modify settings while VPN is connected. Please disconnect your active connection and try again.\n\nWould you like to disconnect now?")
+                            }
+                            LockActionOutcome.IGNORE_WHILE_DISCONNECTING -> Unit
                         }
-                        .padding(horizontal = 10.dp, vertical = 6.dp),
-                    contentAlignment = Alignment.Center
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = Color.White.copy(alpha = 0.04f)),
+                    border = BorderStroke(1.dp, Color.White.copy(alpha = 0.10f)),
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(44.dp)
                 ) {
+                    Icon(
+                        imageVector = Icons.Default.ContentCopy,
+                        contentDescription = null,
+                        tint = PrimaryCyan,
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
                     Text(
-                        text = if (isAdded) "✓ $domain" else label,
-                        color = if (isAdded) PrimaryCyan else TextSecondary,
-                        fontSize = 11.sp,
-                        fontWeight = if (isAdded) FontWeight.Bold else FontWeight.Medium,
+                        text = "Export",
+                        color = Color.White,
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.Medium,
+                        fontFamily = SoraFamily
+                    )
+                }
+
+                Button(
+                    onClick = {
+                        when (ConnectionLockGuard.evaluateControlTap(connectionState)) {
+                            LockActionOutcome.ALLOW -> {
+                                val text = clipboardManager.getText()?.text ?: ""
+                                viewModel.restoreProfilesFromBackupJson(text)
+                            }
+                            LockActionOutcome.SHOW_LOCK_WARNING -> {
+                                onShowConnectionWarning("Cannot modify settings while VPN is connected. Please disconnect your active connection and try again.\n\nWould you like to disconnect now?")
+                            }
+                            LockActionOutcome.IGNORE_WHILE_DISCONNECTING -> Unit
+                        }
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = Color.White.copy(alpha = 0.04f)),
+                    border = BorderStroke(1.dp, Color.White.copy(alpha = 0.10f)),
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(44.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.ContentPaste,
+                        contentDescription = null,
+                        tint = PrimaryCyan,
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(
+                        text = "Restore",
+                        color = Color.White,
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.Medium,
                         fontFamily = SoraFamily
                     )
                 }
             }
         }
-
-        Spacer(modifier = Modifier.height(8.dp))
-
-        // Active Bypassed Domains
-        if (bypassedDomains.isEmpty()) {
-            Text(
-                text = "No custom domains bypassed. All traffic routes through VPN tunnel.",
-                color = TextSecondary.copy(alpha = 0.7f),
-                fontSize = 11.sp,
-                fontFamily = SoraFamily
-            )
-        } else {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .horizontalScroll(rememberScrollState()),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                bypassedDomains.sorted().forEach { domain ->
-                    Box(
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(8.dp))
-                            .background(SurfaceGlass)
-                            .border(1.dp, PrimaryCyan.copy(alpha = 0.6f), RoundedCornerShape(8.dp))
-                            .padding(horizontal = 8.dp, vertical = 4.dp),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text(
-                                text = domain,
-                                color = Color.White,
-                                fontSize = 11.sp,
-                                fontWeight = FontWeight.SemiBold,
-                                fontFamily = SoraFamily
-                            )
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Icon(
-                                imageVector = Icons.Default.Close,
-                                contentDescription = "Remove $domain",
-                                tint = TextSecondary,
-                                modifier = Modifier
-                                    .size(14.dp)
-                                    .clickable {
-                                        when (ConnectionLockGuard.evaluateControlTap(connectionState)) {
-                                            LockActionOutcome.ALLOW -> {
-                                                bypassedDomains = bypassedDomains - domain
-                                            }
-                                            LockActionOutcome.SHOW_LOCK_WARNING -> {
-                                                onShowConnectionWarning("Cannot modify settings while VPN is connected. Please disconnect your active connection and try again.\n\nWould you like to disconnect now?")
-                                            }
-                                            LockActionOutcome.IGNORE_WHILE_DISCONNECTING -> Unit
-                                        }
-                                    }
-                            )
-                        }
-                    }
-                }
-            }
-        }
-
-        // 2. Hotspot & LAN VPN Sharing
-        Spacer(modifier = Modifier.height(16.dp))
-        SettingSectionHeader("Hotspot & LAN VPN Sharing")
-        SettingSwitchRow(
-            title = "Share VPN over Hotspot / LAN",
-            description = "Listen on all local interfaces (0.0.0.0) so devices connected via Wi-Fi hotspot or local network can use this VPN proxy.",
-            checked = allowLanHotspot,
-            onCheckedChange = { allowLanHotspot = it }
-        )
-        Spacer(modifier = Modifier.height(10.dp))
-
-        // Connection Guide (No Root Required) Card
-        var detectedIp by remember { mutableStateOf(detectHotspotOrLanIp()) }
-
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .clip(RoundedCornerShape(14.dp))
-                .background(SurfaceGlass)
-                .border(1.dp, BorderGlass, RoundedCornerShape(14.dp))
-                .padding(14.dp)
-        ) {
-            Column {
-                Text(
-                    text = "Connection Guide (No Root Required)",
-                    color = PrimaryCyan,
-                    fontSize = 13.sp,
-                    fontWeight = FontWeight.Bold,
-                    fontFamily = SoraFamily
-                )
-                Spacer(modifier = Modifier.height(4.dp))
-                Text(
-                    text = "Route secondary devices (PC, laptop, console, phone) through your active VPN without root.",
-                    color = TextSecondary,
-                    fontSize = 11.sp,
-                    fontFamily = SoraFamily,
-                    lineHeight = 15.sp
-                )
-
-                Spacer(modifier = Modifier.height(12.dp))
-
-                // Proxy Host IP Row
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(10.dp))
-                        .background(SurfaceDark)
-                        .border(1.dp, BorderGlass, RoundedCornerShape(10.dp))
-                        .padding(horizontal = 12.dp, vertical = 8.dp)
-                ) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(
-                                text = "Proxy Host IP",
-                                color = TextSecondary,
-                                fontSize = 10.sp,
-                                fontFamily = SoraFamily
-                            )
-                            Spacer(modifier = Modifier.height(2.dp))
-                            Text(
-                                text = detectedIp,
-                                color = Color.White,
-                                fontSize = 14.sp,
-                                fontWeight = FontWeight.Bold,
-                                fontFamily = SoraFamily
-                            )
-                        }
-
-                        Row(
-                            horizontalArrangement = Arrangement.spacedBy(6.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            // Refresh Button
-                            Box(
-                                modifier = Modifier
-                                    .size(32.dp)
-                                    .clip(RoundedCornerShape(8.dp))
-                                    .background(SurfaceGlass)
-                                    .border(1.dp, BorderGlass, RoundedCornerShape(8.dp))
-                                    .clickable {
-                                        detectedIp = detectHotspotOrLanIp()
-                                        viewModel.showDashboardToast("Detected IP: $detectedIp")
-                                    },
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Default.Refresh,
-                                    contentDescription = "Refresh IP",
-                                    tint = PrimaryCyan,
-                                    modifier = Modifier.size(16.dp)
-                                )
-                            }
-
-                            // Copy IP Button
-                            Button(
-                                onClick = {
-                                    clipboardManager.setText(AnnotatedString(detectedIp))
-                                    viewModel.showDashboardToast("IP copied: $detectedIp")
-                                },
-                                colors = ButtonDefaults.buttonColors(containerColor = PrimaryCyan),
-                                shape = RoundedCornerShape(8.dp),
-                                contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 10.dp, vertical = 0.dp),
-                                modifier = Modifier.height(32.dp)
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Default.ContentCopy,
-                                    contentDescription = null,
-                                    tint = BackgroundDark,
-                                    modifier = Modifier.size(14.dp)
-                                )
-                                Spacer(modifier = Modifier.width(4.dp))
-                                Text(
-                                    text = "Copy IP",
-                                    color = BackgroundDark,
-                                    fontSize = 11.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    fontFamily = SoraFamily
-                                )
-                            }
-                        }
-                    }
-                }
-
-                Spacer(modifier = Modifier.height(8.dp))
-
-                // Ports Row
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    // HTTP Proxy Port
-                    Box(
-                        modifier = Modifier
-                            .weight(1f)
-                            .clip(RoundedCornerShape(10.dp))
-                            .background(SurfaceDark)
-                            .border(1.dp, BorderGlass, RoundedCornerShape(10.dp))
-                            .padding(10.dp)
-                    ) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Column {
-                                Text(
-                                    text = "HTTP Proxy Port",
-                                    color = TextSecondary,
-                                    fontSize = 10.sp,
-                                    fontFamily = SoraFamily
-                                )
-                                Spacer(modifier = Modifier.height(2.dp))
-                                Text(
-                                    text = "10809",
-                                    color = PrimaryCyan,
-                                    fontSize = 14.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    fontFamily = SoraFamily
-                                )
-                            }
-                            Box(
-                                modifier = Modifier
-                                    .size(28.dp)
-                                    .clip(RoundedCornerShape(6.dp))
-                                    .background(SurfaceGlass)
-                                    .border(1.dp, BorderGlass, RoundedCornerShape(6.dp))
-                                    .clickable {
-                                        clipboardManager.setText(AnnotatedString("10809"))
-                                        viewModel.showDashboardToast("HTTP Port copied: 10809")
-                                    },
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Default.ContentCopy,
-                                    contentDescription = "Copy Port",
-                                    tint = PrimaryCyan,
-                                    modifier = Modifier.size(14.dp)
-                                )
-                            }
-                        }
-                    }
-
-                    // SOCKS5 Port
-                    Box(
-                        modifier = Modifier
-                            .weight(1f)
-                            .clip(RoundedCornerShape(10.dp))
-                            .background(SurfaceDark)
-                            .border(1.dp, BorderGlass, RoundedCornerShape(10.dp))
-                            .padding(10.dp)
-                    ) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Column {
-                                Text(
-                                    text = "SOCKS5 Port",
-                                    color = TextSecondary,
-                                    fontSize = 10.sp,
-                                    fontFamily = SoraFamily
-                                )
-                                Spacer(modifier = Modifier.height(2.dp))
-                                Text(
-                                    text = "10808",
-                                    color = PrimaryCyan,
-                                    fontSize = 14.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    fontFamily = SoraFamily
-                                )
-                            }
-                            Box(
-                                modifier = Modifier
-                                    .size(28.dp)
-                                    .clip(RoundedCornerShape(6.dp))
-                                    .background(SurfaceGlass)
-                                    .border(1.dp, BorderGlass, RoundedCornerShape(6.dp))
-                                    .clickable {
-                                        clipboardManager.setText(AnnotatedString("10808"))
-                                        viewModel.showDashboardToast("SOCKS5 Port copied: 10808")
-                                    },
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Default.ContentCopy,
-                                    contentDescription = "Copy Port",
-                                    tint = PrimaryCyan,
-                                    modifier = Modifier.size(14.dp)
-                                )
-                            }
-                        }
-                    }
-                }
-
-                Spacer(modifier = Modifier.height(12.dp))
-
-                // Steps
-                Text(
-                    text = "How to connect other devices:",
-                    color = TextPrimary,
-                    fontSize = 11.sp,
-                    fontWeight = FontWeight.Bold,
-                    fontFamily = SoraFamily
-                )
-                Spacer(modifier = Modifier.height(6.dp))
-                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    GuideStepItem(number = "1", text = "Enable \"Share VPN over Hotspot / LAN\" above, save, and connect the VPN.")
-                    GuideStepItem(number = "2", text = "Turn on your phone's Wi-Fi Hotspot.")
-                    GuideStepItem(number = "3", text = "On the other phone or laptop, open Wi-Fi settings for your hotspot -> Proxy -> Manual.")
-                    GuideStepItem(number = "4", text = "Enter Hostname: $detectedIp and Port: 10809, then save.")
-                }
-            }
-        }
-
-        // 3. Connectivity Diagnostics
-        Spacer(modifier = Modifier.height(16.dp))
-        SettingSectionHeader("Connectivity Diagnostics")
-        SettingSwitchRow(
-            title = "Post-Connect Reachability Check",
-            description = "Run non-fatal diagnostics after tunnel connects to verify public internet reachability.",
-            checked = connectivityCheck,
-            onCheckedChange = { connectivityCheck = it }
-        )
-
-        // 4. Ping Test URL
-        Spacer(modifier = Modifier.height(16.dp))
-        SettingSectionHeader("Real-Delay (Ping) Test URL")
-        GlassOutlinedTextField(
-            value = pingUrl,
-            onValueChange = { pingUrl = it },
-            label = "HTTP 204 Ping URL"
-        )
-        Spacer(modifier = Modifier.height(8.dp))
-        PresetChipRow(
-            presets = listOf(
-                "Google 204" to "https://www.google.com/generate_204",
-                "Cloudflare 204" to "http://cp.cloudflare.com/generate_204",
-                "Gstatic 204" to "http://www.gstatic.com/generate_204"
-            ),
-            selectedValue = pingUrl,
-            onSelect = { pingUrl = it }
-        )
-
-        // 5. Subscription User-Agent
-        Spacer(modifier = Modifier.height(16.dp))
-        SettingSectionHeader("Subscription User-Agent")
-        GlassOutlinedTextField(
-            value = subUa,
-            onValueChange = { subUa = it },
-            label = "HTTP User-Agent Header"
-        )
-        Spacer(modifier = Modifier.height(8.dp))
-        PresetChipRow(
-            presets = listOf(
-                "v2rayNG/1.8.23" to "v2rayNG/1.8.23",
-                "HybridNest/1.0" to "HybridNest/1.0",
-                "Clash.Meta" to "Clash.Meta"
-            ),
-            selectedValue = subUa,
-            onSelect = { subUa = it }
-        )
-
-        // 6. Privacy & Logs
-        Spacer(modifier = Modifier.height(16.dp))
-        SettingSectionHeader("Privacy & Logs")
-        SettingSwitchRow(
-            title = "Strict Log Redaction",
-            description = "Automatically mask credentials, session cookies, and private keys in Live Logs and logcat.",
-            checked = strictRedaction,
-            onCheckedChange = { strictRedaction = it }
-        )
-        Spacer(modifier = Modifier.height(10.dp))
-        Button(
-            onClick = { viewModel.clearAllProtocolLogs() },
-            colors = ButtonDefaults.buttonColors(containerColor = SurfaceGlass),
-            border = BorderStroke(1.dp, BorderGlass),
-            shape = RoundedCornerShape(12.dp),
-            modifier = Modifier.fillMaxWidth().height(42.dp)
-        ) {
-            Icon(
-                imageVector = Icons.Default.DeleteOutline,
-                contentDescription = null,
-                tint = TextPrimary,
-                modifier = Modifier.size(18.dp)
-            )
-            Spacer(modifier = Modifier.width(8.dp))
-            Text(
-                text = "Clear All Protocol Logs",
-                color = TextPrimary,
-                fontSize = 12.sp,
-                fontFamily = SoraFamily
-            )
-        }
-
-        // 7. Backup & Restore
-        Spacer(modifier = Modifier.height(16.dp))
-        SettingSectionHeader("Backup & Restore All Profiles")
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(10.dp)
-        ) {
-            Button(
-                onClick = {
-                    when (ConnectionLockGuard.evaluateControlTap(connectionState)) {
-                        LockActionOutcome.ALLOW -> {
-                            showExportWarningDialog = true
-                        }
-                        LockActionOutcome.SHOW_LOCK_WARNING -> {
-                            onShowConnectionWarning("Cannot modify settings while VPN is connected. Please disconnect your active connection and try again.\n\nWould you like to disconnect now?")
-                        }
-                        LockActionOutcome.IGNORE_WHILE_DISCONNECTING -> Unit
-                    }
-                },
-                colors = ButtonDefaults.buttonColors(containerColor = SurfaceGlass),
-                border = BorderStroke(1.dp, BorderGlass),
-                shape = RoundedCornerShape(12.dp),
-                modifier = Modifier.weight(1f).height(42.dp)
-            ) {
-                Icon(
-                    imageVector = Icons.Default.ContentCopy,
-                    contentDescription = null,
-                    tint = PrimaryCyan,
-                    modifier = Modifier.size(16.dp)
-                )
-                Spacer(modifier = Modifier.width(6.dp))
-                Text(
-                    text = "Export",
-                    color = Color.White,
-                    fontSize = 12.sp,
-                    fontFamily = SoraFamily
-                )
-            }
-
-            Button(
-                onClick = {
-                    when (ConnectionLockGuard.evaluateControlTap(connectionState)) {
-                        LockActionOutcome.ALLOW -> {
-                            val text = clipboardManager.getText()?.text ?: ""
-                            viewModel.restoreProfilesFromBackupJson(text)
-                        }
-                        LockActionOutcome.SHOW_LOCK_WARNING -> {
-                            onShowConnectionWarning("Cannot modify settings while VPN is connected. Please disconnect your active connection and try again.\n\nWould you like to disconnect now?")
-                        }
-                        LockActionOutcome.IGNORE_WHILE_DISCONNECTING -> Unit
-                    }
-                },
-                colors = ButtonDefaults.buttonColors(containerColor = SurfaceGlass),
-                border = BorderStroke(1.dp, BorderGlass),
-                shape = RoundedCornerShape(12.dp),
-                modifier = Modifier.weight(1f).height(42.dp)
-            ) {
-                Icon(
-                    imageVector = Icons.Default.ContentPaste,
-                    contentDescription = null,
-                    tint = PrimaryCyan,
-                    modifier = Modifier.size(16.dp)
-                )
-                Spacer(modifier = Modifier.width(6.dp))
-                Text(
-                    text = "Restore",
-                    color = Color.White,
-                    fontSize = 12.sp,
-                    fontFamily = SoraFamily
-                )
-            }
-        }
-
-        DialogFooterActions(
-            onReset = {
-                when (ConnectionLockGuard.evaluateControlTap(connectionState)) {
-                    LockActionOutcome.ALLOW -> {
-                        connectivityCheck = true
-                        pingUrl = "https://www.google.com/generate_204"
-                        subUa = "v2rayNG/1.8.23"
-                        strictRedaction = true
-                        bypassedDomains = emptySet()
-                        allowLanHotspot = false
-                    }
-                    LockActionOutcome.SHOW_LOCK_WARNING -> {
-                        onShowConnectionWarning("Cannot modify settings while VPN is connected. Please disconnect your active connection and try again.\n\nWould you like to disconnect now?")
-                    }
-                    LockActionOutcome.IGNORE_WHILE_DISCONNECTING -> Unit
-                }
-            },
-            onCancel = onDismiss,
-            onSave = {
-                when (ConnectionLockGuard.evaluateControlTap(connectionState)) {
-                    LockActionOutcome.ALLOW -> {
-                        settings.setConnectivityCheckEnabled(connectivityCheck)
-                        settings.setPingTestUrl(pingUrl.trim().ifBlank { "https://www.google.com/generate_204" })
-                        settings.setSubUserAgent(subUa.trim().ifBlank { "v2rayNG/1.8.23" })
-                        settings.setStrictLogRedactionEnabled(strictRedaction)
-                        settings.setBypassedDomains(bypassedDomains)
-                        settings.setAllowLanHotspotEnabled(allowLanHotspot)
-                        viewModel.notifySettingsSaved("Features")
-                        onDismiss()
-                    }
-                    LockActionOutcome.SHOW_LOCK_WARNING -> {
-                        onShowConnectionWarning("Cannot modify settings while VPN is connected. Please disconnect your active connection and try again.\n\nWould you like to disconnect now?")
-                    }
-                    LockActionOutcome.IGNORE_WHILE_DISCONNECTING -> Unit
-                }
-            }
-        )
     }
 
     if (showExportWarningDialog) {
@@ -2169,9 +2247,11 @@ fun DrawerModalHost(
             if (targetState == DrawerModalType.ANYCONNECT ||
                 targetState == DrawerModalType.WIREGUARD ||
                 targetState == DrawerModalType.V2RAY ||
+                targetState == DrawerModalType.FEATURES ||
                 initialState == DrawerModalType.ANYCONNECT ||
                 initialState == DrawerModalType.WIREGUARD ||
-                initialState == DrawerModalType.V2RAY
+                initialState == DrawerModalType.V2RAY ||
+                initialState == DrawerModalType.FEATURES
             ) {
                 (slideInHorizontally(initialOffsetX = { it / 6 }) + fadeIn()) togetherWith
                     (slideOutHorizontally(targetOffsetX = { it / 6 }) + fadeOut())
@@ -2200,25 +2280,25 @@ fun DrawerModalHost(
                 connectionState = connectionState,
                 onShowConnectionWarning = onShowConnectionWarning
             )
+            DrawerModalType.FEATURES -> FeaturesFullScreen(
+                onDismiss = onDismiss,
+                viewModel = viewModel,
+                connectionState = connectionState,
+                onShowConnectionWarning = onShowConnectionWarning
+            )
             else -> Unit
         }
     }
 
     // Modal dialogs (kept on DialogShell until subsequent sub-phases 4C and 4D)
     when (activeModal) {
-        DrawerModalType.FEATURES -> FeaturesDialog(
-            onDismiss = onDismiss,
-            viewModel = viewModel,
-            onOpenPerAppRouting = onOpenPerAppRouting,
-            connectionState = connectionState,
-            onShowConnectionWarning = onShowConnectionWarning
-        )
         DrawerModalType.CHECK_UPDATE -> CheckForUpdateDialog(onDismiss = onDismiss)
         DrawerModalType.ABOUT -> AboutDialog(onDismiss = onDismiss)
         DrawerModalType.NONE,
         DrawerModalType.ANYCONNECT,
         DrawerModalType.WIREGUARD,
-        DrawerModalType.V2RAY -> Unit
+        DrawerModalType.V2RAY,
+        DrawerModalType.FEATURES -> Unit
     }
 }
 
@@ -2228,19 +2308,30 @@ private fun GuideStepItem(number: String, text: String) {
         modifier = Modifier.fillMaxWidth(),
         verticalAlignment = Alignment.Top
     ) {
-        Text(
-            text = "$number. ",
-            color = PrimaryCyan,
-            fontSize = 11.sp,
-            fontWeight = FontWeight.Bold,
-            fontFamily = SoraFamily
-        )
+        Box(
+            modifier = Modifier
+                .size(20.dp)
+                .clip(CircleShape)
+                .background(PrimaryCyan.copy(alpha = 0.15f))
+                .border(1.dp, PrimaryCyan.copy(alpha = 0.40f), CircleShape),
+            contentAlignment = Alignment.Center
+        ) {
+            Text(
+                text = number,
+                color = PrimaryCyan,
+                fontSize = 11.sp,
+                fontWeight = FontWeight.Bold,
+                fontFamily = SoraFamily
+            )
+        }
+        Spacer(modifier = Modifier.width(10.dp))
         Text(
             text = text,
-            color = TextSecondary,
-            fontSize = 11.sp,
+            color = Color(0xFFCBD5E1),
+            fontSize = 12.sp,
             fontFamily = SoraFamily,
-            lineHeight = 15.sp
+            lineHeight = 17.sp,
+            modifier = Modifier.weight(1f)
         )
     }
 }
