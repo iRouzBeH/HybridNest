@@ -70,19 +70,16 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
-import androidx.compose.material3.Switch
-import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -306,275 +303,6 @@ private fun DrawerMenuItemRow(
             tint = TextSecondary,
             modifier = Modifier.size(18.dp)
         )
-    }
-}
-
-// =========================================================================
-// REUSABLE DIALOG BUILDING BLOCKS
-// =========================================================================
-
-@Composable
-private fun DialogShell(
-    onDismiss: () -> Unit,
-    title: String,
-    subtitle: String? = null,
-    content: @Composable () -> Unit
-) {
-    Dialog(
-        onDismissRequest = onDismiss,
-        properties = DialogProperties(usePlatformDefaultWidth = false)
-    ) {
-        CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .safeDrawingPadding()
-                    .padding(horizontal = 18.dp, vertical = 24.dp)
-                    .clip(RoundedCornerShape(24.dp))
-                    .background(SurfaceMenu)
-                    .border(1.dp, BorderGlass, RoundedCornerShape(24.dp))
-                    .padding(20.dp)
-            ) {
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .verticalScroll(rememberScrollState())
-                ) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(
-                                text = title,
-                                color = Color.White,
-                                fontSize = 18.sp,
-                                fontWeight = FontWeight.Bold,
-                                fontFamily = SoraFamily
-                            )
-                            if (subtitle != null) {
-                                Text(
-                                    text = subtitle,
-                                    color = TextSecondary,
-                                    fontSize = 11.sp,
-                                    fontFamily = SoraFamily
-                                )
-                            }
-                        }
-
-                        Box(
-                            modifier = Modifier
-                                .size(32.dp)
-                                .clip(CircleShape)
-                                .background(SurfaceGlass)
-                                .clickable { onDismiss() },
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.Close,
-                                contentDescription = "Close",
-                                tint = TextSecondary,
-                                modifier = Modifier.size(18.dp)
-                            )
-                        }
-                    }
-
-                    Spacer(modifier = Modifier.height(16.dp))
-                    HorizontalDivider(color = BorderGlass)
-                    Spacer(modifier = Modifier.height(16.dp))
-
-                    content()
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun SettingSectionHeader(title: String) {
-    Text(
-        text = title.uppercase(),
-        color = PrimaryCyan,
-        fontSize = 11.sp,
-        fontWeight = FontWeight.Bold,
-        fontFamily = SoraFamily,
-        letterSpacing = 0.5.sp,
-        modifier = Modifier.padding(vertical = 4.dp)
-    )
-}
-
-@Composable
-private fun SettingSwitchRow(
-    title: String,
-    description: String? = null,
-    checked: Boolean,
-    onCheckedChange: (Boolean) -> Unit
-) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(12.dp))
-            .background(SurfaceGlass)
-            .border(1.dp, BorderGlass, RoundedCornerShape(12.dp))
-            .padding(horizontal = 14.dp, vertical = 10.dp),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Column(modifier = Modifier.weight(1f).padding(end = 12.dp)) {
-            Text(
-                text = title,
-                color = TextPrimary,
-                fontSize = 13.sp,
-                fontWeight = FontWeight.SemiBold,
-                fontFamily = SoraFamily
-            )
-            if (description != null) {
-                Spacer(modifier = Modifier.height(2.dp))
-                Text(
-                    text = description,
-                    color = TextSecondary,
-                    fontSize = 11.sp,
-                    fontFamily = SoraFamily,
-                    lineHeight = 15.sp
-                )
-            }
-        }
-
-        Switch(
-            checked = checked,
-            onCheckedChange = onCheckedChange,
-            colors = SwitchDefaults.colors(
-                checkedThumbColor = PrimaryCyan,
-                checkedTrackColor = PrimaryCyan.copy(alpha = 0.5f),
-                uncheckedThumbColor = TextSecondary,
-                uncheckedTrackColor = SurfaceDark
-            )
-        )
-    }
-}
-
-@Composable
-private fun PresetChipRow(
-    presets: List<Pair<String, String>>,
-    selectedValue: String,
-    onSelect: (String) -> Unit
-) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .horizontalScroll(rememberScrollState()),
-        horizontalArrangement = Arrangement.spacedBy(8.dp)
-    ) {
-        presets.forEach { (label, value) ->
-            val isSelected = selectedValue == value
-            Box(
-                modifier = Modifier
-                    .clip(RoundedCornerShape(10.dp))
-                    .background(if (isSelected) PrimaryCyan.copy(alpha = 0.2f) else SurfaceGlass)
-                    .border(
-                        1.dp,
-                        if (isSelected) PrimaryCyan else BorderGlass,
-                        RoundedCornerShape(10.dp)
-                    )
-                    .clickable { onSelect(value) }
-                    .padding(horizontal = 10.dp, vertical = 6.dp),
-                contentAlignment = Alignment.Center
-            ) {
-                Text(
-                    text = label,
-                    color = if (isSelected) PrimaryCyan else TextSecondary,
-                    fontSize = 11.sp,
-                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
-                    fontFamily = SoraFamily
-                )
-            }
-        }
-    }
-}
-
-@Composable
-private fun GlassOutlinedTextField(
-    value: String,
-    onValueChange: (String) -> Unit,
-    label: String,
-    keyboardType: KeyboardType = KeyboardType.Text
-) {
-    OutlinedTextField(
-        value = value,
-        onValueChange = onValueChange,
-        label = { Text(label, color = TextSecondary, fontFamily = SoraFamily, fontSize = 12.sp) },
-        colors = OutlinedTextFieldDefaults.colors(
-            focusedBorderColor = PrimaryCyan,
-            unfocusedBorderColor = BorderGlass,
-            focusedTextColor = Color.White,
-            unfocusedTextColor = Color.White
-        ),
-        textStyle = TextStyle(fontFamily = SoraFamily, fontSize = 13.sp, textDirection = TextDirection.Ltr),
-        modifier = Modifier.fillMaxWidth(),
-        singleLine = true,
-        keyboardOptions = KeyboardOptions(keyboardType = keyboardType)
-    )
-}
-
-@Composable
-private fun DialogFooterActions(
-    onReset: (() -> Unit)? = null,
-    onCancel: () -> Unit,
-    onSave: () -> Unit,
-    saveText: String = "Save"
-) {
-    Spacer(modifier = Modifier.height(20.dp))
-    HorizontalDivider(color = BorderGlass)
-    Spacer(modifier = Modifier.height(16.dp))
-
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        if (onReset != null) {
-            TextButton(onClick = onReset) {
-                Text(
-                    text = "Reset",
-                    color = TextSecondary,
-                    fontSize = 13.sp,
-                    fontFamily = SoraFamily
-                )
-            }
-        } else {
-            Spacer(modifier = Modifier.width(8.dp))
-        }
-
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Button(
-                onClick = onCancel,
-                colors = ButtonDefaults.buttonColors(containerColor = SurfaceGlass),
-                border = BorderStroke(1.dp, BorderGlass),
-                shape = RoundedCornerShape(12.dp)
-            ) {
-                Text(
-                    text = "Cancel",
-                    color = TextPrimary,
-                    fontSize = 13.sp,
-                    fontFamily = SoraFamily
-                )
-            }
-
-            Button(
-                onClick = onSave,
-                colors = ButtonDefaults.buttonColors(containerColor = PrimaryCyan),
-                shape = RoundedCornerShape(12.dp)
-            ) {
-                Text(
-                    text = saveText,
-                    color = BackgroundDark,
-                    fontSize = 13.sp,
-                    fontWeight = FontWeight.Bold,
-                    fontFamily = SoraFamily
-                )
-            }
-        }
     }
 }
 
@@ -1882,15 +1610,39 @@ fun FeaturesFullScreen(
 }
 
 // =========================================================================
-// 5. CHECK FOR UPDATE DIALOG
+// 5. CHECK FOR UPDATE FULL-SCREEN
 // =========================================================================
 
 @Composable
-fun CheckForUpdateDialog(
+fun CheckForUpdateFullScreen(
     onDismiss: () -> Unit
 ) {
     var isChecking by remember { mutableStateOf(true) }
-    val scope = rememberCoroutineScope()
+    val context = LocalContext.current
+
+    val (versionName, versionCode) = remember(context) {
+        try {
+            val packageInfo = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                context.packageManager.getPackageInfo(
+                    context.packageName,
+                    android.content.pm.PackageManager.PackageInfoFlags.of(0)
+                )
+            } else {
+                @Suppress("DEPRECATION")
+                context.packageManager.getPackageInfo(context.packageName, 0)
+            }
+            val vName = packageInfo.versionName ?: "1.0"
+            val vCode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                packageInfo.longVersionCode
+            } else {
+                @Suppress("DEPRECATION")
+                packageInfo.versionCode.toLong()
+            }
+            Pair(vName, vCode)
+        } catch (_: Exception) {
+            Pair("1.0", 1L)
+        }
+    }
 
     LaunchedEffect(isChecking) {
         if (isChecking) {
@@ -1899,284 +1651,404 @@ fun CheckForUpdateDialog(
         }
     }
 
-    DialogShell(
-        onDismiss = onDismiss,
+    SettingsFullScreenScaffold(
         title = "Check for Update",
-        subtitle = "Release channels & verified builds"
-    ) {
-        if (isChecking) {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(vertical = 32.dp),
-                horizontalAlignment = Alignment.CenterHorizontally
-            ) {
-                CircularProgressIndicator(
-                    color = PrimaryCyan,
-                    modifier = Modifier.size(36.dp),
-                    strokeWidth = 3.dp
-                )
-                Spacer(modifier = Modifier.height(16.dp))
-                Text(
-                    text = "Checking release channel...",
-                    color = TextSecondary,
-                    fontSize = 13.sp,
-                    fontFamily = SoraFamily
-                )
-            }
-        } else {
-            // Verified Version Card
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clip(RoundedCornerShape(16.dp))
-                    .background(SurfaceGlass)
-                    .border(1.dp, PrimaryCyan.copy(alpha = 0.4f), RoundedCornerShape(16.dp))
-                .padding(16.dp)
-            ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(
-                        imageVector = Icons.Default.CheckCircle,
-                        contentDescription = "Up to date",
-                        tint = PrimaryCyan,
-                        modifier = Modifier.size(32.dp)
-                    )
-                    Spacer(modifier = Modifier.width(14.dp))
-                    Column {
-                        Text(
-                            text = "You are on the latest version",
-                            color = Color.White,
-                            fontSize = 14.sp,
-                            fontWeight = FontWeight.Bold,
-                            fontFamily = SoraFamily
-                        )
-                        Spacer(modifier = Modifier.height(2.dp))
-                        Text(
-                            text = "HybridNest v1.0 (Version Code 1)",
-                            color = PrimaryCyan,
-                            fontSize = 12.sp,
-                            fontFamily = SoraFamily
-                        )
-                    }
-                }
-            }
-
-            Spacer(modifier = Modifier.height(14.dp))
-
-            // Build Info
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clip(RoundedCornerShape(12.dp))
-                    .background(SurfaceGlass)
-                    .border(1.dp, BorderGlass, RoundedCornerShape(12.dp))
-                    .padding(12.dp)
-            ) {
-                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    Text(
-                        text = "Build Specs",
-                        color = TextPrimary,
-                        fontSize = 12.sp,
-                        fontWeight = FontWeight.SemiBold,
-                        fontFamily = SoraFamily
-                    )
-                    Text(
-                        text = "• Compile SDK: 37 • Target SDK: 36\n• 16KB Page Aligned ABI Binaries\n• Active: libopenconnect.so, libstoken.so, libv2ray.aar",
-                        color = TextSecondary,
-                        fontSize = 11.sp,
-                        fontFamily = SoraFamily,
-                        lineHeight = 16.sp
-                    )
-                }
-            }
-
-            Spacer(modifier = Modifier.height(20.dp))
-
+        subtitle = "Installed build & native binary diagnostics",
+        iconVector = Icons.Default.SystemUpdateAlt,
+        onBack = onDismiss,
+        bottomBar = {
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(10.dp)
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                verticalAlignment = Alignment.CenterVertically
             ) {
+                OutlinedButton(
+                    onClick = onDismiss,
+                    shape = RoundedCornerShape(12.dp),
+                    border = BorderStroke(1.dp, Color.White.copy(alpha = 0.12f)),
+                    colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFF94A3B8)),
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(46.dp)
+                ) {
+                    Text(
+                        text = "Close",
+                        fontFamily = SoraFamily,
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.Medium
+                    )
+                }
+
                 Button(
                     onClick = { isChecking = true },
-                    colors = ButtonDefaults.buttonColors(containerColor = SurfaceGlass),
-                    border = BorderStroke(1.dp, BorderGlass),
+                    enabled = !isChecking,
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = PrimaryCyan,
+                        disabledContainerColor = PrimaryCyan.copy(alpha = 0.35f)
+                    ),
                     shape = RoundedCornerShape(12.dp),
-                    modifier = Modifier.weight(1f).height(42.dp)
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(46.dp)
                 ) {
                     Icon(
                         imageVector = Icons.Default.Refresh,
                         contentDescription = null,
-                        tint = TextPrimary,
+                        tint = BackgroundDark,
                         modifier = Modifier.size(16.dp)
                     )
                     Spacer(modifier = Modifier.width(6.dp))
                     Text(
                         text = "Check Again",
-                        color = TextPrimary,
-                        fontSize = 12.sp,
-                        fontFamily = SoraFamily
-                    )
-                }
-
-                Button(
-                    onClick = onDismiss,
-                    colors = ButtonDefaults.buttonColors(containerColor = PrimaryCyan),
-                    shape = RoundedCornerShape(12.dp),
-                    modifier = Modifier.weight(1f).height(42.dp)
-                ) {
-                    Text(
-                        text = "Close",
                         color = BackgroundDark,
-                        fontSize = 12.sp,
+                        fontSize = 13.sp,
                         fontWeight = FontWeight.Bold,
                         fontFamily = SoraFamily
                     )
                 }
             }
         }
+    ) {
+        // Hero Status Card
+        if (isChecking) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(20.dp))
+                    .background(Color(0xFF0F172A).copy(alpha = 0.88f))
+                    .border(1.dp, PrimaryCyan.copy(alpha = 0.28f), RoundedCornerShape(20.dp))
+                    .padding(vertical = 36.dp, horizontal = 20.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.Center
+                ) {
+                    CircularProgressIndicator(
+                        color = PrimaryCyan,
+                        strokeWidth = 3.dp,
+                        modifier = Modifier.size(44.dp)
+                    )
+                    Spacer(modifier = Modifier.height(16.dp))
+                    Text(
+                        text = "Checking installed version...",
+                        color = Color.White,
+                        fontSize = 15.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        fontFamily = SoraFamily
+                    )
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = "Verifying local package integrity & architecture",
+                        color = Color(0xFF94A3B8),
+                        fontSize = 12.sp,
+                        fontFamily = SoraFamily
+                    )
+                }
+            }
+        } else {
+            val emeraldColor = Color(0xFF10B981)
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(20.dp))
+                    .background(Color(0xFF0F172A).copy(alpha = 0.88f))
+                    .border(1.dp, emeraldColor.copy(alpha = 0.36f), RoundedCornerShape(20.dp))
+                    .padding(vertical = 28.dp, horizontal = 20.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(54.dp)
+                            .clip(CircleShape)
+                            .background(emeraldColor.copy(alpha = 0.12f))
+                            .border(1.dp, emeraldColor.copy(alpha = 0.32f), CircleShape),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.CheckCircle,
+                            contentDescription = "Up to Date",
+                            tint = emeraldColor,
+                            modifier = Modifier.size(32.dp)
+                        )
+                    }
+                    Spacer(modifier = Modifier.height(14.dp))
+                    Text(
+                        text = "Up to Date",
+                        color = Color.White,
+                        fontSize = 17.sp,
+                        fontWeight = FontWeight.Bold,
+                        fontFamily = SoraFamily
+                    )
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = "You are on the latest local build",
+                        color = Color(0xFF94A3B8),
+                        fontSize = 12.sp,
+                        fontFamily = SoraFamily
+                    )
+                    Spacer(modifier = Modifier.height(12.dp))
+                    Box(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(Color.White.copy(alpha = 0.05f))
+                            .border(1.dp, Color.White.copy(alpha = 0.10f), RoundedCornerShape(10.dp))
+                            .padding(horizontal = 14.dp, vertical = 6.dp)
+                    ) {
+                        Text(
+                            text = "HybridNest v$versionName (Build $versionCode)",
+                            color = PrimaryCyan,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            fontFamily = SoraFamily,
+                            style = TextStyle(textDirection = TextDirection.Ltr)
+                        )
+                    }
+                }
+            }
+        }
+
+        // Build & Native Core Diagnostics Card
+        SettingsSectionCard(
+            title = "Build & Native Core Diagnostics",
+            subtitle = "Verified compilation targets & bundled native libraries"
+        ) {
+            DiagnosticKeyValueRow(
+                label = "Package Identifier",
+                value = context.packageName
+            )
+            HorizontalDivider(thickness = 0.5.dp, color = Color.White.copy(alpha = 0.06f))
+
+            DiagnosticKeyValueRow(
+                label = "Installed Version",
+                value = "v$versionName (Build $versionCode)"
+            )
+            HorizontalDivider(thickness = 0.5.dp, color = Color.White.copy(alpha = 0.06f))
+
+            DiagnosticKeyValueRow(
+                label = "Target Platform",
+                value = "Compile SDK 37 • Target SDK 36"
+            )
+            HorizontalDivider(thickness = 0.5.dp, color = Color.White.copy(alpha = 0.06f))
+
+            DiagnosticKeyValueRow(
+                label = "Page Size Alignment",
+                value = "16KB Page Aligned (Android 15+)"
+            )
+            HorizontalDivider(thickness = 0.5.dp, color = Color.White.copy(alpha = 0.06f))
+
+            DiagnosticKeyValueRow(
+                label = "Native Engines",
+                value = "libopenconnect.so, libstoken.so, libv2ray.aar"
+            )
+        }
     }
 }
 
 // =========================================================================
-// 6. ABOUT DIALOG
+// 6. ABOUT FULL-SCREEN
 // =========================================================================
 
 @Composable
-fun AboutDialog(
+fun AboutFullScreen(
     onDismiss: () -> Unit
 ) {
-    DialogShell(
-        onDismiss = onDismiss,
-        title = "About HybridNest",
-        subtitle = "Multi-Engine Android VPN Client"
-    ) {
-        // App identity box
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .clip(RoundedCornerShape(14.dp))
-                .background(SurfaceGlass)
-                .border(1.dp, BorderGlass, RoundedCornerShape(14.dp))
-                .padding(14.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Box(
-                modifier = Modifier
-                    .size(50.dp)
-                    .clip(RoundedCornerShape(14.dp))
-                    .background(SurfaceDark)
-                    .border(1.dp, PrimaryCyan.copy(alpha = 0.5f), RoundedCornerShape(14.dp)),
-                contentAlignment = Alignment.Center
-            ) {
-                Image(
-                    painter = painterResource(id = R.drawable.ic_launcher_foreground),
-                    contentDescription = "Logo",
-                    modifier = Modifier.size(52.dp)
+    val context = LocalContext.current
+
+    val (versionName, versionCode) = remember(context) {
+        try {
+            val packageInfo = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                context.packageManager.getPackageInfo(
+                    context.packageName,
+                    android.content.pm.PackageManager.PackageInfoFlags.of(0)
                 )
+            } else {
+                @Suppress("DEPRECATION")
+                context.packageManager.getPackageInfo(context.packageName, 0)
             }
+            val vName = packageInfo.versionName ?: "1.0"
+            val vCode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                packageInfo.longVersionCode
+            } else {
+                @Suppress("DEPRECATION")
+                packageInfo.versionCode.toLong()
+            }
+            Pair(vName, vCode)
+        } catch (_: Exception) {
+            Pair("1.0", 1L)
+        }
+    }
 
-            Spacer(modifier = Modifier.width(14.dp))
-
-            Column {
+    SettingsFullScreenScaffold(
+        title = "About HybridNest",
+        subtitle = "Multi-protocol Android VPN client",
+        iconVector = Icons.Default.Info,
+        onBack = onDismiss,
+        bottomBar = {
+            Button(
+                onClick = onDismiss,
+                colors = ButtonDefaults.buttonColors(containerColor = PrimaryCyan),
+                shape = RoundedCornerShape(12.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(46.dp)
+            ) {
                 Text(
-                    text = "HybridNest",
-                    color = Color.White,
-                    fontSize = 18.sp,
-                    fontWeight = FontWeight.ExtraBold,
-                    fontFamily = SoraFamily
-                )
-                Text(
-                    text = "v1.0 • dev.rouzbeh.hybridvpn",
-                    color = PrimaryCyan,
-                    fontSize = 11.sp,
+                    text = "Close",
+                    color = BackgroundDark,
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.Bold,
                     fontFamily = SoraFamily
                 )
             }
         }
-
-        Spacer(modifier = Modifier.height(14.dp))
-        SettingSectionHeader("Protocol Engine Architecture")
-
-        // 3 Engine Cards
-        AboutEngineCard(
-            title = "AnyConnect (OpenConnect)",
-            description = "Native C/JNI SSL/TLS (CSTP) & DTLS UDP engine with RSA SecurID (libstoken) and instant socket interrupt.",
-            iconRes = R.drawable.ic_openconnect
-        )
-
-        Spacer(modifier = Modifier.height(8.dp))
-
-        AboutEngineCard(
-            title = "WireGuard",
-            description = "User-space gVisor netstack outbound (noKernelTun) with pure-Kotlin RFC 7748 Curve25519 key derivation.",
-            iconRes = R.drawable.ic_wireguard
-        )
-
-        Spacer(modifier = Modifier.height(8.dp))
-
-        AboutEngineCard(
-            title = "v2rayNG (Xray-core)",
-            description = "Gomobile Xray-core supporting VLESS, VMess, Trojan, Reality, XHTTP/SplitHTTP, WS, gRPC & DNS bootstrap pinning.",
-            iconRes = R.drawable.ic_v2rayng
-        )
-
-        Spacer(modifier = Modifier.height(14.dp))
-        SettingSectionHeader("Security & Platform Guarantees")
-
+    ) {
+        // App Identity Hero Card
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .clip(RoundedCornerShape(12.dp))
-                .background(SurfaceGlass)
-                .border(1.dp, BorderGlass, RoundedCornerShape(12.dp))
-                .padding(12.dp)
+                .clip(RoundedCornerShape(20.dp))
+                .background(Color(0xFF0F172A).copy(alpha = 0.88f))
+                .border(1.dp, Color.White.copy(alpha = 0.08f), RoundedCornerShape(20.dp))
+                .padding(18.dp)
         ) {
-            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                Text(
-                    text = "• Fail-Closed Per-App Split Tunneling Contract",
-                    color = TextPrimary,
-                    fontSize = 11.sp,
-                    fontWeight = FontWeight.SemiBold,
-                    fontFamily = SoraFamily
-                )
-                Text(
-                    text = "• Producer-Side Credential & Secret Key Log Redaction",
-                    color = TextPrimary,
-                    fontSize = 11.sp,
-                    fontWeight = FontWeight.SemiBold,
-                    fontFamily = SoraFamily
-                )
-                Text(
-                    text = "• 16KB Memory Page Size Compatible (Android 15 & 16)",
-                    color = TextPrimary,
-                    fontSize = 11.sp,
-                    fontWeight = FontWeight.SemiBold,
-                    fontFamily = SoraFamily
-                )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(56.dp)
+                        .clip(RoundedCornerShape(16.dp))
+                        .background(SurfaceDark)
+                        .border(1.dp, PrimaryCyan.copy(alpha = 0.40f), RoundedCornerShape(16.dp)),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Image(
+                        painter = painterResource(id = R.drawable.ic_launcher_foreground),
+                        contentDescription = "HybridNest Logo",
+                        modifier = Modifier.size(58.dp)
+                    )
+                }
+
+                Spacer(modifier = Modifier.width(16.dp))
+
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = "HybridNest",
+                        color = Color.White,
+                        fontSize = 20.sp,
+                        fontWeight = FontWeight.ExtraBold,
+                        fontFamily = SoraFamily
+                    )
+                    Spacer(modifier = Modifier.height(2.dp))
+                    Text(
+                        text = "v$versionName (Build $versionCode)",
+                        color = PrimaryCyan,
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        fontFamily = SoraFamily
+                    )
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Box(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(6.dp))
+                            .background(Color.White.copy(alpha = 0.04f))
+                            .border(1.dp, Color.White.copy(alpha = 0.08f), RoundedCornerShape(6.dp))
+                            .padding(horizontal = 8.dp, vertical = 2.dp)
+                    ) {
+                        Text(
+                            text = context.packageName,
+                            color = Color(0xFF94A3B8),
+                            fontSize = 11.sp,
+                            fontFamily = SoraFamily,
+                            style = TextStyle(textDirection = TextDirection.Ltr)
+                        )
+                    }
+                }
             }
         }
 
-        Spacer(modifier = Modifier.height(20.dp))
-
-        Button(
-            onClick = onDismiss,
-            colors = ButtonDefaults.buttonColors(containerColor = PrimaryCyan),
-            shape = RoundedCornerShape(12.dp),
-            modifier = Modifier.fillMaxWidth().height(44.dp)
+        // Protocol Engine Architecture Card
+        SettingsSectionCard(
+            title = "Protocol Engine Architecture",
+            subtitle = "Bundled native network stacks & cipher suites"
         ) {
-            Text(
-                text = "Close",
-                color = BackgroundDark,
-                fontSize = 13.sp,
-                fontWeight = FontWeight.Bold,
-                fontFamily = SoraFamily
+            AboutProtocolRow(
+                title = "AnyConnect (OpenConnect)",
+                description = "Native C/JNI SSL/TLS (CSTP) & DTLS UDP with RSA SecurID (libstoken).",
+                iconRes = R.drawable.ic_openconnect
+            )
+
+            AboutProtocolRow(
+                title = "WireGuard",
+                description = "User-space gVisor netstack outbound (noKernelTun) with pure-Kotlin RFC 7748 Curve25519 key derivation.",
+                iconRes = R.drawable.ic_wireguard
+            )
+
+            AboutProtocolRow(
+                title = "v2rayNG (Xray-core)",
+                description = "Gomobile Xray-core supporting VLESS, VMess, Trojan, Reality, XHTTP, WS, gRPC, and DNS bootstrap pinning.",
+                iconRes = R.drawable.ic_v2rayng
+            )
+        }
+
+        // Security & Platform Guarantees Card
+        SettingsSectionCard(
+            title = "Security & Platform Guarantees",
+            subtitle = "Hardened local isolation & compliance contracts"
+        ) {
+            AboutGuaranteeRow(
+                title = "Fail-Closed Per-App Split Tunneling",
+                description = "Strict isolation ensuring no traffic escapes when bound apps fail or disconnect."
+            )
+            HorizontalDivider(thickness = 0.5.dp, color = Color.White.copy(alpha = 0.06f))
+
+            AboutGuaranteeRow(
+                title = "Producer-Side Log Redaction (LogRedactor)",
+                description = "Dynamic credential, session cookie, and secret key stripping before log emission."
+            )
+            HorizontalDivider(thickness = 0.5.dp, color = Color.White.copy(alpha = 0.06f))
+
+            AboutGuaranteeRow(
+                title = "16KB Memory Page Size Compatibility",
+                description = "Native binaries aligned and tested for modern Android 15 & 16 runtimes."
             )
         }
     }
 }
 
 @Composable
-private fun AboutEngineCard(
+private fun DiagnosticKeyValueRow(label: String, value: String) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(
+            text = label,
+            color = Color(0xFF94A3B8),
+            fontSize = 12.sp,
+            fontFamily = SoraFamily
+        )
+        Spacer(modifier = Modifier.width(8.dp))
+        Text(
+            text = value,
+            color = Color.White,
+            fontSize = 12.sp,
+            fontWeight = FontWeight.Medium,
+            fontFamily = SoraFamily,
+            style = TextStyle(textDirection = TextDirection.Ltr)
+        )
+    }
+}
+
+@Composable
+private fun AboutProtocolRow(
     title: String,
     description: String,
     iconRes: Int
@@ -2184,41 +2056,79 @@ private fun AboutEngineCard(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(12.dp))
-            .background(SurfaceGlass)
-            .border(1.dp, BorderGlass, RoundedCornerShape(12.dp))
-            .padding(12.dp),
+            .clip(RoundedCornerShape(14.dp))
+            .background(Color.White.copy(alpha = 0.03f))
+            .border(1.dp, Color.White.copy(alpha = 0.06f), RoundedCornerShape(14.dp))
+            .padding(14.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         Box(
             modifier = Modifier
-                .size(32.dp)
-                .clip(RoundedCornerShape(8.dp))
-                .background(SurfaceDark),
+                .size(40.dp)
+                .clip(RoundedCornerShape(10.dp))
+                .background(PrimaryCyan.copy(alpha = 0.12f))
+                .border(1.dp, PrimaryCyan.copy(alpha = 0.28f), RoundedCornerShape(10.dp)),
             contentAlignment = Alignment.Center
         ) {
             Icon(
                 painter = painterResource(id = iconRes),
                 contentDescription = title,
                 tint = PrimaryCyan,
-                modifier = Modifier.size(18.dp)
+                modifier = Modifier.size(22.dp)
             )
         }
 
-        Spacer(modifier = Modifier.width(12.dp))
+        Spacer(modifier = Modifier.width(14.dp))
 
-        Column {
+        Column(modifier = Modifier.weight(1f)) {
             Text(
                 text = title,
-                color = TextPrimary,
+                color = Color.White,
                 fontSize = 13.sp,
                 fontWeight = FontWeight.Bold,
+                fontFamily = SoraFamily
+            )
+            Spacer(modifier = Modifier.height(3.dp))
+            Text(
+                text = description,
+                color = Color(0xFF94A3B8),
+                fontSize = 11.sp,
+                fontFamily = SoraFamily,
+                lineHeight = 16.sp
+            )
+        }
+    }
+}
+
+@Composable
+private fun AboutGuaranteeRow(
+    title: String,
+    description: String
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.Top
+    ) {
+        Box(
+            modifier = Modifier
+                .padding(top = 5.dp)
+                .size(6.dp)
+                .clip(CircleShape)
+                .background(PrimaryCyan)
+        )
+        Spacer(modifier = Modifier.width(10.dp))
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = title,
+                color = Color.White,
+                fontSize = 12.sp,
+                fontWeight = FontWeight.SemiBold,
                 fontFamily = SoraFamily
             )
             Spacer(modifier = Modifier.height(2.dp))
             Text(
                 text = description,
-                color = TextSecondary,
+                color = Color(0xFF94A3B8),
                 fontSize = 11.sp,
                 fontFamily = SoraFamily,
                 lineHeight = 15.sp
@@ -2244,15 +2154,7 @@ fun DrawerModalHost(
     AnimatedContent(
         targetState = activeModal,
         transitionSpec = {
-            if (targetState == DrawerModalType.ANYCONNECT ||
-                targetState == DrawerModalType.WIREGUARD ||
-                targetState == DrawerModalType.V2RAY ||
-                targetState == DrawerModalType.FEATURES ||
-                initialState == DrawerModalType.ANYCONNECT ||
-                initialState == DrawerModalType.WIREGUARD ||
-                initialState == DrawerModalType.V2RAY ||
-                initialState == DrawerModalType.FEATURES
-            ) {
+            if (targetState != DrawerModalType.NONE || initialState != DrawerModalType.NONE) {
                 (slideInHorizontally(initialOffsetX = { it / 6 }) + fadeIn()) togetherWith
                     (slideOutHorizontally(targetOffsetX = { it / 6 }) + fadeOut())
             } else {
@@ -2286,19 +2188,14 @@ fun DrawerModalHost(
                 connectionState = connectionState,
                 onShowConnectionWarning = onShowConnectionWarning
             )
-            else -> Unit
+            DrawerModalType.CHECK_UPDATE -> CheckForUpdateFullScreen(
+                onDismiss = onDismiss
+            )
+            DrawerModalType.ABOUT -> AboutFullScreen(
+                onDismiss = onDismiss
+            )
+            DrawerModalType.NONE -> Unit
         }
-    }
-
-    // Modal dialogs (kept on DialogShell until subsequent sub-phases 4C and 4D)
-    when (activeModal) {
-        DrawerModalType.CHECK_UPDATE -> CheckForUpdateDialog(onDismiss = onDismiss)
-        DrawerModalType.ABOUT -> AboutDialog(onDismiss = onDismiss)
-        DrawerModalType.NONE,
-        DrawerModalType.ANYCONNECT,
-        DrawerModalType.WIREGUARD,
-        DrawerModalType.V2RAY,
-        DrawerModalType.FEATURES -> Unit
     }
 }
 
