@@ -1,6 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!--
-   Backup rules for pre-API-31 devices.
--->
 <full-backup-content>
+    <exclude domain="database" path="cybernest_database" />
+    <exclude domain="database" path="cybernest_database-wal" />
+    <exclude domain="database" path="cybernest_database-shm" />
+    <exclude domain="sharedpref" path="hybridvpn_settings.xml" />
+    <exclude domain="sharedpref" path="hybridvpn_prefs.xml" />
+    <exclude domain="sharedpref" path="exit_reasons.xml" />
+    <exclude domain="sharedpref" path="tab_prefs.xml" />
 </full-backup-content>

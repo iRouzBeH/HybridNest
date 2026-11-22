@@ -1,6 +1,12 @@
 package dev.rouzbeh.hybridvpn.feature.dashboard
 
+import android.content.ClipData
+import android.content.ClipDescription
+import android.content.ClipboardManager
+import android.content.Context
 import android.content.Intent
+import android.os.Build
+import android.os.PersistableBundle
 import android.provider.Settings
 import java.net.Inet4Address
 import java.net.InetAddress
@@ -1005,6 +1011,7 @@ fun FeaturesDialog(
     var pingUrl by remember { mutableStateOf(settings.getPingTestUrl()) }
     var subUa by remember { mutableStateOf(settings.getSubUserAgent()) }
     var strictRedaction by remember { mutableStateOf(settings.isStrictLogRedactionEnabled()) }
+    var showExportWarningDialog by remember { mutableStateOf(false) }
 
     DialogShell(
         onDismiss = onDismiss,
@@ -1535,9 +1542,7 @@ fun FeaturesDialog(
                 onClick = {
                     when (ConnectionLockGuard.evaluateControlTap(connectionState)) {
                         LockActionOutcome.ALLOW -> {
-                            viewModel.exportAllProfilesToJson { json ->
-                                clipboardManager.setText(AnnotatedString(json))
-                            }
+                            showExportWarningDialog = true
                         }
                         LockActionOutcome.SHOW_LOCK_WARNING -> {
                             onShowConnectionWarning("Cannot modify settings while VPN is connected. Please disconnect your active connection and try again.\n\nWould you like to disconnect now?")
@@ -1633,6 +1638,25 @@ fun FeaturesDialog(
                         onShowConnectionWarning("Cannot modify settings while VPN is connected. Please disconnect your active connection and try again.\n\nWould you like to disconnect now?")
                     }
                     LockActionOutcome.IGNORE_WHILE_DISCONNECTING -> Unit
+                }
+            }
+        )
+    }
+
+    if (showExportWarningDialog) {
+        ExportWarningDialog(
+            onDismiss = { showExportWarningDialog = false },
+            onConfirmExport = {
+                showExportWarningDialog = false
+                viewModel.exportAllProfilesToJson { json ->
+                    val systemClipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                    val clipData = ClipData.newPlainText("HybridNest Backup", json)
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                        clipData.description.extras = PersistableBundle().apply {
+                            putBoolean(ClipDescription.EXTRA_IS_SENSITIVE, true)
+                        }
+                    }
+                    systemClipboard.setPrimaryClip(clipData)
                 }
             }
         )
@@ -2158,6 +2182,122 @@ fun ActiveConnectionWarningDialog(
                             ) {
                                 Text(
                                     text = "Disconnect",
+                                    color = BackgroundDark,
+                                    fontSize = 13.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    fontFamily = SoraFamily
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// =========================================================================
+// EXPORT PLAINTEXT WARNING DIALOG
+// =========================================================================
+
+@Composable
+fun ExportWarningDialog(
+    onDismiss: () -> Unit,
+    onConfirmExport: () -> Unit
+) {
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .safeDrawingPadding()
+                    .padding(horizontal = 24.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(24.dp))
+                        .background(SurfaceMenu)
+                        .border(1.dp, BorderGlass, RoundedCornerShape(24.dp))
+                        .padding(24.dp)
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .verticalScroll(rememberScrollState())
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(40.dp)
+                                    .clip(RoundedCornerShape(12.dp))
+                                    .background(PrimaryCyan.copy(alpha = 0.15f))
+                                    .border(1.dp, PrimaryCyan.copy(alpha = 0.35f), RoundedCornerShape(12.dp)),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Info,
+                                    contentDescription = "Warning",
+                                    tint = PrimaryCyan,
+                                    modifier = Modifier.size(22.dp)
+                                )
+                            }
+                            Spacer(modifier = Modifier.width(14.dp))
+                            Text(
+                                text = "Export Plaintext Backup",
+                                color = TextPrimary,
+                                fontSize = 18.sp,
+                                fontWeight = FontWeight.Bold,
+                                fontFamily = SoraFamily
+                            )
+                        }
+
+                        Spacer(modifier = Modifier.height(16.dp))
+
+                        Text(
+                            text = "The exported backup is unencrypted (plaintext) JSON and includes sensitive credentials, such as saved passwords and WireGuard private keys.\n\nAnyone with access to your clipboard or this text can view these credentials. Please store the backup securely and clear your clipboard after pasting.",
+                            color = TextSecondary,
+                            fontSize = 14.sp,
+                            fontFamily = SoraFamily,
+                            lineHeight = 20.sp
+                        )
+
+                        Spacer(modifier = Modifier.height(24.dp))
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            Button(
+                                onClick = onDismiss,
+                                colors = ButtonDefaults.buttonColors(containerColor = SurfaceGlass),
+                                border = BorderStroke(1.dp, BorderGlass),
+                                shape = RoundedCornerShape(12.dp),
+                                modifier = Modifier.weight(1f).height(44.dp)
+                            ) {
+                                Text(
+                                    text = "Cancel",
+                                    color = TextPrimary,
+                                    fontSize = 13.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    fontFamily = SoraFamily
+                                )
+                            }
+
+                            Button(
+                                onClick = onConfirmExport,
+                                colors = ButtonDefaults.buttonColors(containerColor = PrimaryCyan),
+                                shape = RoundedCornerShape(12.dp),
+                                modifier = Modifier.weight(1f).height(44.dp)
+                            ) {
+                                Text(
+                                    text = "Confirm Export",
                                     color = BackgroundDark,
                                     fontSize = 13.sp,
                                     fontWeight = FontWeight.Bold,

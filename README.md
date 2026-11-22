@@ -17,19 +17,19 @@
 
 ## 🚀 Overview
 
-**HybridNest** is an enterprise-grade, high-performance Android VPN client built from the ground up in modern Kotlin and Jetpack Compose. It unifies three distinct, battle-tested VPN and anti-censorship engines into a single seamless interface with zero root requirements, fail-closed split tunneling, and 16KB page-size alignment for Android 15/16+:
+**HybridNest** is an advanced Android VPN client built from the ground up in modern Kotlin and Jetpack Compose. It unifies three distinct VPN and anti-censorship engines into a single seamless interface with zero root requirements, fail-closed split tunneling, and 16KB page-size alignment for Android 15/16+:
 
 1. **Cisco AnyConnect (`OpenConnect`)**:
-   - Native C / JNI integration with `libopenconnect` and `libstoken`.
-   - Dual-channel SSL/TLS control plane (`CSTP`) and ultra-fast UDP datapath (`DTLS`).
-   - Integrated hardware-token RSA SecurID token generation and XML form authentication.
+   - Native C / JNI integration with `libopenconnect` (`libstoken.so` is bundled alongside `libopenconnect.so`).
+   - Dual-channel SSL/TLS control plane (`CSTP`) and UDP datapath (`DTLS`).
+   - XML form authentication support.
    - Configurable MTU, Dead Peer Detection (DPD), batch packet processing, and atomic socket cancellation.
 
 2. **WireGuard (`gVisor Netstack`)**:
    - User-space TCP/IP netstack outbound (`noKernelTun`) bypassing kernel TUN limitations.
-   - Pure-Kotlin RFC 7748 Curve25519 keypair generation with strict cryptographic zeroization.
+   - Pure-Kotlin RFC 7748 Curve25519 keypair generation.
    - Comprehensive configuration import: `.conf`, `.zip` bundles, camera/gallery QR scanning, and URI deep-links.
-   - Pre-resolved endpoint IPv4 bootstrap pinning to neutralize DNS poisoning on initial handshake.
+   - Pre-resolved endpoint IPv4 bootstrap pinning to mitigate DNS poisoning on initial handshake.
 
 3. **v2rayNG (`Xray-core`)**:
    - Embedded Gomobile `Xray-core` runtime with support for modern anti-censorship protocols: **VLESS**, **VMess**, **Trojan**, **Reality**, **XHTTP / SplitHTTP**, **WebSocket**, and **gRPC**.
@@ -42,7 +42,7 @@
 - **Fail-Closed Per-App Split Tunneling**:
   - **Allow Mode**: Only selected applications route traffic through the encrypted VPN tunnel.
   - **Bypass Mode**: Selected applications bypass the VPN directly while all other device traffic is tunneled.
-  - Dynamic installed app scanner with real-time search, package filtering, and zero-leak state persistence.
+  - Dynamic installed app scanner with real-time search, package filtering, and state persistence.
 
 - **Domain Bypass (Direct Sites)**:
   - Built-in one-tap direct routing for domestic domains (`.ir` direct bypass rule).
@@ -54,11 +54,11 @@
   - Clear step-by-step connection guide for PCs, consoles, smart TVs, and other mobile devices on the same local network.
 
 - **Full JSON Profile Backup & Restore**:
-  - Export and import all VPN configurations (AnyConnect, WireGuard, and Xray-core) via structured, encrypted or unencrypted JSON files using Android's Storage Access Framework (SAF).
+  - Export and import all VPN configurations (AnyConnect, WireGuard, and Xray-core) via structured plaintext JSON copied to or pasted from the clipboard (featuring a pre-export plaintext warning dialog and Android 13+ sensitive clipboard flag).
 
 - **Live Sanitized Diagnostic Logs**:
   - In-app live logging console with category filtering (`ALL`, `OpenConnect`, `WireGuard`, `v2rayNG`).
-  - Producer-side real-time credential, token, and private key redaction via `LogRedactor` before any log line reaches memory or disk.
+  - Producer-side real-time credential, token, and private key redaction via `LogRedactor` before any log line reaches memory or disk (Strict Log Redaction can be disabled by the user in Settings).
 
 - **Android 15+ 16KB Page Size Alignment**:
   - All native libraries (`.so`) and CMake toolchains are built and verified with `-Wl,-z,max-page-size=16384` to guarantee compatibility with Android 15/16 memory page architecture.
@@ -76,7 +76,7 @@ Download the latest signed release APKs directly from [GitHub Releases](https://
 | **`HybridNest-v1.0-universal.apk`** | Multi-ABI | **Universal (All ARM Devices)**<br>Contains native binaries for both 32-bit and 64-bit architectures. Recommended if you are unsure of your device architecture or redistributing across multiple hardware types. |
 
 > [!TIP]
-> Download the `SHA256SUMS.txt` file from [GitHub Releases](https://github.com/iRouzBeH/HybridNest/releases) to verify the integrity and cryptographic authenticity of your downloaded APK.
+> Download the `SHA256SUMS.txt` file from [GitHub Releases](https://github.com/iRouzBeH/HybridNest/releases) to verify the file integrity of your downloaded APK.
 
 ---
 
@@ -121,9 +121,16 @@ The resulting split APKs will be output to `app/build/outputs/apk/release/`:
 
 ## 🔒 Security & Privacy
 
-- **No Analytics / Telemetry**: HybridNest contains zero trackers, third-party analytics SDKs, or advertising libraries.
-- **Key Zeroization**: Sensitive private keys and passwords are scrubbed from memory buffers upon tunnel establishment.
-- **Log Sanitation**: `LogRedactor` prevents credentials, PSKs, tokens, and authorization headers from ever being rendered or exported.
+- **No Analytics / Telemetry**: HybridNest includes no analytics, telemetry, or advertising SDKs. It uses Google ML Kit Barcode Scanning (`com.google.mlkit:barcode-scanning`) strictly for on-device QR code scanning.
+- **Log Sanitation**: `LogRedactor` prevents credentials, PSKs, tokens, and authorization headers from ever being rendered or exported (Strict Log Redaction can be disabled by the user in Settings).
+
+---
+
+## ⚠️ Known Limitations
+
+1. **Local Plaintext Credential Storage**: Profile credentials (OpenConnect passwords and WireGuard private keys) are stored in plaintext in the local Room database inside the Android app private sandbox (`allowBackup="false"` with Android cloud backup and device transfer excluded).
+2. **Plaintext Profile Export via Clipboard**: Profile export produces unencrypted (plaintext) JSON copied to the clipboard (guarded by a pre-export confirmation warning dialog and flagged with `EXTRA_IS_SENSITIVE` on Android 13+).
+3. **User-Configurable Log Redaction**: Strict Log Redaction can be disabled by the user in Settings.
 
 ---
 

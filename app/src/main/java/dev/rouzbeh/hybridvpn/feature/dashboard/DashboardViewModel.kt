@@ -15,6 +15,7 @@ import dev.rouzbeh.hybridvpn.data.local.VpnProfile
 import dev.rouzbeh.hybridvpn.core.vpn.v2ray.V2RayManager
 import dev.rouzbeh.hybridvpn.core.vpn.wireguard.WireGuardConfig
 import dev.rouzbeh.hybridvpn.core.vpn.wireguard.WireGuardParsedConfig
+import dev.rouzbeh.hybridvpn.core.utils.LogRedactor
 import dev.rouzbeh.hybridvpn.data.model.AppInfo
 import dev.rouzbeh.hybridvpn.data.repository.SettingsRepository
 import dev.rouzbeh.hybridvpn.service.BroadcastStateManager
@@ -530,7 +531,7 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
                 }.sortedWith(compareByDescending<AppInfo> { it.isSelected }.thenBy { it.appName.lowercase() })
                 _installedApps.value = appInfoList
                 refreshRoutingPendingState()
-            } catch (e: Exception) { android.util.Log.e("DashboardViewModel", "Failed to load apps: ${e.message}") }
+            } catch (e: Exception) { android.util.Log.e("DashboardViewModel", LogRedactor.redact("Failed to load apps: ${e.message}")) }
         }
     }
 
@@ -999,7 +1000,7 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
                 }
                 startVpn(context)
             } catch (e: Exception) {
-                android.util.Log.e("DashboardViewModel", "reconnectWithLatestPolicy failed", e)
+                android.util.Log.e("DashboardViewModel", LogRedactor.redact("reconnectWithLatestPolicy failed: ${e.javaClass.simpleName}: ${e.message}"))
                 VpnStateManager.updateState(ConnectionState.ERROR)
             }
         }
@@ -1247,7 +1248,7 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
             }
             return true
         } catch (e: Exception) {
-            android.util.Log.e("DashboardViewModel", "importWireGuardConfig failed: ${e.message}")
+            android.util.Log.e("DashboardViewModel", LogRedactor.redact("importWireGuardConfig failed: ${e.message}"))
             return false
         }
     }
@@ -1385,7 +1386,7 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
                     }
                 }
             } catch (e: Exception) {
-                android.util.Log.e("DashboardViewModel", "importWireGuardFromUri failed: ${e.message}")
+                android.util.Log.e("DashboardViewModel", LogRedactor.redact("importWireGuardFromUri failed: ${e.message}"))
                 withContext(Dispatchers.Main) {
                     showToast(e.message ?: "Failed to import WireGuard profile(s)")
                 }
@@ -1469,7 +1470,7 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
                     )
                 )
             } catch (e: Exception) {
-                android.util.Log.e("DashboardViewModel", "saveWireGuardProfile failed: ${e.message}")
+                android.util.Log.e("DashboardViewModel", LogRedactor.redact("saveWireGuardProfile failed: ${e.message}"))
                 showToast(e.message ?: "Failed to save WireGuard profile")
             }
         }
@@ -1687,10 +1688,10 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
                 testUrl
             )
         } catch (e: Exception) {
-            android.util.Log.w("DashboardViewModel", "measureProfileDelay failed for ${profile.name}: ${e.message}")
+            android.util.Log.w("DashboardViewModel", LogRedactor.redact("measureProfileDelay failed for ${profile.name}: ${e.message}"))
             -1L
         } catch (t: Throwable) {
-            android.util.Log.w("DashboardViewModel", "measureProfileDelay throwable for ${profile.name}: ${t.message}")
+            android.util.Log.w("DashboardViewModel", LogRedactor.redact("measureProfileDelay throwable for ${profile.name}: ${t.message}"))
             -1L
         }
     }
@@ -1832,7 +1833,7 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
                     showToast("Restored $importedCount profiles ($skippedCount duplicates skipped)")
                 }
             } catch (e: Exception) {
-                android.util.Log.e("DashboardViewModel", "restoreProfilesFromBackupJson failed: ${e.message}")
+                android.util.Log.e("DashboardViewModel", LogRedactor.redact("restoreProfilesFromBackupJson failed: ${e.message}"))
                 withContext(Dispatchers.Main) {
                     showToast("Invalid backup data in clipboard")
                 }
