@@ -48,6 +48,25 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
     private var networkFetchJob: Job? = null
     private var postConnectCheckJob: Job? = null
     private var cancelJob: Job? = null
+
+    private val disconnectCoordinator = DisconnectCoordinator(
+        scope = viewModelScope,
+        stateFlow = VpnStateManager.connectionState,
+        setState = { VpnStateManager.updateState(it) },
+        beginIntentionalCancel = { VpnStateManager.beginIntentionalCancel() },
+        isServiceRunning = { HybridVpnService.isRunning },
+        dispatchStopSignal = {
+            dispatchVpnStop(getApplication())
+            runCatching {
+                val intent = Intent(getApplication(), HybridVpnService::class.java).apply {
+                    action = "ACTION_STOP"
+                }
+                getApplication<Application>().startService(intent)
+            }
+        },
+        teardownFlow = VpnActionBus.teardownComplete
+    )
+
     private val _sortedV2rayTabs = MutableStateFlow<Set<String>>(emptySet())
     val sortedV2rayTabs: StateFlow<Set<String>> = _sortedV2rayTabs.asStateFlow()
     private val _v2rayPingTabs = MutableStateFlow<Set<String>>(emptySet())
@@ -1081,19 +1100,15 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
      * This addresses the report that the button "immediately shuts down the
      * VPN state as if doing a force stop".
      */
-    fun initiateDisconnect(context: Context, onActualStop: (Context) -> Unit = {}) {
-        android.util.Log.d("DashboardViewModel", "initiateDisconnect (graceful) from ${VpnStateManager.connectionState.value}")
+    fun initiateDisconnect(context: Context = getApplication(), onActualStop: (Context) -> Unit = {}) {
+        android.util.Log.d("DashboardViewModel", "initiateDisconnect via DisconnectCoordinator from ${VpnStateManager.connectionState.value}")
         ++ipLookupSessionId
         networkFetchJob?.cancel()
         postConnectCheckJob?.cancel()
         cancelJob?.cancel()
         stopUptime()
-        VpnStateManager.updateState(ConnectionState.DISCONNECTING)
-        dispatchVpnStop(context)
+        disconnectCoordinator.requestDisconnect()
         onActualStop(context)
-        // No forced DISCONNECTED — the service broadcasts the final
-        // terminal state once TUN/FDs are closed. We leave the state in
-        // DISCONNECTING so the button/indicator can animate "Disconnecting".
     }
 
     fun resetState() { VpnStateManager.updateStateFromNative(0) }
@@ -1835,5 +1850,6 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
 
     override fun onCleared() {
         super.onCleared()
+        disconnectCoordinator.cancelWatchdog()
     }
 }

@@ -378,10 +378,14 @@ fun DashboardScreen(
                             DrawerModalType.WIREGUARD,
                             DrawerModalType.V2RAY,
                             DrawerModalType.FEATURES -> {
-                                if (!connectionState.isTerminal) {
-                                    disconnectWarningMessage = "Cannot modify settings while VPN is connected. Please disconnect your active connection and try again.\n\nWould you like to disconnect now?"
-                                } else {
-                                    activeDrawerModal = modal
+                                when (ConnectionLockGuard.evaluateControlTap(connectionState)) {
+                                    LockActionOutcome.ALLOW -> activeDrawerModal = modal
+                                    LockActionOutcome.SHOW_LOCK_WARNING -> {
+                                        if (ConnectionLockGuard.shouldShowLockDialog(connectionState, disconnectWarningMessage != null)) {
+                                            disconnectWarningMessage = "Cannot modify settings while VPN is connected. Please disconnect your active connection and try again.\n\nWould you like to disconnect now?"
+                                        }
+                                    }
+                                    LockActionOutcome.IGNORE_WHILE_DISCONNECTING -> Unit
                                 }
                             }
                             DrawerModalType.CHECK_UPDATE,
@@ -450,8 +454,15 @@ fun DashboardScreen(
             openSplitSheetTrigger = openSplitSheetTrigger,
             toastFlow = viewModel.toastMessage,
             subscriptionToastFlow = viewModel.subscriptionToast,
-            onShowDisconnectWarning = { disconnectWarningMessage = it }
+            onShowDisconnectWarning = { disconnectWarningMessage = it },
+            isWarningDialogVisible = disconnectWarningMessage != null
         )
+    }
+
+    LaunchedEffect(connectionState) {
+        if (ConnectionLockGuard.shouldAutoDismissLockFeedback(connectionState)) {
+            disconnectWarningMessage = null
+        }
     }
 
     DrawerModalHost(
@@ -461,6 +472,12 @@ fun DashboardScreen(
         onOpenPerAppRouting = {
             activeDrawerModal = DrawerModalType.NONE
             openSplitSheetTrigger++
+        },
+        connectionState = connectionState,
+        onShowConnectionWarning = { message ->
+            if (ConnectionLockGuard.shouldShowLockDialog(connectionState, disconnectWarningMessage != null)) {
+                disconnectWarningMessage = message
+            }
         }
     )
 
@@ -523,7 +540,8 @@ fun DashboardContent(
     openSplitSheetTrigger: Int = 0,
     toastFlow: kotlinx.coroutines.flow.Flow<String>,
     subscriptionToastFlow: kotlinx.coroutines.flow.Flow<String> = kotlinx.coroutines.flow.emptyFlow(),
-    onShowDisconnectWarning: (String) -> Unit = {}
+    onShowDisconnectWarning: (String) -> Unit = {},
+    isWarningDialogVisible: Boolean = false
 ) {
     var showAddServerSheet by remember { mutableStateOf(false) }
     var showServerListSheet by remember { mutableStateOf(false) }
@@ -532,7 +550,23 @@ fun DashboardContent(
     var showLiveLogScreen by remember { mutableStateOf(false) }
     var editingProfile by remember { mutableStateOf<VpnProfile?>(null) }
     var dashboardToastMessage by remember { mutableStateOf<String?>(null) }
-    val onShowToast = { msg: String -> dashboardToastMessage = msg }
+    var isDashboardToastLockWarning by remember { mutableStateOf(false) }
+
+    val onShowToast = { msg: String ->
+        isDashboardToastLockWarning = false
+        dashboardToastMessage = msg
+    }
+
+    val showLockWarningToast = { msg: String ->
+        if (ConnectionLockGuard.shouldShowLockToast(
+                connectionState,
+                isWarningDialogVisible,
+                isDashboardToastLockWarning && dashboardToastMessage != null
+            )) {
+            isDashboardToastLockWarning = true
+            dashboardToastMessage = msg
+        }
+    }
 
     LaunchedEffect(openSplitSheetTrigger) {
         if (openSplitSheetTrigger > 0) {
@@ -557,11 +591,29 @@ fun DashboardContent(
         if (dashboardToastMessage != null) {
             delay(2500L)
             dashboardToastMessage = null
+            isDashboardToastLockWarning = false
+        }
+    }
+
+    LaunchedEffect(connectionState) {
+        if (ConnectionLockGuard.shouldAutoDismissLockFeedback(connectionState)) {
+            if (isDashboardToastLockWarning) {
+                dashboardToastMessage = null
+                isDashboardToastLockWarning = false
+            }
+        }
+    }
+
+    LaunchedEffect(isWarningDialogVisible) {
+        if (isWarningDialogVisible && isDashboardToastLockWarning) {
+            dashboardToastMessage = null
+            isDashboardToastLockWarning = false
         }
     }
 
     LaunchedEffect(Unit) {
         toastFlow.collect { message ->
+            isDashboardToastLockWarning = false
             dashboardToastMessage = message
         }
     }
@@ -618,7 +670,8 @@ fun DashboardContent(
                 showAppRoutingScreen = false
             },
             onSelectAllApps = onSelectAllApps,
-            onDeselectAllApps = onDeselectAllApps
+            onDeselectAllApps = onDeselectAllApps,
+            connectionState = connectionState
         )
     }
 
@@ -775,12 +828,14 @@ fun DashboardContent(
                     currentMode = currentMode,
                     isEnabled = isUiUnlocked,
                     onClick = {
-                        if (isUiUnlocked) {
-                            if (isPerAppEnabled) showAppRoutingScreen = true else showSplitSheet = true
-                        } else {
-                            onShowDisconnectWarning(
-                                "Cannot modify Split Tunneling while VPN is connected. Please disconnect your active connection and try again.\n\nWould you like to disconnect now?"
-                            )
+                        when (ConnectionLockGuard.evaluateControlTap(connectionState)) {
+                            LockActionOutcome.ALLOW -> {
+                                if (isPerAppEnabled) showAppRoutingScreen = true else showSplitSheet = true
+                            }
+                            LockActionOutcome.SHOW_LOCK_WARNING -> {
+                                showLockWarningToast("Cannot modify Split Tunneling while VPN is connected")
+                            }
+                            LockActionOutcome.IGNORE_WHILE_DISCONNECTING -> Unit
                         }
                     }
                 )
@@ -791,12 +846,14 @@ fun DashboardContent(
                     isEnabled = isUiUnlocked,
                     onProtocolSelected = {
                         if (it == currentProtocolDisplay) return@ProtocolSelector
-                        if (isUiUnlocked) {
-                            onProtocolSelected(it.title)
-                        } else {
-                            onShowDisconnectWarning(
-                                "Cannot switch protocol while VPN is connected. Please disconnect your active connection and try again.\n\nWould you like to disconnect now?"
-                            )
+                        when (ConnectionLockGuard.evaluateControlTap(connectionState)) {
+                            LockActionOutcome.ALLOW -> {
+                                onProtocolSelected(it.title)
+                            }
+                            LockActionOutcome.SHOW_LOCK_WARNING -> {
+                                showLockWarningToast("Cannot switch protocol while VPN is connected")
+                            }
+                            LockActionOutcome.IGNORE_WHILE_DISCONNECTING -> Unit
                         }
                     }
                 )
@@ -809,12 +866,14 @@ fun DashboardContent(
                     isEnabled = isUiUnlocked,
                     onClick = { showServerListSheet = true },
                     onAddClick = {
-                        if (isUiUnlocked) {
-                            showAddServerSheet = true
-                        } else {
-                            onShowDisconnectWarning(
-                                "Cannot add a server while VPN is connected. Please disconnect your active connection and try again.\n\nWould you like to disconnect now?"
-                            )
+                        when (ConnectionLockGuard.evaluateControlTap(connectionState)) {
+                            LockActionOutcome.ALLOW -> {
+                                showAddServerSheet = true
+                            }
+                            LockActionOutcome.SHOW_LOCK_WARNING -> {
+                                showLockWarningToast("Cannot add a server while VPN is connected")
+                            }
+                            LockActionOutcome.IGNORE_WHILE_DISCONNECTING -> Unit
                         }
                     }
                 )
@@ -1009,10 +1068,11 @@ fun DashboardContent(
 
                     val isConnected = connectionState == ConnectionState.CONNECTED
                     val isConnecting =
-                        connectionState == ConnectionState.CONNECTING || connectionState == ConnectionState.RECONNECTING || connectionState == ConnectionState.DISCONNECTING || connectionState == ConnectionState.CANCELING
+                        connectionState == ConnectionState.CONNECTING || connectionState == ConnectionState.RECONNECTING
+                    val isDisconnecting = ConnectionLockGuard.isDisconnectingAnimationActive(connectionState)
                     val selectionLocked by VpnStateManager.selectionLocked.collectAsStateWithLifecycle()
                     val isConnectEnabled =
-                        (canConnect && !isConnecting && !selectionLocked) || isConnected || isConnecting
+                        (canConnect && !isConnecting && !isDisconnecting && !selectionLocked) || isConnected || isConnecting || isDisconnecting
 
                     val btnColor = when (connectionState) {
                         ConnectionState.DISCONNECTING -> Color(0xFFFF5252)
@@ -1029,14 +1089,14 @@ fun DashboardContent(
                         )
 
                     val animatedBtnBgColor by animateColorAsState(
-                        targetValue = if (isConnected || connectionState == ConnectionState.DISCONNECTING) btnColor.copy(
+                        targetValue = if (isConnected || isDisconnecting) btnColor.copy(
                             alpha = 0.15f
                         ) else SurfaceGlass,
                         animationSpec = tween(durationMillis = 300),
                         label = "btnBgColor"
                     )
                     val animatedBorderColor by animateColorAsState(
-                        targetValue = if (isConnected || connectionState == ConnectionState.DISCONNECTING) btnColor else BorderGlass,
+                        targetValue = if (isConnected || isDisconnecting) btnColor else BorderGlass,
                         animationSpec = tween(durationMillis = 300),
                         label = "borderColor"
                     )
@@ -1049,10 +1109,13 @@ fun DashboardContent(
                             .background(animatedBtnBgColor)
                             .border(1.dp, animatedBorderColor, RoundedCornerShape(24.dp))
                             .clickable(enabled = isConnectEnabled) {
-                                if (isConnected || isConnecting) {
-                                    if (connectionState == ConnectionState.CONNECTING) onCancelVpn(
-                                        context
-                                    ) else onStopVpn(context)
+                                if (isDisconnecting) {
+                                    return@clickable
+                                }
+                                if (isConnected) {
+                                    onStopVpn(context)
+                                } else if (isConnecting) {
+                                    onCancelVpn(context)
                                 } else {
                                     if (!canConnect) return@clickable
                                     val intent = VpnService.prepare(context)
@@ -1067,7 +1130,7 @@ fun DashboardContent(
                             imageVector = Icons.Default.PowerSettingsNew,
                             contentDescription = "Power",
                             tint = if (isConnected) btnColor
-                            else if (connectionState == ConnectionState.DISCONNECTING || isConnecting) btnColor.copy(
+                            else if (isDisconnecting || isConnecting) btnColor.copy(
                                 alpha = pulseAlpha
                             )
                             else Color.White,
@@ -1121,7 +1184,7 @@ fun DashboardContent(
                                     showServerListSheet = false
                                 },
                                 onTestSinglePing = onTestSinglePing,
-                                onShowToast = onShowToast
+                                onShowToast = showLockWarningToast
                             )
                         }
                     }
@@ -1150,7 +1213,9 @@ fun DashboardContent(
                                         onSetPerAppEnabled(true)
                                         showSplitSheet = false
                                         showAppRoutingScreen = true
-                                    }
+                                    },
+                                    connectionState = connectionState,
+                                    onShowToast = showLockWarningToast
                                 )
                                 // Custom Toast Overlay inside the sheet
                                 CustomGlassToast(
@@ -1466,9 +1531,33 @@ fun ServerListSheetContent(
                     ServerItemCard(
                         profile = profile, isSelected = isSelected,
                         connectionState = connectionState,
-                        onClick = { onSelect(profile.id) },
-                        onDelete = { onDelete(profile) },
-                        onEdit = { onEdit(profile) },
+                        onClick = {
+                            when (ConnectionLockGuard.evaluateControlTap(connectionState)) {
+                                LockActionOutcome.ALLOW -> onSelect(profile.id)
+                                LockActionOutcome.SHOW_LOCK_WARNING -> {
+                                    onShowToast("Cannot switch server while VPN is connected")
+                                }
+                                LockActionOutcome.IGNORE_WHILE_DISCONNECTING -> Unit
+                            }
+                        },
+                        onDelete = {
+                            when (ConnectionLockGuard.evaluateControlTap(connectionState)) {
+                                LockActionOutcome.ALLOW -> onDelete(profile)
+                                LockActionOutcome.SHOW_LOCK_WARNING -> {
+                                    onShowToast("Cannot delete server while VPN is connected")
+                                }
+                                LockActionOutcome.IGNORE_WHILE_DISCONNECTING -> Unit
+                            }
+                        },
+                        onEdit = {
+                            when (ConnectionLockGuard.evaluateControlTap(connectionState)) {
+                                LockActionOutcome.ALLOW -> onEdit(profile)
+                                LockActionOutcome.SHOW_LOCK_WARNING -> {
+                                    onShowToast("Cannot edit server while VPN is connected")
+                                }
+                                LockActionOutcome.IGNORE_WHILE_DISCONNECTING -> Unit
+                            }
+                        },
                         onPingClick = { onTestSinglePing(profile) },
                         onShowToast = onShowToast
                     )
@@ -1874,14 +1963,22 @@ fun ServerItemCard(
             // Subscription info card: no "Info" chip, no ping badge, no VLESS/TCP — only the volume+time row.
             if (onEdit != null && !isSubscriptionInfoCard) {
                 IconButton(
-                    onClick = { haptic.performHapticFeedback(HapticFeedbackType.LongPress); onEdit() },
-                    enabled = !isConnectedOrConnecting,
+                    onClick = {
+                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                        when (ConnectionLockGuard.evaluateControlTap(connectionState)) {
+                            LockActionOutcome.ALLOW -> onEdit()
+                            LockActionOutcome.SHOW_LOCK_WARNING -> {
+                                onShowToast("Cannot edit server while VPN is connected")
+                            }
+                            LockActionOutcome.IGNORE_WHILE_DISCONNECTING -> Unit
+                        }
+                    },
                     modifier = Modifier.size(36.dp)
                 ) {
                     Icon(
                         imageVector = Icons.Default.Edit,
                         contentDescription = "Edit",
-                        tint = if (isConnectedOrConnecting) Color.DarkGray else TextSecondary.copy(alpha = 0.65f),
+                        tint = if (ConnectionLockGuard.evaluateControlTap(connectionState) != LockActionOutcome.ALLOW) Color.DarkGray else TextSecondary.copy(alpha = 0.65f),
                         modifier = Modifier.size(19.dp)
                     )
                 }
@@ -1889,14 +1986,22 @@ fun ServerItemCard(
 
             if (onDelete != null && !isSubscriptionInfoCard) {
                 IconButton(
-                    onClick = { haptic.performHapticFeedback(HapticFeedbackType.LongPress); onDelete() },
-                    enabled = !(isSelected && isConnectedOrConnecting),
+                    onClick = {
+                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                        when (ConnectionLockGuard.evaluateControlTap(connectionState)) {
+                            LockActionOutcome.ALLOW -> onDelete()
+                            LockActionOutcome.SHOW_LOCK_WARNING -> {
+                                onShowToast("Cannot delete server while VPN is connected")
+                            }
+                            LockActionOutcome.IGNORE_WHILE_DISCONNECTING -> Unit
+                        }
+                    },
                     modifier = Modifier.size(36.dp)
                 ) {
                     Icon(
                         imageVector = Icons.Outlined.Delete,
                         contentDescription = "Delete",
-                        tint = if (isSelected && isConnectedOrConnecting) Color.DarkGray else Color(0xFFFF3B30).copy(alpha = 0.75f),
+                        tint = if (ConnectionLockGuard.evaluateControlTap(connectionState) != LockActionOutcome.ALLOW) Color.DarkGray else Color(0xFFFF3B30).copy(alpha = 0.75f),
                         modifier = Modifier.size(19.dp)
                     )
                 }
@@ -3652,7 +3757,12 @@ fun RoutingSelectorButton(
 }
 
 @Composable
-fun SplitTunnelingSheetContent(isPerAppEnabled: Boolean, onEnable: () -> Unit) {
+fun SplitTunnelingSheetContent(
+    isPerAppEnabled: Boolean,
+    onEnable: () -> Unit,
+    connectionState: ConnectionState = ConnectionState.DISCONNECTED,
+    onShowToast: (String) -> Unit = {}
+) {
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -3704,7 +3814,15 @@ fun SplitTunnelingSheetContent(isPerAppEnabled: Boolean, onEnable: () -> Unit) {
             }
             androidx.compose.material3.Switch(
                 checked = isPerAppEnabled,
-                onCheckedChange = { if (it) onEnable() },
+                onCheckedChange = {
+                    when (ConnectionLockGuard.evaluateControlTap(connectionState)) {
+                        LockActionOutcome.ALLOW -> if (it) onEnable()
+                        LockActionOutcome.SHOW_LOCK_WARNING -> {
+                            onShowToast("Cannot modify Split Tunneling while VPN is connected")
+                        }
+                        LockActionOutcome.IGNORE_WHILE_DISCONNECTING -> Unit
+                    }
+                },
                 colors = androidx.compose.material3.SwitchDefaults.colors(
                     uncheckedThumbColor = TextSecondary,
                     uncheckedTrackColor = SurfaceDark
@@ -3727,13 +3845,15 @@ fun AppRoutingScreen(
     onNavigateBack: () -> Unit,
     onDisablePerApp: () -> Unit,
     onSelectAllApps: () -> Unit,
-    onDeselectAllApps: () -> Unit
+    onDeselectAllApps: () -> Unit,
+    connectionState: ConnectionState = ConnectionState.DISCONNECTED
 ) {
     val context = androidx.compose.ui.platform.LocalContext.current
     var showSystemApps by remember { mutableStateOf(false) }
     var searchQuery by remember { mutableStateOf("") }
     var showMenu by remember { mutableStateOf(false) }
     var toastMessage by remember { mutableStateOf<String?>(null) }
+    var isRoutingToastLockWarning by remember { mutableStateOf(false) }
 
     val filteredApps = remember(apps, showSystemApps, searchQuery) {
         apps.filter { app ->
@@ -3749,6 +3869,27 @@ fun AppRoutingScreen(
         if (toastMessage != null) {
             kotlinx.coroutines.delay(4000)
             toastMessage = null
+            isRoutingToastLockWarning = false
+        }
+    }
+
+    LaunchedEffect(connectionState) {
+        if (ConnectionLockGuard.shouldAutoDismissLockFeedback(connectionState)) {
+            if (isRoutingToastLockWarning) {
+                toastMessage = null
+                isRoutingToastLockWarning = false
+            }
+        }
+    }
+
+    val showRoutingLockToast = { msg: String ->
+        if (ConnectionLockGuard.shouldShowLockToast(
+                connectionState,
+                false,
+                isRoutingToastLockWarning && toastMessage != null
+            )) {
+            isRoutingToastLockWarning = true
+            toastMessage = msg
         }
     }
 
@@ -3818,11 +3959,39 @@ fun AppRoutingScreen(
                             )
                             androidx.compose.material3.DropdownMenuItem(
                                 text = { Text("Select All", color = Color.White, fontFamily = SoraFamily) },
-                                onClick = { onSelectAllApps(); showMenu = false }
+                                onClick = {
+                                    when (ConnectionLockGuard.evaluateControlTap(connectionState)) {
+                                        LockActionOutcome.ALLOW -> {
+                                            onSelectAllApps()
+                                            showMenu = false
+                                        }
+                                        LockActionOutcome.SHOW_LOCK_WARNING -> {
+                                            showMenu = false
+                                            showRoutingLockToast("Cannot modify app routing while VPN is connected")
+                                        }
+                                        LockActionOutcome.IGNORE_WHILE_DISCONNECTING -> {
+                                            showMenu = false
+                                        }
+                                    }
+                                }
                             )
                             androidx.compose.material3.DropdownMenuItem(
                                 text = { Text("Deselect All", color = Color.White, fontFamily = SoraFamily) },
-                                onClick = { onDeselectAllApps(); showMenu = false }
+                                onClick = {
+                                    when (ConnectionLockGuard.evaluateControlTap(connectionState)) {
+                                        LockActionOutcome.ALLOW -> {
+                                            onDeselectAllApps()
+                                            showMenu = false
+                                        }
+                                        LockActionOutcome.SHOW_LOCK_WARNING -> {
+                                            showMenu = false
+                                            showRoutingLockToast("Cannot modify app routing while VPN is connected")
+                                        }
+                                        LockActionOutcome.IGNORE_WHILE_DISCONNECTING -> {
+                                            showMenu = false
+                                        }
+                                    }
+                                }
                             )
                         }
                     }
@@ -3904,7 +4073,15 @@ fun AppRoutingScreen(
                     }
                     androidx.compose.material3.Switch(
                         checked = isPerAppEnabled,
-                        onCheckedChange = { if (!it) onDisablePerApp() },
+                        onCheckedChange = {
+                            when (ConnectionLockGuard.evaluateControlTap(connectionState)) {
+                                LockActionOutcome.ALLOW -> if (!it) onDisablePerApp()
+                                LockActionOutcome.SHOW_LOCK_WARNING -> {
+                                    showRoutingLockToast("Cannot modify Split Tunneling while VPN is connected")
+                                }
+                                LockActionOutcome.IGNORE_WHILE_DISCONNECTING -> Unit
+                            }
+                        },
                         colors = androidx.compose.material3.SwitchDefaults.colors(
                             checkedThumbColor = PrimaryCyan,
                             checkedTrackColor = PrimaryCyan.copy(alpha = 0.5f)
@@ -3952,7 +4129,15 @@ fun AppRoutingScreen(
                     }
                     androidx.compose.material3.Switch(
                         checked = isBypassMode,
-                        onCheckedChange = { onBypassModeChange(it) },
+                        onCheckedChange = {
+                            when (ConnectionLockGuard.evaluateControlTap(connectionState)) {
+                                LockActionOutcome.ALLOW -> onBypassModeChange(it)
+                                LockActionOutcome.SHOW_LOCK_WARNING -> {
+                                    showRoutingLockToast("Cannot modify Split Tunneling while VPN is connected")
+                                }
+                                LockActionOutcome.IGNORE_WHILE_DISCONNECTING -> Unit
+                            }
+                        },
                         colors = androidx.compose.material3.SwitchDefaults.colors(
                             checkedThumbColor = PrimaryCyan,
                             checkedTrackColor = PrimaryCyan.copy(alpha = 0.5f)
@@ -4031,7 +4216,15 @@ fun AppRoutingScreen(
                             .padding(vertical = 6.dp)
                             .clip(RoundedCornerShape(12.dp))
                             .background(SurfaceGlass)
-                            .clickable { onToggleApp(app.packageName) }
+                            .clickable {
+                                when (ConnectionLockGuard.evaluateControlTap(connectionState)) {
+                                    LockActionOutcome.ALLOW -> onToggleApp(app.packageName)
+                                    LockActionOutcome.SHOW_LOCK_WARNING -> {
+                                        showRoutingLockToast("Cannot modify app routing while VPN is connected")
+                                    }
+                                    LockActionOutcome.IGNORE_WHILE_DISCONNECTING -> Unit
+                                }
+                            }
                             .padding(12.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
@@ -4268,16 +4461,43 @@ fun ServerListFullScreen(
     // other messages surface here and self-clear, instead of relying on the
     // shared dashboardToastMessage which leaks into other methods' lists.
     var localToast by androidx.compose.runtime.remember { mutableStateOf<String?>(null) }
+    var isLocalToastLockWarning by androidx.compose.runtime.remember { mutableStateOf(false) }
+
     androidx.compose.runtime.LaunchedEffect(localToast) {
         if (localToast != null) {
             kotlinx.coroutines.delay(4000)
             localToast = null
+            isLocalToastLockWarning = false
         }
     }
+
+    androidx.compose.runtime.LaunchedEffect(connectionState) {
+        if (ConnectionLockGuard.shouldAutoDismissLockFeedback(connectionState)) {
+            if (isLocalToastLockWarning) {
+                localToast = null
+                isLocalToastLockWarning = false
+            }
+        }
+    }
+
+    val showServerListLockToast = { msg: String ->
+        if (ConnectionLockGuard.shouldShowLockToast(
+                connectionState,
+                false,
+                isLocalToastLockWarning && localToast != null
+            )) {
+            isLocalToastLockWarning = true
+            localToast = msg
+        }
+    }
+
     // Subscription-update results arrive on their own flow so they only render
     // here — never in the shared toast that other methods' lists also show.
     androidx.compose.runtime.LaunchedEffect(subscriptionToastFlow) {
-        subscriptionToastFlow.collect { localToast = it }
+        subscriptionToastFlow.collect {
+            isLocalToastLockWarning = false
+            localToast = it
+        }
     }
 
     val v2rayServers = androidx.compose.runtime.remember(servers) { servers.filter { it.protocol == "v2rayNG" } }
@@ -4439,12 +4659,34 @@ fun ServerListFullScreen(
                                 androidx.compose.material3.DropdownMenuItem(
                                     text = { Text("Update subscription", color = Color.White, fontFamily = SoraFamily) },
                                     leadingIcon = { Icon(androidx.compose.material.icons.Icons.Outlined.Sync, contentDescription = null, tint = Color.White) },
-                                    onClick = { val tab = selectedTab; showV2rayMenu = false; if (tab != "SingleLinks") onUpdateSub(tab) }
+                                    onClick = {
+                                        val tab = selectedTab
+                                        showV2rayMenu = false
+                                        if (tab != "SingleLinks") {
+                                            when (ConnectionLockGuard.evaluateControlTap(connectionState)) {
+                                                LockActionOutcome.ALLOW -> onUpdateSub(tab)
+                                                LockActionOutcome.SHOW_LOCK_WARNING -> {
+                                                    showServerListLockToast("Cannot update subscription while VPN is connected")
+                                                }
+                                                LockActionOutcome.IGNORE_WHILE_DISCONNECTING -> Unit
+                                            }
+                                        }
+                                    }
                                 )
                                 androidx.compose.material3.DropdownMenuItem(
                                     text = { Text("Delete invalid config", color = Color(0xFFE53935), fontFamily = SoraFamily) },
                                     leadingIcon = { Icon(androidx.compose.material.icons.Icons.Outlined.Delete, contentDescription = null, tint = Color(0xFFE53935)) },
-                                    onClick = { val tab = selectedTab; showV2rayMenu = false; onDeleteInvalidV2ray(tab) }
+                                    onClick = {
+                                        val tab = selectedTab
+                                        showV2rayMenu = false
+                                        when (ConnectionLockGuard.evaluateControlTap(connectionState)) {
+                                            LockActionOutcome.ALLOW -> onDeleteInvalidV2ray(tab)
+                                            LockActionOutcome.SHOW_LOCK_WARNING -> {
+                                                showServerListLockToast("Cannot delete servers while VPN is connected")
+                                            }
+                                            LockActionOutcome.IGNORE_WHILE_DISCONNECTING -> Unit
+                                        }
+                                    }
                                 )
                             }
                         }
@@ -4544,15 +4786,32 @@ fun ServerListFullScreen(
                                     androidx.compose.material3.DropdownMenuItem(
                                         text = { Text("Rename", color = Color.White, fontFamily = SoraFamily) },
                                         leadingIcon = { Icon(androidx.compose.material.icons.Icons.Default.Edit, contentDescription = null, tint = Color.White) },
-                                        onClick = { expandedTabMenu = null; renamingSubKey = tabKey }
+                                        onClick = {
+                                            expandedTabMenu = null
+                                            when (ConnectionLockGuard.evaluateControlTap(connectionState)) {
+                                                LockActionOutcome.ALLOW -> renamingSubKey = tabKey
+                                                LockActionOutcome.SHOW_LOCK_WARNING -> {
+                                                    showServerListLockToast("Cannot rename subscription while VPN is connected")
+                                                }
+                                                LockActionOutcome.IGNORE_WHILE_DISCONNECTING -> Unit
+                                            }
+                                        }
                                     )
                                     androidx.compose.material3.DropdownMenuItem(
                                         text = { Text("Delete Sub", color = Color(0xFFE53935), fontFamily = SoraFamily) },
                                         leadingIcon = { Icon(androidx.compose.material.icons.Icons.Outlined.Delete, contentDescription = null, tint = Color(0xFFE53935)) },
                                         onClick = {
                                             expandedTabMenu = null
-                                            onDeleteSubGroup(tabKey)
-                                            if (selectedTab == tabKey) selectedTab = "SingleLinks" // Fallback will be handled by LaunchedEffect
+                                            when (ConnectionLockGuard.evaluateControlTap(connectionState)) {
+                                                LockActionOutcome.ALLOW -> {
+                                                    onDeleteSubGroup(tabKey)
+                                                    if (selectedTab == tabKey) selectedTab = "SingleLinks" // Fallback will be handled by LaunchedEffect
+                                                }
+                                                LockActionOutcome.SHOW_LOCK_WARNING -> {
+                                                    showServerListLockToast("Cannot delete subscription while VPN is connected")
+                                                }
+                                                LockActionOutcome.IGNORE_WHILE_DISCONNECTING -> Unit
+                                            }
                                         }
                                     )
                                 }
@@ -4586,11 +4845,42 @@ fun ServerListFullScreen(
                     profile = profile,
                     isSelected = isSelected,
                     connectionState = connectionState,
-                    onClick = { onSelect(profile.id); onNavigateBack() },
-                    onDelete = if (isSub) null else { { onDelete(profile) } },
-                    onEdit = if (isSub) null else { { onEdit(profile) } },
+                    onClick = {
+                        when (ConnectionLockGuard.evaluateControlTap(connectionState)) {
+                            LockActionOutcome.ALLOW -> {
+                                onSelect(profile.id)
+                                onNavigateBack()
+                            }
+                            LockActionOutcome.SHOW_LOCK_WARNING -> {
+                                showServerListLockToast("Cannot switch server while VPN is connected")
+                            }
+                            LockActionOutcome.IGNORE_WHILE_DISCONNECTING -> Unit
+                        }
+                    },
+                    onDelete = if (isSub) null else {
+                        {
+                            when (ConnectionLockGuard.evaluateControlTap(connectionState)) {
+                                LockActionOutcome.ALLOW -> onDelete(profile)
+                                LockActionOutcome.SHOW_LOCK_WARNING -> {
+                                    showServerListLockToast("Cannot delete server while VPN is connected")
+                                }
+                                LockActionOutcome.IGNORE_WHILE_DISCONNECTING -> Unit
+                            }
+                        }
+                    },
+                    onEdit = if (isSub) null else {
+                        {
+                            when (ConnectionLockGuard.evaluateControlTap(connectionState)) {
+                                LockActionOutcome.ALLOW -> onEdit(profile)
+                                LockActionOutcome.SHOW_LOCK_WARNING -> {
+                                    showServerListLockToast("Cannot edit server while VPN is connected")
+                                }
+                                LockActionOutcome.IGNORE_WHILE_DISCONNECTING -> Unit
+                            }
+                        }
+                    },
                     onPingClick = { onTestSinglePing(profile) },
-                    onShowToast = onShowToast,
+                    onShowToast = { msg -> showServerListLockToast(msg) },
                     subscriptionMeta = if (isInfoCard) mergedSubMeta else null,
                     subscriptionLabel = groupLabel
                 )
@@ -4646,9 +4936,22 @@ fun ServerListFullScreen(
                         Button(
                             onClick = {
                                 if (isButtonEnabled) {
-                                    onRenameSubGroup(renamingSubKey!!, customName)
+                                    when (ConnectionLockGuard.evaluateControlTap(connectionState)) {
+                                        LockActionOutcome.ALLOW -> {
+                                            onRenameSubGroup(renamingSubKey!!, customName)
+                                            renamingSubKey = null
+                                        }
+                                        LockActionOutcome.SHOW_LOCK_WARNING -> {
+                                            showServerListLockToast("Cannot rename subscription while VPN is connected")
+                                            renamingSubKey = null
+                                        }
+                                        LockActionOutcome.IGNORE_WHILE_DISCONNECTING -> {
+                                            renamingSubKey = null
+                                        }
+                                    }
+                                } else {
+                                    renamingSubKey = null
                                 }
-                                renamingSubKey = null
                             },
                             enabled = isButtonEnabled,
                             modifier = Modifier.fillMaxWidth().height(56.dp),
