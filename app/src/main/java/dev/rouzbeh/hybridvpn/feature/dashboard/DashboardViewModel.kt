@@ -36,6 +36,8 @@ import kotlinx.coroutines.sync.withPermit
 import org.json.JSONArray
 import org.json.JSONObject
 import java.net.URL
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicInteger
 import kotlin.time.Duration.Companion.milliseconds
 
 class DashboardViewModel(application: Application) : AndroidViewModel(application) {
@@ -62,6 +64,9 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
     val sortedV2rayTabs: StateFlow<Set<String>> = _sortedV2rayTabs.asStateFlow()
     private val _v2rayPingTabs = MutableStateFlow<Set<String>>(emptySet())
     val v2rayPingTabs: StateFlow<Set<String>> = _v2rayPingTabs.asStateFlow()
+    private val v2rayPingJobs = ConcurrentHashMap<String, Job>()
+    private val _singleLinksPingProgress = MutableStateFlow<PingProgress?>(null)
+    val singleLinksPingProgress: StateFlow<PingProgress?> = _singleLinksPingProgress.asStateFlow()
 
     private val _v2rayTabOrder = MutableStateFlow<List<String>>(emptyList())
     val v2rayTabOrder: StateFlow<List<String>> = _v2rayTabOrder.asStateFlow()
@@ -1590,6 +1595,7 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
     }
 
     fun deleteSubscriptionGroup(subKey: String) {
+        stopV2rayPing(subKey)
         viewModelScope.launch(Dispatchers.IO) {
             val targets = allProfiles.value.filter { it.username == subKey }
             val savedId = settingsRepository.getLastServerId("v2rayNG")
@@ -1637,6 +1643,19 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
         }
     }
 
+    fun stopV2rayPing(groupName: String = V2rayTabOrderResolver.SINGLE_LINKS_TAB) {
+        val previousJob = v2rayPingJobs.remove(groupName)
+        val wasActive = previousJob?.isActive == true
+        previousJob?.cancel()
+        _v2rayPingTabs.value = _v2rayPingTabs.value - groupName
+        if (groupName == V2rayTabOrderResolver.SINGLE_LINKS_TAB) {
+            _singleLinksPingProgress.value = null
+        }
+        if (wasActive) {
+            _subscriptionToast.tryEmit("Ping stopped")
+        }
+    }
+
     /**
      * True v2rayNG-style "Test real delay": builds each profile's full Xray
      * JSON (inbounds stripped internally by MeasureOutboundDelay) and dials
@@ -1650,41 +1669,78 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
      * mirrors that concurrency model.
      */
     fun testV2rayRealDelay(groupName: String) {
-        viewModelScope.launch(Dispatchers.IO) {
-            // Scope to the selected tab: "SingleLinks" pings only non-subscription
-            // servers; a sub key (sub:<url>) pings only that group. This avoids
-            // grinding through every tab's configs before reaching the one shown.
-            val base = allProfiles.value.filter { it.protocol == "v2rayNG" && !isSubscriptionInfoName(it.name) }
-            val targets = when (groupName) {
-                "SingleLinks" -> base.filter { !it.username.startsWith("sub:") }
-                else -> base.filter { it.username == groupName }
-            }
-            if (targets.isEmpty()) return@launch
-            // Mark this tab as pinging so only its UI shows the loading state.
-            _v2rayPingTabs.value = _v2rayPingTabs.value + groupName
-            // Reset first so user sees immediate feedback
-            targets.forEach { dao.updateProfile(it.copy(ping = 0L)) }
+        if (v2rayPingJobs[groupName]?.isActive == true) return
 
-            // v2rayNG default concurrency when not configured
-            val concurrency = 5
-            val semaphore = Semaphore(concurrency)
+        val job = viewModelScope.launch(Dispatchers.IO, start = CoroutineStart.LAZY) {
+            val currentJob = coroutineContext[Job]
+            fun isStillCurrent(): Boolean = isActive && v2rayPingJobs[groupName] === currentJob
 
             try {
+                // Scope to the selected tab: "SingleLinks" pings only non-subscription
+                // servers; a sub key (sub:<url>) pings only that group. This avoids
+                // grinding through every tab's configs before reaching the one shown.
+                val base = allProfiles.value.filter { it.protocol == "v2rayNG" && !isSubscriptionInfoName(it.name) }
+                val targets = when (groupName) {
+                    V2rayTabOrderResolver.SINGLE_LINKS_TAB -> base.filter { !it.username.startsWith("sub:") }
+                    else -> base.filter { it.username == groupName }
+                }
+                if (targets.isEmpty() || !isStillCurrent()) return@launch
+
+                // Mark this tab as pinging so only its UI shows the loading state.
+                _v2rayPingTabs.value = _v2rayPingTabs.value + groupName
+                if (groupName == V2rayTabOrderResolver.SINGLE_LINKS_TAB) {
+                    _singleLinksPingProgress.value = PingProgress(0, targets.size)
+                }
+
+                // Reset first so user sees immediate feedback
+                for (target in targets) {
+                    if (!isStillCurrent()) return@launch
+                    ensureActive()
+                    dao.updateProfile(target.copy(ping = 0L))
+                }
+
+                // v2rayNG default concurrency when not configured
+                val completedCounter = AtomicInteger(0)
+                val concurrency = 5
+                val semaphore = Semaphore(concurrency)
+
                 coroutineScope {
                     targets.map { profile ->
                         async(Dispatchers.IO) {
+                            if (!isStillCurrent()) return@async
                             semaphore.withPermit {
-                                val ping = measureProfileDelay(profile)
+                                if (!isStillCurrent()) return@withPermit
+                                val ping = try {
+                                    measureProfileDelay(profile)
+                                } catch (ce: CancellationException) {
+                                    throw ce
+                                } catch (_: Exception) {
+                                    -1L
+                                }
+                                if (!isStillCurrent()) return@withPermit
                                 dao.updateProfile(profile.copy(ping = ping))
+                                if (groupName == V2rayTabOrderResolver.SINGLE_LINKS_TAB && isStillCurrent()) {
+                                    _singleLinksPingProgress.value = PingProgress(
+                                        completedCounter.incrementAndGet(),
+                                        targets.size
+                                    )
+                                }
                             }
                         }
                     }.awaitAll()
                 }
             } finally {
-                // Always clear this tab's loading flag, even if the test errors out.
-                _v2rayPingTabs.value = _v2rayPingTabs.value - groupName
+                if (v2rayPingJobs.remove(groupName, currentJob)) {
+                    _v2rayPingTabs.value = _v2rayPingTabs.value - groupName
+                    if (groupName == V2rayTabOrderResolver.SINGLE_LINKS_TAB) {
+                        _singleLinksPingProgress.value = null
+                    }
+                }
             }
         }
+
+        v2rayPingJobs[groupName] = job
+        job.start()
     }
 
     /**
@@ -1754,7 +1810,7 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
         if (protocol == "WireGuard") {
             testAllWireGuardPing()
         } else if (protocol == "v2rayNG") {
-            testV2rayRealDelay("SingleLinks")
+            testV2rayRealDelay(V2rayTabOrderResolver.SINGLE_LINKS_TAB)
         }
     }
 
@@ -1769,10 +1825,13 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
                 configJson,
                 testUrl
             )
+        } catch (ce: CancellationException) {
+            throw ce
         } catch (e: Exception) {
             android.util.Log.w("DashboardViewModel", LogRedactor.redact("measureProfileDelay failed for ${profile.name}: ${e.message}"))
             -1L
         } catch (t: Throwable) {
+            if (t is CancellationException) throw t
             android.util.Log.w("DashboardViewModel", LogRedactor.redact("measureProfileDelay throwable for ${profile.name}: ${t.message}"))
             -1L
         }
@@ -1980,5 +2039,7 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
     override fun onCleared() {
         super.onCleared()
         disconnectCoordinator.cancel()
+        v2rayPingJobs.values.forEach { it.cancel() }
+        v2rayPingJobs.clear()
     }
 }

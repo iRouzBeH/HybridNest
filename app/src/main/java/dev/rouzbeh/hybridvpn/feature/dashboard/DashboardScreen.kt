@@ -259,6 +259,28 @@ val TelegramReorderIcon: androidx.compose.ui.graphics.vector.ImageVector
         }
     }.build()
 
+val StopIcon: androidx.compose.ui.graphics.vector.ImageVector
+    get() = androidx.compose.ui.graphics.vector.ImageVector.Builder(
+        name = "Stop",
+        defaultWidth = 24.dp,
+        defaultHeight = 24.dp,
+        viewportWidth = 24f,
+        viewportHeight = 24f
+    ).apply {
+        path(
+            fill = androidx.compose.ui.graphics.SolidColor(androidx.compose.ui.graphics.Color.White)
+        ) {
+            moveTo(6.0f, 6.0f)
+            lineTo(18.0f, 6.0f)
+            lineTo(18.0f, 18.0f)
+            lineTo(6.0f, 18.0f)
+            close()
+        }
+    }.build()
+
+val androidx.compose.material.icons.Icons.Filled.Stop: androidx.compose.ui.graphics.vector.ImageVector
+    get() = StopIcon
+
 val AsteriskVisualTransformation = androidx.compose.ui.text.input.VisualTransformation { text ->
     androidx.compose.ui.text.input.TransformedText(
         androidx.compose.ui.text.AnnotatedString("*".repeat(text.text.length)),
@@ -352,6 +374,7 @@ fun DashboardScreen(
     val v2rayPingTabs by viewModel.v2rayPingTabs.collectAsStateWithLifecycle()
     val v2rayTabOrder by viewModel.v2rayTabOrder.collectAsStateWithLifecycle()
     val v2raySelectedTab by viewModel.v2raySelectedTab.collectAsStateWithLifecycle()
+    val singleLinksPingProgress by viewModel.singleLinksPingProgress.collectAsStateWithLifecycle()
 
     val drawerState =
         androidx.compose.material3.rememberDrawerState(initialValue = androidx.compose.material3.DrawerValue.Closed)
@@ -449,6 +472,8 @@ fun DashboardScreen(
             v2rayPingTabs = v2rayPingTabs,
             v2rayTabOrder = v2rayTabOrder,
             v2raySelectedTab = v2raySelectedTab,
+            singleLinksPingProgress = singleLinksPingProgress,
+            onStopSingleLinksPing = { viewModel.stopV2rayPing(V2rayTabOrderResolver.SINGLE_LINKS_TAB) },
             onSelectV2rayTab = { viewModel.selectV2rayTab(it) },
             onMoveV2rayTab = { visibleTabs, tabKey, delta -> viewModel.moveV2rayTab(visibleTabs, tabKey, delta) },
             onTestPing = { viewModel.testPing() },
@@ -535,6 +560,8 @@ fun DashboardContent(
     v2rayPingTabs: Set<String>,
     v2rayTabOrder: List<String> = emptyList(),
     v2raySelectedTab: String = V2rayTabOrderResolver.SINGLE_LINKS_TAB,
+    singleLinksPingProgress: PingProgress? = null,
+    onStopSingleLinksPing: () -> Unit = {},
     onSelectV2rayTab: (String) -> Unit = {},
     onMoveV2rayTab: (List<String>, String, Int) -> Unit = { _, _, _ -> },
     onAddServer: (String, String, String, String, String) -> Unit,
@@ -679,6 +706,8 @@ fun DashboardContent(
             v2rayPingTabs = v2rayPingTabs,
             v2rayTabOrder = v2rayTabOrder,
             v2raySelectedTab = v2raySelectedTab,
+            singleLinksPingProgress = singleLinksPingProgress,
+            onStopSingleLinksPing = onStopSingleLinksPing,
             onSelectV2rayTab = onSelectV2rayTab,
             onMoveV2rayTab = onMoveV2rayTab,
             onEdit = { profile -> editingProfile = profile },
@@ -4444,6 +4473,8 @@ fun ServerListFullScreen(
     v2rayPingTabs: Set<String> = emptySet(),
     v2rayTabOrder: List<String> = emptyList(),
     v2raySelectedTab: String = V2rayTabOrderResolver.SINGLE_LINKS_TAB,
+    singleLinksPingProgress: PingProgress? = null,
+    onStopSingleLinksPing: () -> Unit = {},
     onSelectV2rayTab: (String) -> Unit = {},
     onMoveV2rayTab: (List<String>, String, Int) -> Unit = { _, _, _ -> },
     onEdit: (VpnProfile) -> Unit,
@@ -4489,6 +4520,10 @@ fun ServerListFullScreen(
 
     val selectedTab = androidx.compose.runtime.remember(v2raySelectedTab, tabOrder) {
         V2rayTabOrderResolver.resolveEffectiveSelectedTab(v2raySelectedTab, tabOrder)
+    }
+
+    val menuState = androidx.compose.runtime.remember(selectedTab, v2rayPingTabs) {
+        V2rayTabMenuPolicy.resolveMenuState(selectedTab, v2rayPingTabs)
     }
 
     androidx.compose.runtime.LaunchedEffect(isReorderMode, tabOrder.size) {
@@ -4578,28 +4613,38 @@ fun ServerListFullScreen(
                                     leadingIcon = { Icon(androidx.compose.material.icons.Icons.Default.Sort, contentDescription = null, tint = Color.White) },
                                     onClick = { val tab = selectedTab; showV2rayMenu = false; onSortV2ray(tab) }
                                 )
-                                androidx.compose.material3.DropdownMenuItem(
-                                    text = { Text("Test Real delay config", color = Color.White, fontFamily = SoraFamily) },
-                                    leadingIcon = { Icon(androidx.compose.material.icons.Icons.Default.Speed, contentDescription = null, tint = Color.White) },
-                                    onClick = { val tab = selectedTab; showV2rayMenu = false; onTestAllV2rayPing(tab) }
-                                )
-                                androidx.compose.material3.DropdownMenuItem(
-                                    text = { Text("Update subscription", color = Color.White, fontFamily = SoraFamily) },
-                                    leadingIcon = { Icon(androidx.compose.material.icons.Icons.Outlined.Sync, contentDescription = null, tint = Color.White) },
-                                    onClick = {
-                                        val tab = selectedTab
-                                        showV2rayMenu = false
-                                        if (tab != "SingleLinks") {
-                                            when (ConnectionLockGuard.evaluateControlTap(connectionState)) {
-                                                LockActionOutcome.ALLOW -> onUpdateSub(tab)
-                                                LockActionOutcome.SHOW_LOCK_WARNING -> {
-                                                    onShowDisconnectWarning("Cannot update subscription while VPN is active. Please disconnect first and try again.\n\nWould you like to disconnect now?")
+                                if (menuState.showStopPingAction) {
+                                    androidx.compose.material3.DropdownMenuItem(
+                                        text = { Text("Stop ping test", color = Color(0xFFFF6B6B), fontFamily = SoraFamily) },
+                                        leadingIcon = { Icon(androidx.compose.material.icons.Icons.Default.Stop, contentDescription = null, tint = Color(0xFFFF6B6B)) },
+                                        onClick = { showV2rayMenu = false; onStopSingleLinksPing() }
+                                    )
+                                } else {
+                                    androidx.compose.material3.DropdownMenuItem(
+                                        text = { Text("Test Real delay config", color = Color.White, fontFamily = SoraFamily) },
+                                        leadingIcon = { Icon(androidx.compose.material.icons.Icons.Default.Speed, contentDescription = null, tint = Color.White) },
+                                        onClick = { val tab = selectedTab; showV2rayMenu = false; onTestAllV2rayPing(tab) }
+                                    )
+                                }
+                                if (menuState.showUpdateSubscription) {
+                                    androidx.compose.material3.DropdownMenuItem(
+                                        text = { Text("Update subscription", color = Color.White, fontFamily = SoraFamily) },
+                                        leadingIcon = { Icon(androidx.compose.material.icons.Icons.Outlined.Sync, contentDescription = null, tint = Color.White) },
+                                        onClick = {
+                                            val tab = selectedTab
+                                            showV2rayMenu = false
+                                            if (tab != "SingleLinks") {
+                                                when (ConnectionLockGuard.evaluateControlTap(connectionState)) {
+                                                    LockActionOutcome.ALLOW -> onUpdateSub(tab)
+                                                    LockActionOutcome.SHOW_LOCK_WARNING -> {
+                                                        onShowDisconnectWarning("Cannot update subscription while VPN is active. Please disconnect first and try again.\n\nWould you like to disconnect now?")
+                                                    }
+                                                    LockActionOutcome.IGNORE_WHILE_DISCONNECTING -> Unit
                                                 }
-                                                LockActionOutcome.IGNORE_WHILE_DISCONNECTING -> Unit
                                             }
                                         }
-                                    }
-                                )
+                                    )
+                                }
                                 androidx.compose.material3.DropdownMenuItem(
                                     text = { Text("Delete invalid config", color = Color(0xFFE53935), fontFamily = SoraFamily) },
                                     leadingIcon = { Icon(androidx.compose.material.icons.Icons.Outlined.Delete, contentDescription = null, tint = Color(0xFFE53935)) },
@@ -4733,6 +4778,103 @@ fun ServerListFullScreen(
                                 }
                             }
                         }
+                    }
+                }
+            }
+        }
+
+        androidx.compose.animation.AnimatedVisibility(
+            visible = protocol == "v2rayNG" && menuState.showStopPingBanner,
+            enter = androidx.compose.animation.fadeIn() + androidx.compose.animation.expandVertically(),
+            exit = androidx.compose.animation.fadeOut() + androidx.compose.animation.shrinkVertically()
+        ) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 4.dp)
+                    .background(Color(0xFF071926).copy(alpha = 0.90f), RoundedCornerShape(14.dp))
+                    .border(1.dp, PrimaryCyan.copy(alpha = 0.25f), RoundedCornerShape(14.dp))
+                    .clip(RoundedCornerShape(14.dp))
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 14.dp, vertical = 10.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(14.dp),
+                                strokeWidth = 1.8.dp,
+                                color = PrimaryCyan
+                            )
+                            Text(
+                                text = "Pinging SingleLinks",
+                                color = Color.White,
+                                fontSize = 13.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                fontFamily = SoraFamily
+                            )
+                            val badgeText = if (singleLinksPingProgress != null) {
+                                "${singleLinksPingProgress.safeCompleted} / ${singleLinksPingProgress.safeTotal}"
+                            } else {
+                                "Preparing..."
+                            }
+                            Text(
+                                text = badgeText,
+                                color = PrimaryCyan,
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Medium,
+                                fontFamily = SoraFamily,
+                                modifier = Modifier
+                                    .background(PrimaryCyan.copy(alpha = 0.12f), RoundedCornerShape(6.dp))
+                                    .padding(horizontal = 6.dp, vertical = 2.dp)
+                            )
+                        }
+
+                        Row(
+                            modifier = Modifier
+                                .background(Color(0xFFFF4D6D).copy(alpha = 0.15f), RoundedCornerShape(12.dp))
+                                .border(1.dp, Color(0xFFFF4D6D).copy(alpha = 0.4f), RoundedCornerShape(12.dp))
+                                .bounceClick { onStopSingleLinksPing() }
+                                .padding(horizontal = 10.dp, vertical = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            Icon(
+                                imageVector = androidx.compose.material.icons.Icons.Default.Stop,
+                                contentDescription = "Stop",
+                                tint = Color(0xFFFF4D6D),
+                                modifier = Modifier.size(14.dp)
+                            )
+                            Text(
+                                text = "Stop",
+                                color = Color(0xFFFF4D6D),
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Bold,
+                                fontFamily = SoraFamily
+                            )
+                        }
+                    }
+
+                    if (singleLinksPingProgress != null && singleLinksPingProgress.safeTotal > 0) {
+                        Spacer(modifier = Modifier.height(8.dp))
+                        androidx.compose.material3.LinearProgressIndicator(
+                            progress = { singleLinksPingProgress.fraction },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(3.dp)
+                                .clip(RoundedCornerShape(2.dp)),
+                            color = PrimaryCyan,
+                            trackColor = Color.White.copy(alpha = 0.08f)
+                        )
                     }
                 }
             }
