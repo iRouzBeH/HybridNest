@@ -12,10 +12,13 @@ import java.net.Inet4Address
 import java.net.InetAddress
 import java.net.NetworkInterface
 import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.EnterTransition
 import androidx.compose.animation.ExitTransition
+import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.togetherWith
@@ -30,6 +33,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.displayCutoutPadding
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
@@ -833,11 +837,11 @@ fun WireGuardSettingsDialog(
 ) = WireGuardSettingsFullScreen(onDismiss, viewModel, connectionState, onShowConnectionWarning)
 
 // =========================================================================
-// 3. V2RAYNG (XRAY) SETTINGS DIALOG
+// 3. V2RAYNG (XRAY) SETTINGS FULL-SCREEN
 // =========================================================================
 
 @Composable
-fun V2raySettingsDialog(
+fun V2raySettingsFullScreen(
     onDismiss: () -> Unit,
     viewModel: DashboardViewModel,
     connectionState: ConnectionState = ConnectionState.DISCONNECTED,
@@ -853,136 +857,209 @@ fun V2raySettingsDialog(
     var muxConcurrency by remember { mutableStateOf(settings.getV2rayMuxConcurrency().toString()) }
     var muxQuicPolicy by remember { mutableStateOf(settings.getV2rayMuxQuicPolicy()) }
 
-    DialogShell(
-        onDismiss = onDismiss,
+    SettingsFullScreenScaffold(
         title = "v2rayNG Settings",
-        subtitle = "Xray-core DNS module, MUX & traffic sniffing"
+        subtitle = "Xray-core DNS, routing & multiplexing",
+        iconRes = R.drawable.ic_v2rayng,
+        onBack = onDismiss,
+        bottomBar = {
+            SettingsActionFooter(
+                onReset = {
+                    vpnDns = V2raySettings.DEFAULT_VPN_DNS
+                    remoteDns = V2raySettings.DEFAULT_REMOTE_DNS
+                    domesticDns = V2raySettings.DEFAULT_DOMESTIC_DNS
+                    sniffingEnabled = true
+                    bypassLan = false
+                    muxEnabled = false
+                    muxConcurrency = "10"
+                    muxQuicPolicy = "reject"
+                },
+                onCancel = onDismiss,
+                onSave = {
+                    when (ConnectionLockGuard.evaluateControlTap(connectionState)) {
+                        LockActionOutcome.ALLOW -> {
+                            settings.setV2rayVpnDns(vpnDns.trim().ifBlank { V2raySettings.DEFAULT_VPN_DNS })
+                            settings.setV2rayRemoteDns(remoteDns.trim().ifBlank { V2raySettings.DEFAULT_REMOTE_DNS })
+                            settings.setV2rayDomesticDns(domesticDns.trim().ifBlank { V2raySettings.DEFAULT_DOMESTIC_DNS })
+                            settings.setV2raySniffingEnabled(sniffingEnabled)
+                            settings.setV2rayBypassLanEnabled(bypassLan)
+                            settings.setV2rayMuxEnabled(muxEnabled)
+                            settings.setV2rayMuxConcurrency(muxConcurrency.toIntOrNull()?.coerceIn(1, 64) ?: 10)
+                            settings.setV2rayMuxQuicPolicy(muxQuicPolicy)
+                            viewModel.notifySettingsSaved("v2rayNG Settings")
+                            onDismiss()
+                        }
+                        LockActionOutcome.SHOW_LOCK_WARNING -> {
+                            onShowConnectionWarning("Cannot modify settings while VPN is connected. Please disconnect your active connection and try again.\n\nWould you like to disconnect now?")
+                        }
+                        LockActionOutcome.IGNORE_WHILE_DISCONNECTING -> Unit
+                    }
+                }
+            )
+        }
     ) {
-        SettingSectionHeader("System TUN DNS")
-        GlassOutlinedTextField(
-            value = vpnDns,
-            onValueChange = { vpnDns = it },
-            label = "Advertised VPN DNS"
-        )
-        Spacer(modifier = Modifier.height(8.dp))
-        PresetChipRow(
-            presets = listOf("Quad9" to "9.9.9.9", "Cloudflare" to "1.1.1.1", "Google" to "8.8.8.8"),
-            selectedValue = vpnDns,
-            onSelect = { vpnDns = it }
-        )
-
-        Spacer(modifier = Modifier.height(16.dp))
-        SettingSectionHeader("Remote DNS (Encrypted via Proxy)")
-        GlassOutlinedTextField(
-            value = remoteDns,
-            onValueChange = { remoteDns = it },
-            label = "Remote DNS Endpoint"
-        )
-        Spacer(modifier = Modifier.height(8.dp))
-        PresetChipRow(
-            presets = listOf("Cloudflare TCP" to "tcp://1.1.1.1", "Google TCP" to "tcp://8.8.8.8", "Quad9 TCP" to "tcp://9.9.9.9"),
-            selectedValue = remoteDns,
-            onSelect = { remoteDns = it }
-        )
-
-        Spacer(modifier = Modifier.height(16.dp))
-        SettingSectionHeader("Domestic / Direct DNS")
-        GlassOutlinedTextField(
-            value = domesticDns,
-            onValueChange = { domesticDns = it },
-            label = "Domestic DNS IP"
-        )
-        Spacer(modifier = Modifier.height(8.dp))
-        PresetChipRow(
-            presets = listOf("Shecan" to "178.22.122.100", "Cloudflare" to "1.1.1.1", "Google" to "8.8.8.8"),
-            selectedValue = domesticDns,
-            onSelect = { domesticDns = it }
-        )
-
-        Spacer(modifier = Modifier.height(16.dp))
-        SettingSectionHeader("Routing & Inspection")
-        SettingSwitchRow(
-            title = "Traffic Sniffing (HTTP & TLS)",
-            description = "Inspect SNI / HTTP Host to route domain rules accurately.",
-            checked = sniffingEnabled,
-            onCheckedChange = { sniffingEnabled = it }
-        )
-
-        Spacer(modifier = Modifier.height(10.dp))
-        SettingSwitchRow(
-            title = "Bypass LAN / Private Networks",
-            description = "Route private IP ranges (geoip:private) directly outside the proxy.",
-            checked = bypassLan,
-            onCheckedChange = { bypassLan = it }
-        )
-
-        Spacer(modifier = Modifier.height(16.dp))
-        SettingSectionHeader("Multiplexing (MUX)")
-        SettingSwitchRow(
-            title = "Enable MUX",
-            description = "Multiplex multiple TCP connections over a single proxy channel.",
-            checked = muxEnabled,
-            onCheckedChange = { muxEnabled = it }
-        )
-
-        if (muxEnabled) {
-            Spacer(modifier = Modifier.height(12.dp))
-            SettingSectionHeader("MUX Concurrency (1–64)")
-            GlassOutlinedTextField(
-                value = muxConcurrency,
-                onValueChange = { muxConcurrency = it },
-                label = "Concurrent Substreams",
-                keyboardType = KeyboardType.Number
-            )
-            Spacer(modifier = Modifier.height(8.dp))
-            PresetChipRow(
-                presets = listOf("4" to "4", "8" to "8", "10 (Default)" to "10", "16" to "16"),
-                selectedValue = muxConcurrency,
-                onSelect = { muxConcurrency = it }
+        // Section 1 — DNS Architecture
+        SettingsSectionCard(
+            title = "DNS Architecture",
+            subtitle = "Tunnel nameserver & resolution endpoints"
+        ) {
+            SettingsTextFieldWithPresets(
+                value = vpnDns,
+                onValueChange = { vpnDns = it },
+                label = "System TUN DNS",
+                caption = "Advertised VPN DNS server for the Android interface",
+                presets = listOf(
+                    "Quad9" to "9.9.9.9",
+                    "Cloudflare" to "1.1.1.1",
+                    "Google" to "8.8.8.8"
+                )
             )
 
-            Spacer(modifier = Modifier.height(12.dp))
-            SettingSectionHeader("QUIC (UDP 443) Policy")
-            PresetChipRow(
-                presets = listOf("Reject (Drop to TCP)" to "reject", "Allow" to "allow"),
-                selectedValue = muxQuicPolicy,
-                onSelect = { muxQuicPolicy = it }
+            HorizontalDivider(color = Color.White.copy(alpha = 0.07f))
+
+            SettingsTextFieldWithPresets(
+                value = remoteDns,
+                onValueChange = { remoteDns = it },
+                label = "Remote DNS (Encrypted via Proxy)",
+                caption = "Remote DNS endpoint queried through the proxy tunnel",
+                presets = listOf(
+                    "Cloudflare TCP" to "tcp://1.1.1.1",
+                    "Google TCP" to "tcp://8.8.8.8",
+                    "Quad9 TCP" to "tcp://9.9.9.9"
+                )
+            )
+
+            HorizontalDivider(color = Color.White.copy(alpha = 0.07f))
+
+            SettingsTextFieldWithPresets(
+                value = domesticDns,
+                onValueChange = { domesticDns = it },
+                label = "Domestic / Direct DNS",
+                caption = "Direct DNS resolver for local and unproxied domains",
+                presets = listOf(
+                    "Shecan" to "178.22.122.100",
+                    "Cloudflare" to "1.1.1.1",
+                    "Google" to "8.8.8.8"
+                )
             )
         }
 
-        DialogFooterActions(
-            onReset = {
-                vpnDns = V2raySettings.DEFAULT_VPN_DNS
-                remoteDns = V2raySettings.DEFAULT_REMOTE_DNS
-                domesticDns = V2raySettings.DEFAULT_DOMESTIC_DNS
-                sniffingEnabled = true
-                bypassLan = false
-                muxEnabled = false
-                muxConcurrency = "10"
-                muxQuicPolicy = "reject"
-            },
-            onCancel = onDismiss,
-            onSave = {
-                when (ConnectionLockGuard.evaluateControlTap(connectionState)) {
-                    LockActionOutcome.ALLOW -> {
-                        settings.setV2rayVpnDns(vpnDns.trim().ifBlank { V2raySettings.DEFAULT_VPN_DNS })
-                        settings.setV2rayRemoteDns(remoteDns.trim().ifBlank { V2raySettings.DEFAULT_REMOTE_DNS })
-                        settings.setV2rayDomesticDns(domesticDns.trim().ifBlank { V2raySettings.DEFAULT_DOMESTIC_DNS })
-                        settings.setV2raySniffingEnabled(sniffingEnabled)
-                        settings.setV2rayBypassLanEnabled(bypassLan)
-                        settings.setV2rayMuxEnabled(muxEnabled)
-                        settings.setV2rayMuxConcurrency(muxConcurrency.toIntOrNull() ?: 10)
-                        settings.setV2rayMuxQuicPolicy(muxQuicPolicy)
-                        viewModel.notifySettingsSaved("v2rayNG Settings")
-                        onDismiss()
+        // Section 2 — Routing & Traffic Inspection
+        SettingsSectionCard(
+            title = "Routing & Traffic Inspection",
+            subtitle = "Traffic classification & LAN bypass"
+        ) {
+            SettingsToggleRow(
+                title = "Traffic Sniffing (HTTP & TLS)",
+                description = "Inspect inbound TLS ClientHello (SNI) and HTTP Host headers to accurately route domain-based rules.",
+                checked = sniffingEnabled,
+                onCheckedChange = { sniffingEnabled = it }
+            )
+
+            HorizontalDivider(color = Color.White.copy(alpha = 0.07f))
+
+            SettingsToggleRow(
+                title = "Bypass LAN / Private Networks",
+                description = "Route private IP ranges (geoip:private) and local network traffic directly outside the VPN tunnel.",
+                checked = bypassLan,
+                onCheckedChange = { bypassLan = it }
+            )
+        }
+
+        // Section 3 — Multiplexing (MUX)
+        SettingsSectionCard(
+            title = "Multiplexing (MUX)",
+            subtitle = "Outbound TCP connection multiplexing"
+        ) {
+            SettingsToggleRow(
+                title = "Enable MUX",
+                description = "Multiplex multiple TCP connections over a single proxy channel to reduce handshake overhead.",
+                checked = muxEnabled,
+                onCheckedChange = { muxEnabled = it }
+            )
+
+            AnimatedVisibility(
+                visible = muxEnabled,
+                enter = expandVertically() + fadeIn(),
+                exit = shrinkVertically() + fadeOut()
+            ) {
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(14.dp)
+                ) {
+                    HorizontalDivider(color = Color.White.copy(alpha = 0.07f))
+
+                    SettingsTextFieldWithPresets(
+                        value = muxConcurrency,
+                        onValueChange = { muxConcurrency = it },
+                        label = "MUX Concurrency (1–64)",
+                        caption = "Concurrent TCP substreams over a single channel (default: 10)",
+                        presets = listOf(
+                            "4" to "4",
+                            "8" to "8",
+                            "10 (Default)" to "10",
+                            "16" to "16"
+                        ),
+                        keyboardType = KeyboardType.Number
+                    )
+
+                    HorizontalDivider(color = Color.White.copy(alpha = 0.07f))
+
+                    Column(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Text(
+                            text = "QUIC (UDP 443) Policy",
+                            color = Color(0xFF94A3B8),
+                            fontFamily = SoraFamily,
+                            fontSize = 12.sp
+                        )
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            val quicOptions = listOf(
+                                "Reject (Drop to TCP)" to "reject",
+                                "Allow" to "allow"
+                            )
+                            quicOptions.forEach { (chipLabel, chipValue) ->
+                                val isSelected = muxQuicPolicy == chipValue
+                                Box(
+                                    modifier = Modifier
+                                        .defaultMinSize(minHeight = 34.dp)
+                                        .clip(RoundedCornerShape(10.dp))
+                                        .background(
+                                            if (isSelected) PrimaryCyan.copy(alpha = 0.18f)
+                                            else Color.White.copy(alpha = 0.04f)
+                                        )
+                                        .border(
+                                            width = 1.dp,
+                                            color = if (isSelected) PrimaryCyan else Color.White.copy(alpha = 0.08f),
+                                            shape = RoundedCornerShape(10.dp)
+                                        )
+                                        .clickable { muxQuicPolicy = chipValue }
+                                        .padding(horizontal = 14.dp, vertical = 8.dp),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Text(
+                                        text = chipLabel,
+                                        color = if (isSelected) PrimaryCyan else Color(0xFFCBD5E1),
+                                        fontSize = 12.sp,
+                                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+                                        fontFamily = SoraFamily
+                                    )
+                                }
+                            }
+                        }
                     }
-                    LockActionOutcome.SHOW_LOCK_WARNING -> {
-                        onShowConnectionWarning("Cannot modify settings while VPN is connected. Please disconnect your active connection and try again.\n\nWould you like to disconnect now?")
-                    }
-                    LockActionOutcome.IGNORE_WHILE_DISCONNECTING -> Unit
+
+                    SettingsInfoBanner(
+                        text = "MUX changes take effect on next connection. Rejecting QUIC forces HTTP/3 traffic onto TCP for better stability under multiplexed tunnels."
+                    )
                 }
             }
-        )
+        }
     }
 }
 
@@ -2089,8 +2166,12 @@ fun DrawerModalHost(
     AnimatedContent(
         targetState = activeModal,
         transitionSpec = {
-            if (targetState == DrawerModalType.ANYCONNECT || targetState == DrawerModalType.WIREGUARD ||
-                initialState == DrawerModalType.ANYCONNECT || initialState == DrawerModalType.WIREGUARD
+            if (targetState == DrawerModalType.ANYCONNECT ||
+                targetState == DrawerModalType.WIREGUARD ||
+                targetState == DrawerModalType.V2RAY ||
+                initialState == DrawerModalType.ANYCONNECT ||
+                initialState == DrawerModalType.WIREGUARD ||
+                initialState == DrawerModalType.V2RAY
             ) {
                 (slideInHorizontally(initialOffsetX = { it / 6 }) + fadeIn()) togetherWith
                     (slideOutHorizontally(targetOffsetX = { it / 6 }) + fadeOut())
@@ -2113,18 +2194,18 @@ fun DrawerModalHost(
                 connectionState = connectionState,
                 onShowConnectionWarning = onShowConnectionWarning
             )
+            DrawerModalType.V2RAY -> V2raySettingsFullScreen(
+                onDismiss = onDismiss,
+                viewModel = viewModel,
+                connectionState = connectionState,
+                onShowConnectionWarning = onShowConnectionWarning
+            )
             else -> Unit
         }
     }
 
-    // Modal dialogs (kept on DialogShell until subsequent sub-phases 4B–4D)
+    // Modal dialogs (kept on DialogShell until subsequent sub-phases 4C and 4D)
     when (activeModal) {
-        DrawerModalType.V2RAY -> V2raySettingsDialog(
-            onDismiss = onDismiss,
-            viewModel = viewModel,
-            connectionState = connectionState,
-            onShowConnectionWarning = onShowConnectionWarning
-        )
         DrawerModalType.FEATURES -> FeaturesDialog(
             onDismiss = onDismiss,
             viewModel = viewModel,
@@ -2136,7 +2217,8 @@ fun DrawerModalHost(
         DrawerModalType.ABOUT -> AboutDialog(onDismiss = onDismiss)
         DrawerModalType.NONE,
         DrawerModalType.ANYCONNECT,
-        DrawerModalType.WIREGUARD -> Unit
+        DrawerModalType.WIREGUARD,
+        DrawerModalType.V2RAY -> Unit
     }
 }
 
