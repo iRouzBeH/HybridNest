@@ -54,18 +54,8 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
         scope = viewModelScope,
         stateFlow = VpnStateManager.connectionState,
         setState = { VpnStateManager.updateState(it) },
-        beginIntentionalCancel = { VpnStateManager.beginIntentionalCancel() },
-        isServiceRunning = { HybridVpnService.isRunning },
-        dispatchStopSignal = {
-            dispatchVpnStop(getApplication())
-            runCatching {
-                val intent = Intent(getApplication(), HybridVpnService::class.java).apply {
-                    action = "ACTION_STOP"
-                }
-                getApplication<Application>().startService(intent)
-            }
-        },
-        teardownFlow = VpnActionBus.teardownComplete
+        dispatchStopSignal = { dispatchVpnStop(getApplication()) },
+        timeoutMs = 4_000L
     )
 
     private val _sortedV2rayTabs = MutableStateFlow<Set<String>>(emptySet())
@@ -373,6 +363,7 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
                     postConnectCheckJob?.cancel()
                     VpnStateManager.updateNetworkInfo("Detecting...", "Detecting...", "un")
                 } else if (state.isTerminal) {
+                    disconnectCoordinator.onStateChanged(state)
                     postConnectCheckJob?.cancel()
                     if (isInitialStateEmission) {
                         isInitialStateEmission = false
@@ -1069,6 +1060,7 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
         ++ipLookupSessionId
         networkFetchJob?.cancel()
         postConnectCheckJob?.cancel()
+        VpnStateManager.beginIntentionalCancel()
         VpnStateManager.updateState(ConnectionState.CANCELING)
         dispatchVpnStop(context)
 
@@ -1108,7 +1100,11 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
         postConnectCheckJob?.cancel()
         cancelJob?.cancel()
         stopUptime()
-        disconnectCoordinator.requestDisconnect()
+        if (VpnStateManager.connectionState.value == ConnectionState.CONNECTING) {
+            cancelConnection(context)
+        } else {
+            disconnectCoordinator.requestDisconnect()
+        }
         onActualStop(context)
     }
 
@@ -1851,6 +1847,6 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
 
     override fun onCleared() {
         super.onCleared()
-        disconnectCoordinator.cancelWatchdog()
+        disconnectCoordinator.cancel()
     }
 }

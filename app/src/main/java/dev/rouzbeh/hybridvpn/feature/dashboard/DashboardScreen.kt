@@ -360,6 +360,12 @@ fun DashboardScreen(
     var openSplitSheetTrigger by remember { mutableStateOf(0) }
     var disconnectWarningMessage by remember { mutableStateOf<String?>(null) }
 
+    val onShowDisconnectWarning = { msg: String ->
+        if (ConnectionLockGuard.isLocked(connectionState) && disconnectWarningMessage == null) {
+            disconnectWarningMessage = msg
+        }
+    }
+
     androidx.compose.material3.ModalNavigationDrawer(
         drawerState = drawerState,
         gesturesEnabled = drawerState.isOpen, // CRITICAL FIX: Disables swipe-to-open
@@ -381,9 +387,7 @@ fun DashboardScreen(
                                 when (ConnectionLockGuard.evaluateControlTap(connectionState)) {
                                     LockActionOutcome.ALLOW -> activeDrawerModal = modal
                                     LockActionOutcome.SHOW_LOCK_WARNING -> {
-                                        if (ConnectionLockGuard.shouldShowLockDialog(connectionState, disconnectWarningMessage != null)) {
-                                            disconnectWarningMessage = "Cannot modify settings while VPN is connected. Please disconnect your active connection and try again.\n\nWould you like to disconnect now?"
-                                        }
+                                        onShowDisconnectWarning("Cannot modify settings while VPN is connected. Please disconnect your active connection and try again.\n\nWould you like to disconnect now?")
                                     }
                                     LockActionOutcome.IGNORE_WHILE_DISCONNECTING -> Unit
                                 }
@@ -454,13 +458,13 @@ fun DashboardScreen(
             openSplitSheetTrigger = openSplitSheetTrigger,
             toastFlow = viewModel.toastMessage,
             subscriptionToastFlow = viewModel.subscriptionToast,
-            onShowDisconnectWarning = { disconnectWarningMessage = it },
+            onShowDisconnectWarning = onShowDisconnectWarning,
             isWarningDialogVisible = disconnectWarningMessage != null
         )
     }
 
     LaunchedEffect(connectionState) {
-        if (ConnectionLockGuard.shouldAutoDismissLockFeedback(connectionState)) {
+        if (!ConnectionLockGuard.isLocked(connectionState) || ConnectionLockGuard.shouldAutoDismissLockFeedback(connectionState)) {
             disconnectWarningMessage = null
         }
     }
@@ -475,9 +479,7 @@ fun DashboardScreen(
         },
         connectionState = connectionState,
         onShowConnectionWarning = { message ->
-            if (ConnectionLockGuard.shouldShowLockDialog(connectionState, disconnectWarningMessage != null)) {
-                disconnectWarningMessage = message
-            }
+            onShowDisconnectWarning(message)
         }
     )
 
@@ -550,22 +552,9 @@ fun DashboardContent(
     var showLiveLogScreen by remember { mutableStateOf(false) }
     var editingProfile by remember { mutableStateOf<VpnProfile?>(null) }
     var dashboardToastMessage by remember { mutableStateOf<String?>(null) }
-    var isDashboardToastLockWarning by remember { mutableStateOf(false) }
 
     val onShowToast = { msg: String ->
-        isDashboardToastLockWarning = false
         dashboardToastMessage = msg
-    }
-
-    val showLockWarningToast = { msg: String ->
-        if (ConnectionLockGuard.shouldShowLockToast(
-                connectionState,
-                isWarningDialogVisible,
-                isDashboardToastLockWarning && dashboardToastMessage != null
-            )) {
-            isDashboardToastLockWarning = true
-            dashboardToastMessage = msg
-        }
     }
 
     LaunchedEffect(openSplitSheetTrigger) {
@@ -591,29 +580,11 @@ fun DashboardContent(
         if (dashboardToastMessage != null) {
             delay(2500L)
             dashboardToastMessage = null
-            isDashboardToastLockWarning = false
-        }
-    }
-
-    LaunchedEffect(connectionState) {
-        if (ConnectionLockGuard.shouldAutoDismissLockFeedback(connectionState)) {
-            if (isDashboardToastLockWarning) {
-                dashboardToastMessage = null
-                isDashboardToastLockWarning = false
-            }
-        }
-    }
-
-    LaunchedEffect(isWarningDialogVisible) {
-        if (isWarningDialogVisible && isDashboardToastLockWarning) {
-            dashboardToastMessage = null
-            isDashboardToastLockWarning = false
         }
     }
 
     LaunchedEffect(Unit) {
         toastFlow.collect { message ->
-            isDashboardToastLockWarning = false
             dashboardToastMessage = message
         }
     }
@@ -671,7 +642,8 @@ fun DashboardContent(
             },
             onSelectAllApps = onSelectAllApps,
             onDeselectAllApps = onDeselectAllApps,
-            connectionState = connectionState
+            connectionState = connectionState,
+            onShowDisconnectWarning = onShowDisconnectWarning
         )
     }
 
@@ -699,6 +671,7 @@ fun DashboardContent(
             onNavigateBack = { showServerListSheet = false },
             toastMessage = dashboardToastMessage,
             onShowToast = onShowToast,
+            onShowDisconnectWarning = onShowDisconnectWarning,
             subscriptionToastFlow = subscriptionToastFlow
         )
     }
@@ -734,23 +707,25 @@ fun DashboardContent(
                     isConnectivityDegraded &&
                     activeProtocolName == "WireGuard"
                 val density = LocalDensity.current
-                val needsScroll = maxHeight < 640.dp || density.fontScale > 1.15f || (showWireGuardDegradedHint && maxHeight < 700.dp)
+                val itemSpacing = if (maxHeight >= 780.dp) 16.dp else 10.dp
+                val bottomPadding = if (maxHeight >= 780.dp) 12.dp else 8.dp
+                val needsScroll = maxHeight < 742.dp || density.fontScale > 1.15f || (showWireGuardDegradedHint && maxHeight < 795.dp)
                 val columnModifier = if (needsScroll) {
                     Modifier
                         .fillMaxSize()
                         .verticalScroll(rememberScrollState())
                         .padding(horizontal = 16.dp)
-                        .padding(bottom = 12.dp)
+                        .padding(bottom = bottomPadding)
                 } else {
                     Modifier
                         .fillMaxSize()
                         .padding(horizontal = 16.dp)
-                        .padding(bottom = 12.dp)
+                        .padding(bottom = bottomPadding)
                 }
 
                 Column(
                     modifier = columnModifier,
-                    verticalArrangement = Arrangement.spacedBy(16.dp)
+                    verticalArrangement = Arrangement.spacedBy(itemSpacing)
                 ) {
                     // 1. TOP HEADER (Replaces the weight-based spacer)
                     TopHeader(
@@ -763,7 +738,7 @@ fun DashboardContent(
 
                     // 2. Network Info Card
                     NetworkInfoCard(
-                        modifier = if (needsScroll) Modifier.height(160.dp) else Modifier.weight(1f).heightIn(min = 140.dp),
+                        modifier = if (needsScroll) Modifier.height(190.dp) else Modifier.weight(1f).heightIn(min = 184.dp),
                         networkInfo = networkInfo,
                         connectionState = connectionState,
                         onMoreClick = {
@@ -833,7 +808,7 @@ fun DashboardContent(
                                 if (isPerAppEnabled) showAppRoutingScreen = true else showSplitSheet = true
                             }
                             LockActionOutcome.SHOW_LOCK_WARNING -> {
-                                showLockWarningToast("Cannot modify Split Tunneling while VPN is connected")
+                                onShowDisconnectWarning("Cannot modify Split Tunneling while VPN is active. Please disconnect first and try again.\n\nWould you like to disconnect now?")
                             }
                             LockActionOutcome.IGNORE_WHILE_DISCONNECTING -> Unit
                         }
@@ -851,7 +826,7 @@ fun DashboardContent(
                                 onProtocolSelected(it.title)
                             }
                             LockActionOutcome.SHOW_LOCK_WARNING -> {
-                                showLockWarningToast("Cannot switch protocol while VPN is connected")
+                                onShowDisconnectWarning("Cannot switch protocol while VPN is active. Please disconnect first and try again.\n\nWould you like to disconnect now?")
                             }
                             LockActionOutcome.IGNORE_WHILE_DISCONNECTING -> Unit
                         }
@@ -871,7 +846,7 @@ fun DashboardContent(
                                 showAddServerSheet = true
                             }
                             LockActionOutcome.SHOW_LOCK_WARNING -> {
-                                showLockWarningToast("Cannot add a server while VPN is connected")
+                                onShowDisconnectWarning("Cannot add a server while VPN is active. Please disconnect first and try again.\n\nWould you like to disconnect now?")
                             }
                             LockActionOutcome.IGNORE_WHILE_DISCONNECTING -> Unit
                         }
@@ -1184,7 +1159,8 @@ fun DashboardContent(
                                     showServerListSheet = false
                                 },
                                 onTestSinglePing = onTestSinglePing,
-                                onShowToast = showLockWarningToast
+                                onShowToast = onShowToast,
+                                onShowDisconnectWarning = onShowDisconnectWarning
                             )
                         }
                     }
@@ -1215,7 +1191,7 @@ fun DashboardContent(
                                         showAppRoutingScreen = true
                                     },
                                     connectionState = connectionState,
-                                    onShowToast = showLockWarningToast
+                                    onShowDisconnectWarning = onShowDisconnectWarning
                                 )
                                 // Custom Toast Overlay inside the sheet
                                 CustomGlassToast(
@@ -1484,7 +1460,8 @@ fun ServerListSheetContent(
     onDelete: (VpnProfile) -> Unit,
     onEdit: (VpnProfile) -> Unit,
     onTestSinglePing: (VpnProfile) -> Unit = {},
-    onShowToast: (String) -> Unit = {}
+    onShowToast: (String) -> Unit = {},
+    onShowDisconnectWarning: (String) -> Unit = {}
 ) {
     Column(
         modifier = Modifier
@@ -1535,7 +1512,7 @@ fun ServerListSheetContent(
                             when (ConnectionLockGuard.evaluateControlTap(connectionState)) {
                                 LockActionOutcome.ALLOW -> onSelect(profile.id)
                                 LockActionOutcome.SHOW_LOCK_WARNING -> {
-                                    onShowToast("Cannot switch server while VPN is connected")
+                                    onShowDisconnectWarning("Cannot switch server while VPN is active. Please disconnect first and try again.\n\nWould you like to disconnect now?")
                                 }
                                 LockActionOutcome.IGNORE_WHILE_DISCONNECTING -> Unit
                             }
@@ -1544,7 +1521,7 @@ fun ServerListSheetContent(
                             when (ConnectionLockGuard.evaluateControlTap(connectionState)) {
                                 LockActionOutcome.ALLOW -> onDelete(profile)
                                 LockActionOutcome.SHOW_LOCK_WARNING -> {
-                                    onShowToast("Cannot delete server while VPN is connected")
+                                    onShowDisconnectWarning("Cannot delete server while VPN is active. Please disconnect first and try again.\n\nWould you like to disconnect now?")
                                 }
                                 LockActionOutcome.IGNORE_WHILE_DISCONNECTING -> Unit
                             }
@@ -1553,13 +1530,14 @@ fun ServerListSheetContent(
                             when (ConnectionLockGuard.evaluateControlTap(connectionState)) {
                                 LockActionOutcome.ALLOW -> onEdit(profile)
                                 LockActionOutcome.SHOW_LOCK_WARNING -> {
-                                    onShowToast("Cannot edit server while VPN is connected")
+                                    onShowDisconnectWarning("Cannot edit server while VPN is active. Please disconnect first and try again.\n\nWould you like to disconnect now?")
                                 }
                                 LockActionOutcome.IGNORE_WHILE_DISCONNECTING -> Unit
                             }
                         },
                         onPingClick = { onTestSinglePing(profile) },
-                        onShowToast = onShowToast
+                        onShowToast = onShowToast,
+                        onShowDisconnectWarning = onShowDisconnectWarning
                     )
                 }
             }
@@ -1674,6 +1652,7 @@ fun ServerItemCard(
     onEdit: (() -> Unit)? = null,
     onPingClick: () -> Unit = {},
     onShowToast: (String) -> Unit = {},
+    onShowDisconnectWarning: (String) -> Unit = {},
     subscriptionMeta: SubscriptionMeta? = null,
     subscriptionLabel: String = "Subscription"
 ) {
@@ -1968,7 +1947,7 @@ fun ServerItemCard(
                         when (ConnectionLockGuard.evaluateControlTap(connectionState)) {
                             LockActionOutcome.ALLOW -> onEdit()
                             LockActionOutcome.SHOW_LOCK_WARNING -> {
-                                onShowToast("Cannot edit server while VPN is connected")
+                                onShowDisconnectWarning("Cannot edit server while VPN is active. Please disconnect first and try again.\n\nWould you like to disconnect now?")
                             }
                             LockActionOutcome.IGNORE_WHILE_DISCONNECTING -> Unit
                         }
@@ -1991,7 +1970,7 @@ fun ServerItemCard(
                         when (ConnectionLockGuard.evaluateControlTap(connectionState)) {
                             LockActionOutcome.ALLOW -> onDelete()
                             LockActionOutcome.SHOW_LOCK_WARNING -> {
-                                onShowToast("Cannot delete server while VPN is connected")
+                                onShowDisconnectWarning("Cannot delete server while VPN is active. Please disconnect first and try again.\n\nWould you like to disconnect now?")
                             }
                             LockActionOutcome.IGNORE_WHILE_DISCONNECTING -> Unit
                         }
@@ -3761,7 +3740,8 @@ fun SplitTunnelingSheetContent(
     isPerAppEnabled: Boolean,
     onEnable: () -> Unit,
     connectionState: ConnectionState = ConnectionState.DISCONNECTED,
-    onShowToast: (String) -> Unit = {}
+    onShowToast: (String) -> Unit = {},
+    onShowDisconnectWarning: (String) -> Unit = {}
 ) {
     Column(
         modifier = Modifier
@@ -3818,7 +3798,7 @@ fun SplitTunnelingSheetContent(
                     when (ConnectionLockGuard.evaluateControlTap(connectionState)) {
                         LockActionOutcome.ALLOW -> if (it) onEnable()
                         LockActionOutcome.SHOW_LOCK_WARNING -> {
-                            onShowToast("Cannot modify Split Tunneling while VPN is connected")
+                            onShowDisconnectWarning("Cannot modify Split Tunneling while VPN is active. Please disconnect first and try again.\n\nWould you like to disconnect now?")
                         }
                         LockActionOutcome.IGNORE_WHILE_DISCONNECTING -> Unit
                     }
@@ -3846,14 +3826,14 @@ fun AppRoutingScreen(
     onDisablePerApp: () -> Unit,
     onSelectAllApps: () -> Unit,
     onDeselectAllApps: () -> Unit,
-    connectionState: ConnectionState = ConnectionState.DISCONNECTED
+    connectionState: ConnectionState = ConnectionState.DISCONNECTED,
+    onShowDisconnectWarning: (String) -> Unit = {}
 ) {
     val context = androidx.compose.ui.platform.LocalContext.current
     var showSystemApps by remember { mutableStateOf(false) }
     var searchQuery by remember { mutableStateOf("") }
     var showMenu by remember { mutableStateOf(false) }
     var toastMessage by remember { mutableStateOf<String?>(null) }
-    var isRoutingToastLockWarning by remember { mutableStateOf(false) }
 
     val filteredApps = remember(apps, showSystemApps, searchQuery) {
         apps.filter { app ->
@@ -3869,27 +3849,6 @@ fun AppRoutingScreen(
         if (toastMessage != null) {
             kotlinx.coroutines.delay(4000)
             toastMessage = null
-            isRoutingToastLockWarning = false
-        }
-    }
-
-    LaunchedEffect(connectionState) {
-        if (ConnectionLockGuard.shouldAutoDismissLockFeedback(connectionState)) {
-            if (isRoutingToastLockWarning) {
-                toastMessage = null
-                isRoutingToastLockWarning = false
-            }
-        }
-    }
-
-    val showRoutingLockToast = { msg: String ->
-        if (ConnectionLockGuard.shouldShowLockToast(
-                connectionState,
-                false,
-                isRoutingToastLockWarning && toastMessage != null
-            )) {
-            isRoutingToastLockWarning = true
-            toastMessage = msg
         }
     }
 
@@ -3967,7 +3926,7 @@ fun AppRoutingScreen(
                                         }
                                         LockActionOutcome.SHOW_LOCK_WARNING -> {
                                             showMenu = false
-                                            showRoutingLockToast("Cannot modify app routing while VPN is connected")
+                                            onShowDisconnectWarning("Cannot modify app routing while VPN is active. Please disconnect first and try again.\n\nWould you like to disconnect now?")
                                         }
                                         LockActionOutcome.IGNORE_WHILE_DISCONNECTING -> {
                                             showMenu = false
@@ -3985,7 +3944,7 @@ fun AppRoutingScreen(
                                         }
                                         LockActionOutcome.SHOW_LOCK_WARNING -> {
                                             showMenu = false
-                                            showRoutingLockToast("Cannot modify app routing while VPN is connected")
+                                            onShowDisconnectWarning("Cannot modify app routing while VPN is active. Please disconnect first and try again.\n\nWould you like to disconnect now?")
                                         }
                                         LockActionOutcome.IGNORE_WHILE_DISCONNECTING -> {
                                             showMenu = false
@@ -4077,7 +4036,7 @@ fun AppRoutingScreen(
                             when (ConnectionLockGuard.evaluateControlTap(connectionState)) {
                                 LockActionOutcome.ALLOW -> if (!it) onDisablePerApp()
                                 LockActionOutcome.SHOW_LOCK_WARNING -> {
-                                    showRoutingLockToast("Cannot modify Split Tunneling while VPN is connected")
+                                    onShowDisconnectWarning("Cannot modify Split Tunneling while VPN is active. Please disconnect first and try again.\n\nWould you like to disconnect now?")
                                 }
                                 LockActionOutcome.IGNORE_WHILE_DISCONNECTING -> Unit
                             }
@@ -4133,7 +4092,7 @@ fun AppRoutingScreen(
                             when (ConnectionLockGuard.evaluateControlTap(connectionState)) {
                                 LockActionOutcome.ALLOW -> onBypassModeChange(it)
                                 LockActionOutcome.SHOW_LOCK_WARNING -> {
-                                    showRoutingLockToast("Cannot modify Split Tunneling while VPN is connected")
+                                    onShowDisconnectWarning("Cannot modify Split Tunneling while VPN is active. Please disconnect first and try again.\n\nWould you like to disconnect now?")
                                 }
                                 LockActionOutcome.IGNORE_WHILE_DISCONNECTING -> Unit
                             }
@@ -4220,7 +4179,7 @@ fun AppRoutingScreen(
                                 when (ConnectionLockGuard.evaluateControlTap(connectionState)) {
                                     LockActionOutcome.ALLOW -> onToggleApp(app.packageName)
                                     LockActionOutcome.SHOW_LOCK_WARNING -> {
-                                        showRoutingLockToast("Cannot modify app routing while VPN is connected")
+                                        onShowDisconnectWarning("Cannot modify app routing while VPN is active. Please disconnect first and try again.\n\nWould you like to disconnect now?")
                                     }
                                     LockActionOutcome.IGNORE_WHILE_DISCONNECTING -> Unit
                                 }
@@ -4452,6 +4411,7 @@ fun ServerListFullScreen(
     onNavigateBack: () -> Unit,
     toastMessage: String? = null,
     onShowToast: (String) -> Unit = {},
+    onShowDisconnectWarning: (String) -> Unit = {},
     subscriptionToastFlow: kotlinx.coroutines.flow.Flow<String> = kotlinx.coroutines.flow.emptyFlow()
 ) {
     val context = androidx.compose.ui.platform.LocalContext.current
@@ -4461,33 +4421,11 @@ fun ServerListFullScreen(
     // other messages surface here and self-clear, instead of relying on the
     // shared dashboardToastMessage which leaks into other methods' lists.
     var localToast by androidx.compose.runtime.remember { mutableStateOf<String?>(null) }
-    var isLocalToastLockWarning by androidx.compose.runtime.remember { mutableStateOf(false) }
 
     androidx.compose.runtime.LaunchedEffect(localToast) {
         if (localToast != null) {
             kotlinx.coroutines.delay(4000)
             localToast = null
-            isLocalToastLockWarning = false
-        }
-    }
-
-    androidx.compose.runtime.LaunchedEffect(connectionState) {
-        if (ConnectionLockGuard.shouldAutoDismissLockFeedback(connectionState)) {
-            if (isLocalToastLockWarning) {
-                localToast = null
-                isLocalToastLockWarning = false
-            }
-        }
-    }
-
-    val showServerListLockToast = { msg: String ->
-        if (ConnectionLockGuard.shouldShowLockToast(
-                connectionState,
-                false,
-                isLocalToastLockWarning && localToast != null
-            )) {
-            isLocalToastLockWarning = true
-            localToast = msg
         }
     }
 
@@ -4495,7 +4433,6 @@ fun ServerListFullScreen(
     // here — never in the shared toast that other methods' lists also show.
     androidx.compose.runtime.LaunchedEffect(subscriptionToastFlow) {
         subscriptionToastFlow.collect {
-            isLocalToastLockWarning = false
             localToast = it
         }
     }
@@ -4666,7 +4603,7 @@ fun ServerListFullScreen(
                                             when (ConnectionLockGuard.evaluateControlTap(connectionState)) {
                                                 LockActionOutcome.ALLOW -> onUpdateSub(tab)
                                                 LockActionOutcome.SHOW_LOCK_WARNING -> {
-                                                    showServerListLockToast("Cannot update subscription while VPN is connected")
+                                                    onShowDisconnectWarning("Cannot update subscription while VPN is active. Please disconnect first and try again.\n\nWould you like to disconnect now?")
                                                 }
                                                 LockActionOutcome.IGNORE_WHILE_DISCONNECTING -> Unit
                                             }
@@ -4682,7 +4619,7 @@ fun ServerListFullScreen(
                                         when (ConnectionLockGuard.evaluateControlTap(connectionState)) {
                                             LockActionOutcome.ALLOW -> onDeleteInvalidV2ray(tab)
                                             LockActionOutcome.SHOW_LOCK_WARNING -> {
-                                                showServerListLockToast("Cannot delete servers while VPN is connected")
+                                                onShowDisconnectWarning("Cannot delete servers while VPN is active. Please disconnect first and try again.\n\nWould you like to disconnect now?")
                                             }
                                             LockActionOutcome.IGNORE_WHILE_DISCONNECTING -> Unit
                                         }
@@ -4791,7 +4728,7 @@ fun ServerListFullScreen(
                                             when (ConnectionLockGuard.evaluateControlTap(connectionState)) {
                                                 LockActionOutcome.ALLOW -> renamingSubKey = tabKey
                                                 LockActionOutcome.SHOW_LOCK_WARNING -> {
-                                                    showServerListLockToast("Cannot rename subscription while VPN is connected")
+                                                    onShowDisconnectWarning("Cannot rename subscription while VPN is active. Please disconnect first and try again.\n\nWould you like to disconnect now?")
                                                 }
                                                 LockActionOutcome.IGNORE_WHILE_DISCONNECTING -> Unit
                                             }
@@ -4808,7 +4745,7 @@ fun ServerListFullScreen(
                                                     if (selectedTab == tabKey) selectedTab = "SingleLinks" // Fallback will be handled by LaunchedEffect
                                                 }
                                                 LockActionOutcome.SHOW_LOCK_WARNING -> {
-                                                    showServerListLockToast("Cannot delete subscription while VPN is connected")
+                                                    onShowDisconnectWarning("Cannot delete subscription while VPN is active. Please disconnect first and try again.\n\nWould you like to disconnect now?")
                                                 }
                                                 LockActionOutcome.IGNORE_WHILE_DISCONNECTING -> Unit
                                             }
@@ -4852,7 +4789,7 @@ fun ServerListFullScreen(
                                 onNavigateBack()
                             }
                             LockActionOutcome.SHOW_LOCK_WARNING -> {
-                                showServerListLockToast("Cannot switch server while VPN is connected")
+                                onShowDisconnectWarning("Cannot switch server while VPN is active. Please disconnect first and try again.\n\nWould you like to disconnect now?")
                             }
                             LockActionOutcome.IGNORE_WHILE_DISCONNECTING -> Unit
                         }
@@ -4862,7 +4799,7 @@ fun ServerListFullScreen(
                             when (ConnectionLockGuard.evaluateControlTap(connectionState)) {
                                 LockActionOutcome.ALLOW -> onDelete(profile)
                                 LockActionOutcome.SHOW_LOCK_WARNING -> {
-                                    showServerListLockToast("Cannot delete server while VPN is connected")
+                                    onShowDisconnectWarning("Cannot delete server while VPN is active. Please disconnect first and try again.\n\nWould you like to disconnect now?")
                                 }
                                 LockActionOutcome.IGNORE_WHILE_DISCONNECTING -> Unit
                             }
@@ -4873,14 +4810,15 @@ fun ServerListFullScreen(
                             when (ConnectionLockGuard.evaluateControlTap(connectionState)) {
                                 LockActionOutcome.ALLOW -> onEdit(profile)
                                 LockActionOutcome.SHOW_LOCK_WARNING -> {
-                                    showServerListLockToast("Cannot edit server while VPN is connected")
+                                    onShowDisconnectWarning("Cannot edit server while VPN is active. Please disconnect first and try again.\n\nWould you like to disconnect now?")
                                 }
                                 LockActionOutcome.IGNORE_WHILE_DISCONNECTING -> Unit
                             }
                         }
                     },
                     onPingClick = { onTestSinglePing(profile) },
-                    onShowToast = { msg -> showServerListLockToast(msg) },
+                    onShowToast = { msg -> localToast = msg },
+                    onShowDisconnectWarning = onShowDisconnectWarning,
                     subscriptionMeta = if (isInfoCard) mergedSubMeta else null,
                     subscriptionLabel = groupLabel
                 )
@@ -4942,8 +4880,8 @@ fun ServerListFullScreen(
                                             renamingSubKey = null
                                         }
                                         LockActionOutcome.SHOW_LOCK_WARNING -> {
-                                            showServerListLockToast("Cannot rename subscription while VPN is connected")
                                             renamingSubKey = null
+                                            onShowDisconnectWarning("Cannot rename subscription while VPN is active. Please disconnect first and try again.\n\nWould you like to disconnect now?")
                                         }
                                         LockActionOutcome.IGNORE_WHILE_DISCONNECTING -> {
                                             renamingSubKey = null

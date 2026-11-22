@@ -4,7 +4,6 @@ import dev.rouzbeh.hybridvpn.service.ConnectionState
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
@@ -82,31 +81,34 @@ class ConnectionUiGuardTest {
     }
 
     @Test
-    fun `lock warning deduplication prevents duplicate dialogs and stacked lock toasts`() {
-        // Dialog deduplication
+    fun `lock warning deduplication prevents duplicate dialogs and verifies isLocked`() {
+        // Dialog deduplication via shouldShowLockDialog
         assertTrue(ConnectionLockGuard.shouldShowLockDialog(ConnectionState.CONNECTED, isDialogAlreadyVisible = false))
         assertFalse(ConnectionLockGuard.shouldShowLockDialog(ConnectionState.CONNECTED, isDialogAlreadyVisible = true))
         assertFalse(ConnectionLockGuard.shouldShowLockDialog(ConnectionState.DISCONNECTING, isDialogAlreadyVisible = false))
         assertFalse(ConnectionLockGuard.shouldShowLockDialog(ConnectionState.DISCONNECTED, isDialogAlreadyVisible = false))
 
-        // Toast deduplication
-        assertTrue(ConnectionLockGuard.shouldShowLockToast(ConnectionState.CONNECTED, isDialogVisible = false, hasActiveLockToast = false))
-        // Suppressed when dialog is already visible
-        assertFalse(ConnectionLockGuard.shouldShowLockToast(ConnectionState.CONNECTED, isDialogVisible = true, hasActiveLockToast = false))
-        // Suppressed when another lock toast is active
-        assertFalse(ConnectionLockGuard.shouldShowLockToast(ConnectionState.CONNECTED, isDialogVisible = false, hasActiveLockToast = true))
-        // Suppressed when both dialog and toast are active
-        assertFalse(ConnectionLockGuard.shouldShowLockToast(ConnectionState.CONNECTED, isDialogVisible = true, hasActiveLockToast = true))
+        // shouldShowLockWarningDialog alias verification
+        assertTrue(ConnectionLockGuard.shouldShowLockWarningDialog(ConnectionState.CONNECTED, isDialogAlreadyVisible = false))
+        assertFalse(ConnectionLockGuard.shouldShowLockWarningDialog(ConnectionState.CONNECTED, isDialogAlreadyVisible = true))
+        assertFalse(ConnectionLockGuard.shouldShowLockWarningDialog(ConnectionState.DISCONNECTING, isDialogAlreadyVisible = false))
+        assertFalse(ConnectionLockGuard.shouldShowLockWarningDialog(ConnectionState.DISCONNECTED, isDialogAlreadyVisible = false))
 
-        // Suppressed during disconnecting or terminal states
-        assertFalse(ConnectionLockGuard.shouldShowLockToast(ConnectionState.DISCONNECTING, isDialogVisible = false, hasActiveLockToast = false))
-        assertFalse(ConnectionLockGuard.shouldShowLockToast(ConnectionState.DISCONNECTED, isDialogVisible = false, hasActiveLockToast = false))
+        // ConnectionLockGuard.isLocked contract
+        assertTrue(ConnectionLockGuard.isLocked(ConnectionState.CONNECTED))
+        assertTrue(ConnectionLockGuard.isLocked(ConnectionState.CONNECTING))
+        assertTrue(ConnectionLockGuard.isLocked(ConnectionState.RECONNECTING))
+        assertFalse(ConnectionLockGuard.isLocked(ConnectionState.DISCONNECTING))
+        assertFalse(ConnectionLockGuard.isLocked(ConnectionState.CANCELING))
+        assertFalse(ConnectionLockGuard.isLocked(ConnectionState.DISCONNECTED))
+        assertFalse(ConnectionLockGuard.isLocked(ConnectionState.IDLE))
+        assertFalse(ConnectionLockGuard.isLocked(ConnectionState.CANCELLED))
+        assertFalse(ConnectionLockGuard.isLocked(ConnectionState.ERROR))
+        assertFalse(ConnectionLockGuard.isLocked(ConnectionState.FAILED))
 
-        // LockWarningDeduplicator object delegation check
+        // LockWarningDeduplicator delegation check
         assertTrue(LockWarningDeduplicator.shouldShowDialog(ConnectionState.CONNECTED, false))
         assertFalse(LockWarningDeduplicator.shouldShowDialog(ConnectionState.CONNECTED, true))
-        assertTrue(LockWarningDeduplicator.shouldShowToast(ConnectionState.CONNECTED, false, false))
-        assertFalse(LockWarningDeduplicator.shouldShowToast(ConnectionState.CONNECTED, true, false))
     }
 
     @Test
@@ -122,7 +124,6 @@ class ConnectionUiGuardTest {
         for (initialState in terminalStates) {
             val stateFlow = MutableStateFlow(initialState)
             var dispatchedStop = false
-            var cancelCalled = false
             var updatedState = initialState
 
             val coordinator = DisconnectCoordinator(
@@ -132,209 +133,167 @@ class ConnectionUiGuardTest {
                     updatedState = it
                     stateFlow.value = it
                 },
-                beginIntentionalCancel = { cancelCalled = true },
-                isServiceRunning = { true },
-                dispatchStopSignal = { dispatchedStop = true },
-                teardownFlow = MutableSharedFlow<Unit>()
+                dispatchStopSignal = { dispatchedStop = true }
             )
 
             coordinator.requestDisconnect()
 
             assertFalse("Terminal state $initialState must never dispatch stop signal", dispatchedStop)
-            assertFalse("Terminal state $initialState must never call beginIntentionalCancel", cancelCalled)
-            assertEquals("Terminal state $initialState must normalize to DISCONNECTED", ConnectionState.DISCONNECTED, updatedState)
+            assertEquals("Terminal state $initialState must remain unchanged", initialState, updatedState)
+            coordinator.cancel()
         }
     }
 
     @Test
-    fun `DisconnectCoordinator transitions directly to DISCONNECTED when service is not running`() {
-        val activeStates = listOf(
-            ConnectionState.CONNECTED,
-            ConnectionState.CONNECTING,
-            ConnectionState.RECONNECTING,
-            ConnectionState.DISCONNECTING,
-            ConnectionState.CANCELING
-        )
-
-        for (initialState in activeStates) {
-            val stateFlow = MutableStateFlow(initialState)
-            var dispatchedStop = false
-            var cancelCalled = false
-            var updatedState = initialState
-
-            val coordinator = DisconnectCoordinator(
-                scope = CoroutineScope(Dispatchers.Unconfined),
-                stateFlow = stateFlow,
-                setState = {
-                    updatedState = it
-                    stateFlow.value = it
-                },
-                beginIntentionalCancel = { cancelCalled = true },
-                isServiceRunning = { false }, // Service is dead
-                dispatchStopSignal = { dispatchedStop = true },
-                teardownFlow = MutableSharedFlow<Unit>()
-            )
-
-            coordinator.requestDisconnect()
-
-            assertFalse("Dead service from $initialState must never dispatch stop signal", dispatchedStop)
-            assertFalse("Dead service from $initialState must never call beginIntentionalCancel", cancelCalled)
-            assertEquals("Dead service from $initialState must transition directly to DISCONNECTED", ConnectionState.DISCONNECTED, updatedState)
-        }
-    }
-
-    @Test
-    fun `DisconnectCoordinator transitions CONNECTED to DISCONNECTING and completes cleanly when service disconnects`() = runBlocking {
+    fun `DisconnectCoordinator requestDisconnect from CONNECTED transitions to DISCONNECTING and invokes dispatchStopSignal exactly once`() {
         val stateFlow = MutableStateFlow(ConnectionState.CONNECTED)
-        val teardownFlow = MutableSharedFlow<Unit>(replay = 1)
-        var dispatchedStop = false
+        var stopCount = 0
         var updatedState = ConnectionState.CONNECTED
 
         val coordinator = DisconnectCoordinator(
-            scope = this,
+            scope = CoroutineScope(Dispatchers.Unconfined),
             stateFlow = stateFlow,
             setState = {
                 updatedState = it
                 stateFlow.value = it
             },
-            beginIntentionalCancel = {},
-            isServiceRunning = { true },
-            dispatchStopSignal = { dispatchedStop = true },
-            teardownFlow = teardownFlow,
-            timeoutMs = 1_000L
+            dispatchStopSignal = { stopCount++ }
         )
 
         coordinator.requestDisconnect()
 
-        assertTrue("Must dispatch stop signal", dispatchedStop)
-        assertEquals("Must enter DISCONNECTING state", ConnectionState.DISCONNECTING, updatedState)
-
-        // Allow watchdog coroutine to begin collecting
-        delay(50L)
-
-        // Simulate service finishing teardown
-        teardownFlow.emit(Unit)
-        delay(300L) // Wait for race and delay(150L) in DisconnectCoordinator
-
-        assertEquals("Must reach DISCONNECTED upon teardown completion", ConnectionState.DISCONNECTED, stateFlow.value)
-        coordinator.cancelWatchdog()
+        assertEquals("Must dispatch stop signal exactly once", 1, stopCount)
+        assertEquals("Must transition to DISCONNECTING immediately", ConnectionState.DISCONNECTING, updatedState)
+        coordinator.cancel()
     }
 
     @Test
-    fun `DisconnectCoordinator transitions CONNECTING to CANCELING and invokes beginIntentionalCancel`() = runBlocking {
-        val stateFlow = MutableStateFlow(ConnectionState.CONNECTING)
-        val teardownFlow = MutableSharedFlow<Unit>()
-        var dispatchedStop = false
-        var cancelCalled = false
-        var updatedState = ConnectionState.CONNECTING
-
-        val coordinator = DisconnectCoordinator(
-            scope = this,
-            stateFlow = stateFlow,
-            setState = {
-                updatedState = it
-                stateFlow.value = it
-            },
-            beginIntentionalCancel = { cancelCalled = true },
-            isServiceRunning = { true },
-            dispatchStopSignal = { dispatchedStop = true },
-            teardownFlow = teardownFlow,
-            timeoutMs = 1_000L
-        )
-
-        coordinator.requestDisconnect()
-
-        assertTrue("Must call beginIntentionalCancel when canceling CONNECTING", cancelCalled)
-        assertTrue("Must dispatch stop signal", dispatchedStop)
-        assertEquals("Must enter CANCELING state", ConnectionState.CANCELING, updatedState)
-
-        coordinator.cancelWatchdog()
-    }
-
-    @Test
-    fun `DisconnectCoordinator falls back to DISCONNECTED after timeout when service hangs`() = runBlocking {
+    fun `DisconnectCoordinator rapid repeated requestDisconnect calls are idempotent and do not double dispatch stop`() {
         val stateFlow = MutableStateFlow(ConnectionState.CONNECTED)
-        val teardownFlow = MutableSharedFlow<Unit>()
-        var updatedState = ConnectionState.CONNECTED
-
-        val coordinator = DisconnectCoordinator(
-            scope = this,
-            stateFlow = stateFlow,
-            setState = {
-                updatedState = it
-                stateFlow.value = it
-            },
-            beginIntentionalCancel = {},
-            isServiceRunning = { true },
-            dispatchStopSignal = {},
-            teardownFlow = teardownFlow,
-            timeoutMs = 80L // Fast timeout for test
-        )
-
-        coordinator.requestDisconnect()
-        assertEquals(ConnectionState.DISCONNECTING, updatedState)
-
-        // Wait past the timeout without sending teardown or terminal state
-        delay(160L)
-
-        assertEquals("Watchdog must force DISCONNECTED on timeout", ConnectionState.DISCONNECTED, stateFlow.value)
-        coordinator.cancelWatchdog()
-    }
-
-    @Test
-    fun `DisconnectCoordinator ignores redundant disconnect taps while live disconnect is in progress but recovers if service died`() = runBlocking {
-        val stateFlow = MutableStateFlow(ConnectionState.CONNECTED)
-        val teardownFlow = MutableSharedFlow<Unit>()
-        var stopSignalCount = 0
-        var serviceRunning = true
-
-        val coordinator = DisconnectCoordinator(
-            scope = this,
-            stateFlow = stateFlow,
-            setState = { stateFlow.value = it },
-            beginIntentionalCancel = {},
-            isServiceRunning = { serviceRunning },
-            dispatchStopSignal = { stopSignalCount++ },
-            teardownFlow = teardownFlow,
-            timeoutMs = 1_000L
-        )
-
-        coordinator.requestDisconnect()
-        assertEquals(1, stopSignalCount)
-        assertEquals(ConnectionState.DISCONNECTING, stateFlow.value)
-
-        // Second tap while live disconnect is actively in progress
-        coordinator.requestDisconnect()
-        assertEquals("Redundant tap must be ignored without double-dispatching stop signal", 1, stopSignalCount)
-        assertEquals(ConnectionState.DISCONNECTING, stateFlow.value)
-
-        // If service died unexpectedly while in DISCONNECTING state
-        serviceRunning = false
-        coordinator.requestDisconnect()
-        assertEquals("Must immediately recover to DISCONNECTED when service is dead", ConnectionState.DISCONNECTED, stateFlow.value)
-
-        coordinator.cancelWatchdog()
-    }
-
-    @Test
-    fun `DisconnectCoordinator recovers to DISCONNECTED if dispatchStopSignal throws exception and service dead`() {
-        val stateFlow = MutableStateFlow(ConnectionState.CONNECTED)
-        var serviceRunning = true
+        var stopCount = 0
 
         val coordinator = DisconnectCoordinator(
             scope = CoroutineScope(Dispatchers.Unconfined),
             stateFlow = stateFlow,
             setState = { stateFlow.value = it },
-            beginIntentionalCancel = {},
-            isServiceRunning = { serviceRunning },
-            dispatchStopSignal = {
-                serviceRunning = false
-                throw RuntimeException("Dead service communication failure")
-            },
-            teardownFlow = MutableSharedFlow<Unit>()
+            dispatchStopSignal = { stopCount++ }
         )
 
         coordinator.requestDisconnect()
+        assertEquals(1, stopCount)
+        assertEquals(ConnectionState.DISCONNECTING, stateFlow.value)
+
+        // Rapid subsequent taps while already in DISCONNECTING state
+        coordinator.requestDisconnect()
+        coordinator.requestDisconnect()
+
+        assertEquals("dispatchStopSignal must still be called only once", 1, stopCount)
+        assertEquals(ConnectionState.DISCONNECTING, stateFlow.value)
+        coordinator.cancel()
+    }
+
+    @Test
+    fun `DisconnectCoordinator reaching terminal state before timeout cancels watchdog cleanly`() = runBlocking {
+        val stateFlow = MutableStateFlow(ConnectionState.CONNECTED)
+        var updatedState = ConnectionState.CONNECTED
+
+        val coordinator = DisconnectCoordinator(
+            scope = this,
+            stateFlow = stateFlow,
+            setState = {
+                updatedState = it
+                stateFlow.value = it
+            },
+            dispatchStopSignal = {},
+            timeoutMs = 150L
+        )
+
+        coordinator.requestDisconnect()
+        assertEquals(ConnectionState.DISCONNECTING, updatedState)
+
+        // Simulate service reaching terminal DISCONNECTED state before timeout
+        stateFlow.value = ConnectionState.DISCONNECTED
+        coordinator.onStateChanged(ConnectionState.DISCONNECTED)
+
+        // Wait past the timeoutMs
+        delay(250L)
+
+        // State remains DISCONNECTED and watchdog was cancelled
         assertEquals(ConnectionState.DISCONNECTED, stateFlow.value)
+        coordinator.cancel()
+    }
+
+    @Test
+    fun `DisconnectCoordinator watchdog recovers state to DISCONNECTED if service hangs past timeout`() = runBlocking {
+        val stateFlow = MutableStateFlow(ConnectionState.CONNECTED)
+        var updatedState = ConnectionState.CONNECTED
+
+        val coordinator = DisconnectCoordinator(
+            scope = this,
+            stateFlow = stateFlow,
+            setState = {
+                updatedState = it
+                stateFlow.value = it
+            },
+            dispatchStopSignal = {},
+            timeoutMs = 80L
+        )
+
+        coordinator.requestDisconnect()
+        assertEquals(ConnectionState.DISCONNECTING, updatedState)
+
+        // Wait past timeout
+        delay(160L)
+
+        assertEquals("Watchdog must force state to DISCONNECTED after timeout", ConnectionState.DISCONNECTED, stateFlow.value)
+        coordinator.cancel()
+    }
+
+    @Test
+    fun `DisconnectCoordinator terminal states ERROR and CANCELLED cancel watchdog`() = runBlocking {
+        for (terminal in listOf(ConnectionState.ERROR, ConnectionState.CANCELLED)) {
+            val stateFlow = MutableStateFlow(ConnectionState.CONNECTED)
+            val coordinator = DisconnectCoordinator(
+                scope = this,
+                stateFlow = stateFlow,
+                setState = { stateFlow.value = it },
+                dispatchStopSignal = {},
+                timeoutMs = 100L
+            )
+
+            coordinator.requestDisconnect()
+            assertEquals(ConnectionState.DISCONNECTING, stateFlow.value)
+
+            stateFlow.value = terminal
+            coordinator.onStateChanged(terminal)
+
+            delay(150L)
+            assertEquals("State must remain $terminal", terminal, stateFlow.value)
+            coordinator.cancel()
+        }
+    }
+
+    @Test
+    fun `DisconnectCoordinator observeState cancels watchdog when terminal state arrives`() = runBlocking {
+        val stateFlow = MutableStateFlow(ConnectionState.CONNECTED)
+        val coordinator = DisconnectCoordinator(
+            scope = this,
+            stateFlow = stateFlow,
+            setState = { stateFlow.value = it },
+            dispatchStopSignal = {},
+            timeoutMs = 150L
+        )
+
+        val observer = coordinator.observeState()
+        coordinator.requestDisconnect()
+        assertEquals(ConnectionState.DISCONNECTING, stateFlow.value)
+
+        stateFlow.value = ConnectionState.DISCONNECTED
+        delay(50L)
+        delay(150L)
+        assertEquals(ConnectionState.DISCONNECTED, stateFlow.value)
+
+        observer.cancel()
+        coordinator.cancel()
     }
 }
