@@ -63,6 +63,12 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
     private val _v2rayPingTabs = MutableStateFlow<Set<String>>(emptySet())
     val v2rayPingTabs: StateFlow<Set<String>> = _v2rayPingTabs.asStateFlow()
 
+    private val _v2rayTabOrder = MutableStateFlow<List<String>>(emptyList())
+    val v2rayTabOrder: StateFlow<List<String>> = _v2rayTabOrder.asStateFlow()
+    private val _v2raySelectedTab = MutableStateFlow(V2rayTabOrderResolver.SINGLE_LINKS_TAB)
+    val v2raySelectedTab: StateFlow<String> = _v2raySelectedTab.asStateFlow()
+    private var protocolRestoreJob: Job? = null
+
     val allProfiles: StateFlow<List<VpnProfile>> = dao.getAllProfiles()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
@@ -204,10 +210,20 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
 
     private var pingJob: Job? = null
 
+    private suspend fun activateProfileAndRemember(profile: VpnProfile) {
+        settingsRepository.setLastServerId(profile.protocol, profile.id)
+        dao.deactivateAll()
+        dao.setActiveProfile(profile.id)
+    }
+
     // Subscription-info detection is shared with DashboardScreen so the UI and
     // the ViewModel agree on which profiles are informational cards.
 
     init {
+        settingsRepository.migrateLegacyTabPrefsIfNeeded(application)
+        _v2rayTabOrder.value = settingsRepository.getV2rayTabOrder()
+        _v2raySelectedTab.value = settingsRepository.getV2rayLastSelectedTab() ?: V2rayTabOrderResolver.SINGLE_LINKS_TAB
+
         VpnStateManager.initPersist(application)
         // Re-hydrate in-memory start time if the process survived but
         // VpnStateManager's singleton lost its cached value (e.g. after
@@ -241,9 +257,10 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
                         it.username == active.username &&
                         !isSubscriptionInfoName(it.name)
                     }
-                    dao.deactivateAll()
                     if (realProfile != null) {
-                        dao.setActiveProfile(realProfile.id)
+                        activateProfileAndRemember(realProfile)
+                    } else {
+                        dao.deactivateAll()
                     }
                 }
             }
@@ -303,10 +320,28 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
             }
 
             val active = dao.getActiveProfile().firstOrNull()
-            if (active != null) {
-                _selectedProtocol.value = when (active.protocol) {
-                    "OpenConnect", "WireGuard", "v2rayNG" -> active.protocol
-                    else -> "OpenConnect"
+            if (active != null && settingsRepository.getLastServerId(active.protocol) == null) {
+                settingsRepository.setLastServerId(active.protocol, active.id)
+            }
+            if (ConnectionLockGuard.isLocked(connectionState.value) && active != null) {
+                _selectedProtocol.value = active.protocol
+            } else {
+                val targetProtocol = settingsRepository.getLastSelectedProtocol()
+                    ?: active?.protocol?.takeIf { it in setOf("OpenConnect", "WireGuard", "v2rayNG") }
+                    ?: "OpenConnect"
+                _selectedProtocol.value = targetProtocol
+                settingsRepository.setLastSelectedProtocol(targetProtocol)
+                if (active?.protocol != targetProtocol && !ConnectionLockGuard.isLocked(connectionState.value)) {
+                    val savedId = settingsRepository.getLastServerId(targetProtocol)
+                    if (savedId != null) {
+                        val savedProfile = dao.getProfileById(savedId)
+                        if (savedProfile != null && savedProfile.protocol == targetProtocol) {
+                            dao.deactivateAll()
+                            dao.setActiveProfile(savedId)
+                        } else {
+                            settingsRepository.clearLastServerId(targetProtocol)
+                        }
+                    }
                 }
             }
         }
@@ -449,9 +484,28 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
     private fun stopUptime() { uptimeJob?.cancel() }
 
     fun setProtocol(protocol: String) {
+        if (protocol !in setOf("OpenConnect", "WireGuard", "v2rayNG")) return
         _selectedProtocol.value = protocol
+        settingsRepository.setLastSelectedProtocol(protocol)
         // Do NOT clear logs when switching protocol tabs; logs are per-protocol
         // buffers in LogStore and should persist until a new connection starts.
+
+        protocolRestoreJob?.cancel()
+        protocolRestoreJob = viewModelScope.launch(Dispatchers.IO) {
+            if (ConnectionLockGuard.isLocked(connectionState.value)) return@launch
+            val savedId = settingsRepository.getLastServerId(protocol) ?: return@launch
+            val savedProfile = dao.getProfileById(savedId)
+            if (savedProfile != null && savedProfile.protocol == protocol) {
+                if (_selectedProtocol.value == protocol && !ConnectionLockGuard.isLocked(connectionState.value)) {
+                    if (dao.getActiveProfile().firstOrNull()?.id != savedId) {
+                        dao.deactivateAll()
+                        dao.setActiveProfile(savedId)
+                    }
+                }
+            } else {
+                settingsRepository.clearLastServerId(protocol)
+            }
+        }
     }
 
     fun testPing(ipToPing: String = "8.8.8.8") {
@@ -1176,6 +1230,10 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
                 dao.insertProfile(VpnProfile(name = cName, protocol = protocol, serverAddress = cAddr, username = cUser, password = cPass, isActive = true, countryCode = countryCode))
                 withContext(Dispatchers.Main) { showToast("Server added successfully") }
             }
+            val newActive = dao.getActiveProfile().firstOrNull()
+            if (newActive != null) {
+                settingsRepository.setLastServerId(newActive.protocol, newActive.id)
+            }
         }
     }
 
@@ -1514,7 +1572,7 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
                         delay(1000)
                     }
                 }
-                dao.deactivateAll(); dao.setActiveProfile(profileId)
+                activateProfileAndRemember(newProfile)
                 if (isConnected) withContext(Dispatchers.Main) { startVpn(context) }
             } catch (e: Exception) {
                 withContext(Dispatchers.Main) { isIntentionalReconnect = false; VpnStateManager.updateState(ConnectionState.ERROR) }
@@ -1522,8 +1580,32 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
         }
     }
 
-    fun deleteServer(profile: VpnProfile) { viewModelScope.launch(Dispatchers.IO) { dao.deleteProfile(profile) } }
-    fun deleteSubscriptionGroup(subKey: String) { viewModelScope.launch(Dispatchers.IO) { allProfiles.value.filter { it.username == subKey }.forEach { dao.deleteProfile(it) } } }
+    fun deleteServer(profile: VpnProfile) {
+        viewModelScope.launch(Dispatchers.IO) {
+            if (settingsRepository.getLastServerId(profile.protocol) == profile.id) {
+                settingsRepository.clearLastServerId(profile.protocol)
+            }
+            dao.deleteProfile(profile)
+        }
+    }
+
+    fun deleteSubscriptionGroup(subKey: String) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val targets = allProfiles.value.filter { it.username == subKey }
+            val savedId = settingsRepository.getLastServerId("v2rayNG")
+            if (savedId != null && targets.any { it.id == savedId }) {
+                settingsRepository.clearLastServerId("v2rayNG")
+            }
+            val updatedOrder = V2rayTabOrderResolver.removeTabFromSavedOrder(_v2rayTabOrder.value, subKey)
+            _v2rayTabOrder.value = updatedOrder
+            settingsRepository.setV2rayTabOrder(updatedOrder)
+            if (_v2raySelectedTab.value == subKey) {
+                _v2raySelectedTab.value = V2rayTabOrderResolver.SINGLE_LINKS_TAB
+                settingsRepository.setV2rayLastSelectedTab(V2rayTabOrderResolver.SINGLE_LINKS_TAB)
+            }
+            targets.forEach { dao.deleteProfile(it) }
+        }
+    }
     fun renameSubscriptionGroup(subKey: String, newName: String) { viewModelScope.launch(Dispatchers.IO) { allProfiles.value.filter { it.username == subKey }.forEach { dao.updateProfile(it.copy(subName = newName)) } } }
 
     private fun extractHostPort(config: String): Pair<String, Int>? {
@@ -1628,6 +1710,10 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
                 "SingleLinks" -> base.filter { !it.username.startsWith("sub:") }
                 else -> base.filter { it.username == groupName }
             }
+            val savedId = settingsRepository.getLastServerId("v2rayNG")
+            if (savedId != null && targets.any { it.id == savedId }) {
+                settingsRepository.clearLastServerId("v2rayNG")
+            }
             targets.forEach { dao.deleteProfile(it) }
         }
     }
@@ -1709,6 +1795,11 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
                 val url = existingProfiles.first().password.trim()
                 if (!url.startsWith("http")) return@launch
                 val preservedSubName = existingProfiles.first().subName
+
+                val prevSavedId = settingsRepository.getLastServerId("v2rayNG")
+                val prevSavedProfile = existingProfiles.firstOrNull { it.id == prevSavedId }
+                val wasActive = prevSavedProfile?.isActive == true
+
                 val connection = URL(url).openConnection().apply {
                     connectTimeout = 10000
                     val ua = settingsRepository.getSubUserAgent().trim()
@@ -1729,11 +1820,52 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
                     }.let { if (it >= 0) it else 0 }
                     lines.forEachIndexed { index, config ->
                         val parsedName = extractV2rayName(config) ?: "SubLink ${index + 1}"
-                        dao.insertProfile(VpnProfile(name = parsedName.trim(), protocol = "v2rayNG", serverAddress = config, username = groupName.trim(), password = url, isActive = index == firstRealIndex, subName = preservedSubName))
+                        val initialActive = if (prevSavedProfile != null) false else (index == firstRealIndex)
+                        dao.insertProfile(
+                            VpnProfile(
+                                name = parsedName.trim(),
+                                protocol = "v2rayNG",
+                                serverAddress = config,
+                                username = groupName.trim(),
+                                password = url,
+                                isActive = initialActive,
+                                subName = preservedSubName
+                            )
+                        )
+                    }
+                    if (prevSavedProfile != null) {
+                        val newProfiles = dao.getAllProfiles().firstOrNull()?.filter { it.username == groupName && it.protocol == "v2rayNG" } ?: emptyList()
+                        val matched = newProfiles.firstOrNull { it.serverAddress == prevSavedProfile.serverAddress }
+                            ?: newProfiles.firstOrNull { it.name == prevSavedProfile.name }
+                        if (matched != null) {
+                            settingsRepository.setLastServerId("v2rayNG", matched.id)
+                            if (wasActive && !ConnectionLockGuard.isLocked(connectionState.value)) {
+                                dao.deactivateAll()
+                                dao.setActiveProfile(matched.id)
+                            }
+                        } else {
+                            settingsRepository.clearLastServerId("v2rayNG")
+                        }
                     }
                     withContext(Dispatchers.Main) { _subscriptionToast.emit("Subscription Updated Successfully") }
                 }
             } catch (e: Exception) { withContext(Dispatchers.Main) { _subscriptionToast.emit("Update Failed") } }
+        }
+    }
+
+    fun selectV2rayTab(tabKey: String) {
+        if (tabKey.isNotBlank()) {
+            _v2raySelectedTab.value = tabKey
+            settingsRepository.setV2rayLastSelectedTab(tabKey)
+        }
+    }
+
+    fun moveV2rayTab(displayedTabs: List<String>, tabKey: String, delta: Int) {
+        val moved = V2rayTabOrderResolver.moveTab(displayedTabs, tabKey, delta)
+        if (moved != displayedTabs) {
+            val merged = V2rayTabOrderResolver.mergeMovedOrderIntoSaved(_v2rayTabOrder.value, moved)
+            _v2rayTabOrder.value = merged
+            settingsRepository.setV2rayTabOrder(merged)
         }
     }
 

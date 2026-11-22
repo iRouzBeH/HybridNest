@@ -5,6 +5,7 @@ import android.content.SharedPreferences
 import dev.rouzbeh.hybridvpn.core.routing.RoutingPolicy
 import dev.rouzbeh.hybridvpn.core.utils.LogRedactor
 import dev.rouzbeh.hybridvpn.core.vpn.v2ray.V2raySettings
+import dev.rouzbeh.hybridvpn.feature.dashboard.V2rayTabOrderResolver
 import java.net.IDN
 import java.net.URLDecoder
 import java.util.Locale
@@ -12,7 +13,7 @@ import java.util.Locale
 /**
  * Source of truth for user settings and protocol configurations.
  */
-class SettingsRepository(context: Context) {
+class SettingsRepository(private val context: Context) {
     private val prefs: SharedPreferences =
         context.getSharedPreferences("hybridvpn_settings", Context.MODE_PRIVATE)
 
@@ -319,6 +320,80 @@ class SettingsRepository(context: Context) {
         LogRedactor.strictRedactionEnabled = isStrictLogRedactionEnabled()
     }
 
+    // --- Protocol & Server Persistence ---
+
+    fun getLastSelectedProtocol(): String? {
+        val proto = prefs.getString(KEY_LAST_SELECTED_PROTOCOL, null)
+        return if (proto in VALID_PROTOCOLS) proto else null
+    }
+
+    fun setLastSelectedProtocol(protocol: String) {
+        if (protocol in VALID_PROTOCOLS) {
+            prefs.edit().putString(KEY_LAST_SELECTED_PROTOCOL, protocol).apply()
+        }
+    }
+
+    fun getLastServerId(protocol: String): Int? {
+        if (protocol !in VALID_PROTOCOLS) return null
+        val key = KEY_LAST_SERVER_ID_PREFIX + protocol
+        if (!prefs.contains(key)) return null
+        val id = prefs.getInt(key, -1)
+        return if (id > 0) id else null
+    }
+
+    fun setLastServerId(protocol: String, profileId: Int) {
+        if (protocol in VALID_PROTOCOLS && profileId > 0) {
+            prefs.edit().putInt(KEY_LAST_SERVER_ID_PREFIX + protocol, profileId).apply()
+        }
+    }
+
+    fun clearLastServerId(protocol: String) {
+        prefs.edit().remove(KEY_LAST_SERVER_ID_PREFIX + protocol).apply()
+    }
+
+    // --- v2rayNG Tab Persistence & Migration ---
+
+    fun getV2rayTabOrder(): List<String> {
+        val raw = prefs.getString(KEY_V2RAY_TAB_ORDER, null)
+        return V2rayTabOrderResolver.decodeTabOrder(raw)
+    }
+
+    fun setV2rayTabOrder(order: List<String>) {
+        val encoded = V2rayTabOrderResolver.encodeTabOrder(order)
+        prefs.edit().putString(KEY_V2RAY_TAB_ORDER, encoded).apply()
+    }
+
+    fun getV2rayLastSelectedTab(): String? {
+        val tab = prefs.getString(KEY_V2RAY_LAST_SELECTED_TAB, null)?.trim()
+        return if (!tab.isNullOrBlank()) tab else null
+    }
+
+    fun setV2rayLastSelectedTab(tabKey: String) {
+        val trimmed = tabKey.trim()
+        if (trimmed.isNotBlank()) {
+            prefs.edit().putString(KEY_V2RAY_LAST_SELECTED_TAB, trimmed).apply()
+        }
+    }
+
+    fun migrateLegacyTabPrefsIfNeeded(targetContext: Context = context) {
+        if (prefs.getBoolean(KEY_LEGACY_TAB_PREFS_MIGRATED, false)) return
+        val legacyPrefs = targetContext.getSharedPreferences("tab_prefs", Context.MODE_PRIVATE)
+        if (!prefs.contains(KEY_V2RAY_TAB_ORDER)) {
+            val legacyOrderRaw = legacyPrefs.getString("order", null)
+            val decoded = V2rayTabOrderResolver.decodeTabOrder(legacyOrderRaw)
+            if (decoded.size > 1) {
+                setV2rayTabOrder(decoded)
+            }
+        }
+        if (!prefs.contains(KEY_V2RAY_LAST_SELECTED_TAB)) {
+            val legacyTab = legacyPrefs.getString("last_selected_tab", null)?.trim()
+            if (!legacyTab.isNullOrBlank()) {
+                setV2rayLastSelectedTab(legacyTab)
+            }
+        }
+        prefs.edit().putBoolean(KEY_LEGACY_TAB_PREFS_MIGRATED, true).apply()
+    }
+
     companion object {
         /**
          * Parses a potentially multi-domain or complex input string (e.g. Google redirect URLs,
@@ -512,6 +587,14 @@ class SettingsRepository(context: Context) {
         private const val KEY_BYPASS_MODE = "bypass_mode"
         private const val KEY_SELECTED_APPS = "selected_apps"
         private const val KEY_ROUTING_REVISION = "routing_revision"
+
+        // Protocol & Server Persistence
+        private const val KEY_LAST_SELECTED_PROTOCOL = "last_selected_protocol"
+        private const val KEY_LAST_SERVER_ID_PREFIX = "last_server_id_"
+        private const val KEY_V2RAY_TAB_ORDER = "v2ray_tab_order"
+        private const val KEY_V2RAY_LAST_SELECTED_TAB = "v2ray_last_selected_tab"
+        private const val KEY_LEGACY_TAB_PREFS_MIGRATED = "legacy_tab_prefs_migrated"
+        private val VALID_PROTOCOLS = setOf("OpenConnect", "WireGuard", "v2rayNG")
 
         // AnyConnect
         private const val KEY_OC_DTLS_ENABLED = "oc_dtls_enabled"

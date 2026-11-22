@@ -350,6 +350,8 @@ fun DashboardScreen(
     val isRoutingPending by viewModel.isRoutingPending.collectAsStateWithLifecycle()
     val currentLogs by viewModel.currentLogs.collectAsStateWithLifecycle()
     val v2rayPingTabs by viewModel.v2rayPingTabs.collectAsStateWithLifecycle()
+    val v2rayTabOrder by viewModel.v2rayTabOrder.collectAsStateWithLifecycle()
+    val v2raySelectedTab by viewModel.v2raySelectedTab.collectAsStateWithLifecycle()
 
     val drawerState =
         androidx.compose.material3.rememberDrawerState(initialValue = androidx.compose.material3.DrawerValue.Closed)
@@ -445,6 +447,10 @@ fun DashboardScreen(
             onDeleteInvalidV2ray = { groupName -> viewModel.deleteInvalidV2rayConfigs(groupName) },
             onUpdateSub = { subKey -> viewModel.updateSubscription(subKey) },
             v2rayPingTabs = v2rayPingTabs,
+            v2rayTabOrder = v2rayTabOrder,
+            v2raySelectedTab = v2raySelectedTab,
+            onSelectV2rayTab = { viewModel.selectV2rayTab(it) },
+            onMoveV2rayTab = { visibleTabs, tabKey, delta -> viewModel.moveV2rayTab(visibleTabs, tabKey, delta) },
             onTestPing = { viewModel.testPing() },
             onToggleAppSelection = { viewModel.toggleAppSelection(it) },
             onSetPerAppEnabled = { viewModel.setPerAppEnabled(it) },
@@ -527,6 +533,10 @@ fun DashboardContent(
     onDeleteInvalidV2ray: (String) -> Unit,
     onUpdateSub: (String) -> Unit,
     v2rayPingTabs: Set<String>,
+    v2rayTabOrder: List<String> = emptyList(),
+    v2raySelectedTab: String = V2rayTabOrderResolver.SINGLE_LINKS_TAB,
+    onSelectV2rayTab: (String) -> Unit = {},
+    onMoveV2rayTab: (List<String>, String, Int) -> Unit = { _, _, _ -> },
     onAddServer: (String, String, String, String, String) -> Unit,
     onUpdateServer: (VpnProfile) -> Unit,
     onTestPing: () -> Unit,
@@ -667,6 +677,10 @@ fun DashboardContent(
             onDeleteInvalidV2ray = onDeleteInvalidV2ray,
             onUpdateSub = onUpdateSub,
             v2rayPingTabs = v2rayPingTabs,
+            v2rayTabOrder = v2rayTabOrder,
+            v2raySelectedTab = v2raySelectedTab,
+            onSelectV2rayTab = onSelectV2rayTab,
+            onMoveV2rayTab = onMoveV2rayTab,
             onEdit = { profile -> editingProfile = profile },
             onNavigateBack = { showServerListSheet = false },
             toastMessage = dashboardToastMessage,
@@ -4428,6 +4442,10 @@ fun ServerListFullScreen(
     onDeleteInvalidV2ray: (String) -> Unit,
     onUpdateSub: (String) -> Unit,
     v2rayPingTabs: Set<String> = emptySet(),
+    v2rayTabOrder: List<String> = emptyList(),
+    v2raySelectedTab: String = V2rayTabOrderResolver.SINGLE_LINKS_TAB,
+    onSelectV2rayTab: (String) -> Unit = {},
+    onMoveV2rayTab: (List<String>, String, Int) -> Unit = { _, _, _ -> },
     onEdit: (VpnProfile) -> Unit,
     onNavigateBack: () -> Unit,
     toastMessage: String? = null,
@@ -4435,9 +4453,6 @@ fun ServerListFullScreen(
     onShowDisconnectWarning: (String) -> Unit = {},
     subscriptionToastFlow: kotlinx.coroutines.flow.Flow<String> = kotlinx.coroutines.flow.emptyFlow()
 ) {
-    val context = androidx.compose.ui.platform.LocalContext.current
-    val prefs = androidx.compose.runtime.remember { context.getSharedPreferences("tab_prefs", android.content.Context.MODE_PRIVATE) }
-
     // Local toast scoped to THIS server-list screen. Subscription-update and
     // other messages surface here and self-clear, instead of relying on the
     // shared dashboardToastMessage which leaks into other methods' lists.
@@ -4463,69 +4478,23 @@ fun ServerListFullScreen(
     val subGroups = androidx.compose.runtime.remember(v2rayServers) { v2rayServers.filter { it.username.startsWith("sub:") }.groupBy { it.username } }
     val subKeys = androidx.compose.runtime.remember(subGroups) { subGroups.keys.toList() }
 
-    val allDynamicTabs = androidx.compose.runtime.remember(subKeys) { mutableListOf("SingleLinks").apply { addAll(subKeys) } }
-    
-    // 1. Robust Persistence Logic for Tab Order
-    var tabOrder by androidx.compose.runtime.remember { mutableStateOf(prefs.getString("order", "")!!.split(",").filter { it.isNotBlank() }) }
-    
-    androidx.compose.runtime.LaunchedEffect(allDynamicTabs) {
-        val currentSaved = prefs.getString("order", "")!!.split(",").filter { it.isNotBlank() }
-        val newOrder = currentSaved.toMutableList()
-        var changed = false
-        
-        allDynamicTabs.forEach { tab ->
-            if (!newOrder.contains(tab)) {
-                newOrder.add(tab)
-                changed = true
-            }
-        }
-        val iterator = newOrder.iterator()
-        while(iterator.hasNext()) {
-            if(!allDynamicTabs.contains(iterator.next())) {
-                iterator.remove()
-                changed = true
-            }
-        }
-        if (changed) {
-            tabOrder = newOrder
-            prefs.edit().putString("order", newOrder.joinToString(",")).apply()
-        }
+    val tabOrder = androidx.compose.runtime.remember(v2rayTabOrder, subKeys) {
+        V2rayTabOrderResolver.resolveOrderedTabs(v2rayTabOrder, subKeys)
     }
-
-    val sortedTabs = androidx.compose.runtime.remember(allDynamicTabs, tabOrder) {
-        allDynamicTabs.sortedBy { if (tabOrder.contains(it)) tabOrder.indexOf(it) else Int.MAX_VALUE }
-    }
+    val sortedTabs = tabOrder
 
     var isReorderMode by androidx.compose.runtime.remember { mutableStateOf(false) }
     var expandedTabMenu by androidx.compose.runtime.remember { mutableStateOf<String?>(null) }
     var renamingSubKey by androidx.compose.runtime.remember { mutableStateOf<String?>(null) }
 
-    // 2. Smart Default Tab Logic (Remembers last viewed tab or avoids empty SingleLinks if subs exist)
-    var selectedTab by androidx.compose.runtime.remember { 
-        val saved = prefs.getString("last_selected_tab", null)
-        val initial = if (saved != null && (saved == "SingleLinks" || subKeys.contains(saved))) {
-            saved
-        } else if (singleLinks.isNotEmpty() || subKeys.isEmpty()) {
-            "SingleLinks"
-        } else {
-            subKeys.first()
-        }
-        mutableStateOf(initial)
+    val selectedTab = androidx.compose.runtime.remember(v2raySelectedTab, tabOrder) {
+        V2rayTabOrderResolver.resolveEffectiveSelectedTab(v2raySelectedTab, tabOrder)
     }
 
-    androidx.compose.runtime.LaunchedEffect(subKeys, singleLinks.size) {
-        if (selectedTab != "SingleLinks" && !subKeys.contains(selectedTab)) {
-            val fallback = if (singleLinks.isNotEmpty() || subKeys.isEmpty()) "SingleLinks" else subKeys.first()
-            selectedTab = fallback
-            prefs.edit().putString("last_selected_tab", fallback).apply()
-        } else if (prefs.getString("last_selected_tab", null) == null && selectedTab == "SingleLinks" && singleLinks.isEmpty() && subKeys.isNotEmpty()) {
-            selectedTab = subKeys.first()
-            prefs.edit().putString("last_selected_tab", subKeys.first()).apply()
+    androidx.compose.runtime.LaunchedEffect(isReorderMode, tabOrder.size) {
+        if (isReorderMode && tabOrder.size <= 1) {
+            isReorderMode = false
         }
-    }
-
-    androidx.compose.runtime.LaunchedEffect(selectedTab) {
-        prefs.edit().putString("last_selected_tab", selectedTab).apply()
     }
 
     val displayServers = if (protocol == "v2rayNG") {
@@ -4653,17 +4622,11 @@ fun ServerListFullScreen(
             } else {
                 Spacer(modifier = Modifier.weight(1f))
                 Row(horizontalArrangement = Arrangement.spacedBy(16.dp), verticalAlignment = Alignment.CenterVertically) {
-                    val listToUse = if (tabOrder.isEmpty()) allDynamicTabs else tabOrder
-                    val currentIndex = listToUse.indexOf(selectedTab)
+                    val currentIndex = tabOrder.indexOf(selectedTab)
 
                     androidx.compose.material3.IconButton(
                         onClick = {
-                            if (currentIndex > 0) {
-                                val newList = listToUse.toMutableList()
-                                java.util.Collections.swap(newList, currentIndex, currentIndex - 1)
-                                tabOrder = newList
-                                prefs.edit().putString("order", newList.joinToString(",")).apply()
-                            }
+                            onMoveV2rayTab(tabOrder, selectedTab, -1)
                         },
                         enabled = currentIndex > 0
                     ) {
@@ -4672,16 +4635,11 @@ fun ServerListFullScreen(
 
                     androidx.compose.material3.IconButton(
                         onClick = {
-                            if (currentIndex < listToUse.size - 1) {
-                                val newList = listToUse.toMutableList()
-                                java.util.Collections.swap(newList, currentIndex, currentIndex + 1)
-                                tabOrder = newList
-                                prefs.edit().putString("order", newList.joinToString(",")).apply()
-                            }
+                            onMoveV2rayTab(tabOrder, selectedTab, +1)
                         },
-                        enabled = currentIndex < listToUse.size - 1
+                        enabled = currentIndex in 0 until tabOrder.size - 1
                     ) {
-                        Icon(androidx.compose.material.icons.Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = "Move Right", tint = if (currentIndex < listToUse.size - 1) PrimaryCyan else Color.Gray)
+                        Icon(androidx.compose.material.icons.Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = "Move Right", tint = if (currentIndex in 0 until tabOrder.size - 1) PrimaryCyan else Color.Gray)
                     }
                 }
                 Spacer(modifier = Modifier.weight(1f))
@@ -4724,7 +4682,7 @@ fun ServerListFullScreen(
                                 fontWeight = if (selectedTab == tabKey) FontWeight.Bold else FontWeight.Normal,
                                 fontFamily = SoraFamily,
                                 modifier = Modifier
-                                    .bounceClick(onLongClick = { selectedTab = tabKey; expandedTabMenu = tabKey }) { selectedTab = tabKey }
+                                    .bounceClick(onLongClick = { onSelectV2rayTab(tabKey); expandedTabMenu = tabKey }) { onSelectV2rayTab(tabKey) }
                                     .padding(8.dp)
                             )
                         }
@@ -4763,7 +4721,7 @@ fun ServerListFullScreen(
                                             when (ConnectionLockGuard.evaluateControlTap(connectionState)) {
                                                 LockActionOutcome.ALLOW -> {
                                                     onDeleteSubGroup(tabKey)
-                                                    if (selectedTab == tabKey) selectedTab = "SingleLinks" // Fallback will be handled by LaunchedEffect
+                                                    if (selectedTab == tabKey) onSelectV2rayTab(V2rayTabOrderResolver.SINGLE_LINKS_TAB)
                                                 }
                                                 LockActionOutcome.SHOW_LOCK_WARNING -> {
                                                     onShowDisconnectWarning("Cannot delete subscription while VPN is active. Please disconnect first and try again.\n\nWould you like to disconnect now?")
