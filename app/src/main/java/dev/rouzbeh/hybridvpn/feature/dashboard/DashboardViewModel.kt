@@ -35,8 +35,10 @@ import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import org.json.JSONArray
 import org.json.JSONObject
+import java.net.HttpURLConnection
 import java.net.URL
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.time.Duration.Companion.milliseconds
 
@@ -182,6 +184,10 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
      */
     private val _subscriptionToast = MutableSharedFlow<String>(extraBufferCapacity = 4)
     val subscriptionToast = _subscriptionToast.asSharedFlow()
+
+    private val subscriptionUpdateLock = AtomicBoolean(false)
+    private val _subscriptionUpdateState = MutableStateFlow(SubscriptionUpdateState())
+    val subscriptionUpdateState: StateFlow<SubscriptionUpdateState> = _subscriptionUpdateState.asStateFlow()
 
     private fun showToast(message: String) {
         viewModelScope.launch { _toastMessage.emit(message) }
@@ -1841,74 +1847,164 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
      * Refreshes exactly one subscription group (the one matching [groupName]).
      * Only profiles in that group are deleted and re-inserted; other groups,
      * single links, and other protocols are untouched.
+     *
+     * Protected by an atomic lock and full-screen interaction guard to prevent
+     * spamming or concurrent mutations.
      */
     fun updateSubscription(groupName: String) {
-        if (connectionState.value == ConnectionState.CONNECTED && activeProfile.value?.protocol == "v2rayNG") {
+        if (!SubscriptionUpdatePolicy.canStartUpdate(_subscriptionUpdateState.value, groupName)) {
+            return
+        }
+
+        if ((connectionState.value == ConnectionState.CONNECTED || ConnectionLockGuard.isLocked(connectionState.value)) && activeProfile.value?.protocol == "v2rayNG") {
             viewModelScope.launch(Dispatchers.Main) { _subscriptionToast.emit("Please disconnect V2Ray before updating subscription.") }
             return
         }
+
+        if (!subscriptionUpdateLock.compareAndSet(false, true)) {
+            return
+        }
+
+        val initialProfile = allProfiles.value.firstOrNull { it.username == groupName && it.protocol == "v2rayNG" }
+        val initialDisplayName = SubscriptionUpdatePolicy.safeDisplayName(initialProfile?.subName, groupName)
+
+        _subscriptionUpdateState.value = SubscriptionUpdateState(
+            phase = SubscriptionUpdatePhase.UPDATING,
+            targetGroupName = groupName,
+            targetDisplayName = initialDisplayName,
+            detailText = "Syncing servers..."
+        )
+
         viewModelScope.launch(Dispatchers.IO) {
             try {
-                val existingProfiles = allProfiles.value.filter { it.username == groupName && it.protocol == "v2rayNG" }
-                if (existingProfiles.isEmpty()) return@launch
-                val url = existingProfiles.first().password.trim()
-                if (!url.startsWith("http")) return@launch
-                val preservedSubName = existingProfiles.first().subName
+                val startNano = System.nanoTime()
+                var updatedCount = 0
+                var succeeded = false
+                var resolvedDisplayName = initialDisplayName
 
-                val prevSavedId = settingsRepository.getLastServerId("v2rayNG")
-                val prevSavedProfile = existingProfiles.firstOrNull { it.id == prevSavedId }
-                val wasActive = prevSavedProfile?.isActive == true
+                try {
+                    stopV2rayPing(groupName)
 
-                val connection = URL(url).openConnection().apply {
-                    connectTimeout = 10000
-                    val ua = settingsRepository.getSubUserAgent().trim()
-                    if (ua.isNotEmpty()) setRequestProperty("User-Agent", ua)
-                }
-                val response = connection.getInputStream().bufferedReader().use { it.readText() }
-                val decoded = try { String(android.util.Base64.decode(response, android.util.Base64.DEFAULT)) } catch (e: Exception) { response }
-                val validPrefixes = listOf("vmess://", "vless://", "trojan://", "v2ray://")
-                val lines = decoded.lines().map { it.trim() }.filter { line -> line.isNotBlank() && validPrefixes.any { line.startsWith(it, true) } }
-                if (lines.isNotEmpty()) {
-                    // Deactivate the group first so a currently-active profile in
-                    // it (possible when another protocol is connected) isn't left
-                    // dangling after the delete. New rows are inserted below.
-                    existingProfiles.forEach { dao.deleteProfile(it) }
-                    val firstRealIndex = lines.indexOfFirst {
-                        val name = extractV2rayName(it) ?: ""
-                        !isSubscriptionInfoName(name)
-                    }.let { if (it >= 0) it else 0 }
-                    lines.forEachIndexed { index, config ->
-                        val parsedName = extractV2rayName(config) ?: "SubLink ${index + 1}"
-                        val initialActive = if (prevSavedProfile != null) false else (index == firstRealIndex)
-                        dao.insertProfile(
-                            VpnProfile(
-                                name = parsedName.trim(),
-                                protocol = "v2rayNG",
-                                serverAddress = config,
-                                username = groupName.trim(),
-                                password = url,
-                                isActive = initialActive,
-                                subName = preservedSubName
-                            )
-                        )
-                    }
-                    if (prevSavedProfile != null) {
-                        val newProfiles = dao.getAllProfiles().firstOrNull()?.filter { it.username == groupName && it.protocol == "v2rayNG" } ?: emptyList()
-                        val matched = newProfiles.firstOrNull { it.serverAddress == prevSavedProfile.serverAddress }
-                            ?: newProfiles.firstOrNull { it.name == prevSavedProfile.name }
-                        if (matched != null) {
-                            settingsRepository.setLastServerId("v2rayNG", matched.id)
-                            if (wasActive && !ConnectionLockGuard.isLocked(connectionState.value)) {
-                                dao.deactivateAll()
-                                dao.setActiveProfile(matched.id)
+                    val existingProfiles = allProfiles.value.filter { it.username == groupName && it.protocol == "v2rayNG" }
+                    if (existingProfiles.isNotEmpty()) {
+                        val url = existingProfiles.first().password.trim()
+                        val preservedSubName = existingProfiles.first().subName
+                        resolvedDisplayName = SubscriptionUpdatePolicy.safeDisplayName(preservedSubName, groupName)
+
+                        if (url.startsWith("http")) {
+                            val prevSavedId = settingsRepository.getLastServerId("v2rayNG")
+                            val prevSavedProfile = existingProfiles.firstOrNull { it.id == prevSavedId }
+                            val wasActive = prevSavedProfile?.isActive == true
+
+                            val connection = (URL(url).openConnection() as HttpURLConnection).apply {
+                                connectTimeout = SubscriptionUpdatePolicy.CONNECT_TIMEOUT_MS
+                                readTimeout = SubscriptionUpdatePolicy.READ_TIMEOUT_MS
+                                instanceFollowRedirects = true
+                                val ua = settingsRepository.getSubUserAgent().trim()
+                                if (ua.isNotEmpty()) setRequestProperty("User-Agent", ua)
                             }
-                        } else {
-                            settingsRepository.clearLastServerId("v2rayNG")
+
+                            val response = try {
+                                connection.inputStream.bufferedReader().use { it.readText() }
+                            } finally {
+                                connection.disconnect()
+                            }
+
+                            val decoded = try {
+                                String(android.util.Base64.decode(response, android.util.Base64.DEFAULT))
+                            } catch (e: Exception) {
+                                response
+                            }
+
+                            val validPrefixes = listOf("vmess://", "vless://", "trojan://", "v2ray://")
+                            val lines = decoded.lines()
+                                .map { it.trim() }
+                                .filter { line -> line.isNotBlank() && validPrefixes.any { line.startsWith(it, true) } }
+
+                            if (lines.isNotEmpty()) {
+                                // Deactivate the group first so a currently-active profile in
+                                // it (possible when another protocol is connected) isn't left
+                                // dangling after the delete. New rows are inserted below.
+                                existingProfiles.forEach { dao.deleteProfile(it) }
+                                val firstRealIndex = lines.indexOfFirst {
+                                    val name = extractV2rayName(it) ?: ""
+                                    !isSubscriptionInfoName(name)
+                                }.let { if (it >= 0) it else 0 }
+
+                                lines.forEachIndexed { index, config ->
+                                    val parsedName = extractV2rayName(config) ?: "SubLink ${index + 1}"
+                                    val initialActive = if (prevSavedProfile != null) false else (index == firstRealIndex)
+                                    dao.insertProfile(
+                                        VpnProfile(
+                                            name = parsedName.trim(),
+                                            protocol = "v2rayNG",
+                                            serverAddress = config,
+                                            username = groupName.trim(),
+                                            password = url,
+                                            isActive = initialActive,
+                                            subName = preservedSubName
+                                        )
+                                    )
+                                }
+
+                                if (prevSavedProfile != null) {
+                                    val newProfiles = dao.getAllProfiles().firstOrNull()?.filter { it.username == groupName && it.protocol == "v2rayNG" } ?: emptyList()
+                                    val matched = newProfiles.firstOrNull { it.serverAddress == prevSavedProfile.serverAddress }
+                                        ?: newProfiles.firstOrNull { it.name == prevSavedProfile.name }
+                                    if (matched != null) {
+                                        settingsRepository.setLastServerId("v2rayNG", matched.id)
+                                        if (wasActive && !ConnectionLockGuard.isLocked(connectionState.value)) {
+                                            dao.deactivateAll()
+                                            dao.setActiveProfile(matched.id)
+                                        }
+                                    } else {
+                                        settingsRepository.clearLastServerId("v2rayNG")
+                                    }
+                                }
+
+                                updatedCount = lines.size
+                                succeeded = true
+                            }
                         }
                     }
-                    withContext(Dispatchers.Main) { _subscriptionToast.emit("Subscription Updated Successfully") }
+                } catch (e: Exception) {
+                    if (e is CancellationException) throw e
+                    android.util.Log.e("DashboardViewModel", "Subscription update failed for group: $groupName", e)
+                    succeeded = false
                 }
-            } catch (e: Exception) { withContext(Dispatchers.Main) { _subscriptionToast.emit("Update Failed") } }
+
+                val elapsedMs = (System.nanoTime() - startNano) / 1_000_000L
+                val waitMs = SubscriptionUpdatePolicy.remainingAnimationDelayMs(elapsedMs)
+                if (waitMs > 0L) {
+                    delay(waitMs)
+                }
+
+                if (succeeded) {
+                    val countDetail = if (updatedCount == 1) "1 server synced" else "$updatedCount servers synced"
+                    _subscriptionUpdateState.value = SubscriptionUpdateState(
+                        phase = SubscriptionUpdatePhase.SUCCESS,
+                        targetGroupName = groupName,
+                        targetDisplayName = resolvedDisplayName,
+                        detailText = countDetail
+                    )
+                    delay(SubscriptionUpdatePolicy.SUCCESS_DISPLAY_MS)
+                } else {
+                    _subscriptionUpdateState.value = SubscriptionUpdateState(
+                        phase = SubscriptionUpdatePhase.FAILED,
+                        targetGroupName = groupName,
+                        targetDisplayName = resolvedDisplayName,
+                        detailText = "Could not refresh subscription"
+                    )
+                    delay(SubscriptionUpdatePolicy.FAILURE_DISPLAY_MS)
+                }
+            } catch (e: Exception) {
+                if (e is CancellationException) throw e
+            } finally {
+                withContext(NonCancellable) {
+                    _subscriptionUpdateState.value = SubscriptionUpdateState()
+                    subscriptionUpdateLock.set(false)
+                }
+            }
         }
     }
 

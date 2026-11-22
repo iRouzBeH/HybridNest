@@ -375,6 +375,7 @@ fun DashboardScreen(
     val v2rayTabOrder by viewModel.v2rayTabOrder.collectAsStateWithLifecycle()
     val v2raySelectedTab by viewModel.v2raySelectedTab.collectAsStateWithLifecycle()
     val singleLinksPingProgress by viewModel.singleLinksPingProgress.collectAsStateWithLifecycle()
+    val subscriptionUpdateState by viewModel.subscriptionUpdateState.collectAsStateWithLifecycle()
 
     val drawerState =
         androidx.compose.material3.rememberDrawerState(initialValue = androidx.compose.material3.DrawerValue.Closed)
@@ -468,7 +469,8 @@ fun DashboardScreen(
             onTestAllV2rayPing = { groupName -> viewModel.testV2rayRealDelay(groupName) },
             onSortV2ray = { groupName -> viewModel.sortV2rayByTestResults(groupName) },
             onDeleteInvalidV2ray = { groupName -> viewModel.deleteInvalidV2rayConfigs(groupName) },
-            onUpdateSub = { subKey -> viewModel.updateSubscription(subKey) },
+            onUpdateSub = { subKey -> if (!subscriptionUpdateState.isLocked) viewModel.updateSubscription(subKey) },
+            subscriptionUpdateState = subscriptionUpdateState,
             v2rayPingTabs = v2rayPingTabs,
             v2rayTabOrder = v2rayTabOrder,
             v2raySelectedTab = v2raySelectedTab,
@@ -557,6 +559,7 @@ fun DashboardContent(
     onSortV2ray: (String) -> Unit,
     onDeleteInvalidV2ray: (String) -> Unit,
     onUpdateSub: (String) -> Unit,
+    subscriptionUpdateState: SubscriptionUpdateState = SubscriptionUpdateState(),
     v2rayPingTabs: Set<String>,
     v2rayTabOrder: List<String> = emptyList(),
     v2raySelectedTab: String = V2rayTabOrderResolver.SINGLE_LINKS_TAB,
@@ -659,7 +662,8 @@ fun DashboardContent(
     val isUiUnlocked = connectionState.isTerminal
     val hasServers = filteredProfiles.isNotEmpty()
 
-    androidx.compose.animation.AnimatedVisibility(
+    Box(modifier = Modifier.fillMaxSize()) {
+        androidx.compose.animation.AnimatedVisibility(
         visible = showAppRoutingScreen,
         enter = androidx.compose.animation.slideInVertically(initialOffsetY = { it }) + androidx.compose.animation.fadeIn(),
         exit = androidx.compose.animation.slideOutVertically(targetOffsetY = { it }) + androidx.compose.animation.fadeOut()
@@ -703,6 +707,7 @@ fun DashboardContent(
             onSortV2ray = onSortV2ray,
             onDeleteInvalidV2ray = onDeleteInvalidV2ray,
             onUpdateSub = onUpdateSub,
+            isSubscriptionUpdating = subscriptionUpdateState.isLocked,
             v2rayPingTabs = v2rayPingTabs,
             v2rayTabOrder = v2rayTabOrder,
             v2raySelectedTab = v2raySelectedTab,
@@ -1297,6 +1302,9 @@ fun DashboardContent(
             }
         }
     }
+
+    SubscriptionUpdateOverlay(state = subscriptionUpdateState)
+}
 }
 
 @Preview(showBackground = true, backgroundColor = 0xFF0D0D0D)
@@ -4470,6 +4478,7 @@ fun ServerListFullScreen(
     onSortV2ray: (String) -> Unit,
     onDeleteInvalidV2ray: (String) -> Unit,
     onUpdateSub: (String) -> Unit,
+    isSubscriptionUpdating: Boolean = false,
     v2rayPingTabs: Set<String> = emptySet(),
     v2rayTabOrder: List<String> = emptyList(),
     v2raySelectedTab: String = V2rayTabOrderResolver.SINGLE_LINKS_TAB,
@@ -4633,7 +4642,7 @@ fun ServerListFullScreen(
                                         onClick = {
                                             val tab = selectedTab
                                             showV2rayMenu = false
-                                            if (tab != "SingleLinks") {
+                                            if (tab != "SingleLinks" && !isSubscriptionUpdating) {
                                                 when (ConnectionLockGuard.evaluateControlTap(connectionState)) {
                                                     LockActionOutcome.ALLOW -> onUpdateSub(tab)
                                                     LockActionOutcome.SHOW_LOCK_WARNING -> {
