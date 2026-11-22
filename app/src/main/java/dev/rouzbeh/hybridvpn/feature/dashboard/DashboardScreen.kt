@@ -707,9 +707,24 @@ fun DashboardContent(
                     isConnectivityDegraded &&
                     activeProtocolName == "WireGuard"
                 val density = LocalDensity.current
-                val itemSpacing = if (maxHeight >= 780.dp) 16.dp else 10.dp
-                val bottomPadding = if (maxHeight >= 780.dp) 12.dp else 8.dp
-                val needsScroll = maxHeight < 742.dp || density.fontScale > 1.15f || (showWireGuardDegradedHint && maxHeight < 795.dp)
+                val cardWidth = (maxWidth - 32.dp).coerceAtLeast(280.dp)
+                val minHealthyCardHeight = (cardWidth / 1.60f).coerceIn(205.dp, 240.dp)
+                val gapCount = if (showWireGuardDegradedHint) 7 else 6
+                val fixedNonCardHeight = 492.dp + if (showWireGuardDegradedHint) 44.dp else 0.dp
+                val spaceForGapsAndPadding = maxHeight - fixedNonCardHeight - minHealthyCardHeight
+                val minRequiredGapSpace = (gapCount * 8).dp + 8.dp
+                val fullComfortGapSpace = (gapCount * 16).dp + 12.dp
+                val needsScroll = spaceForGapsAndPadding < minRequiredGapSpace || density.fontScale > 1.15f
+                val bottomPadding = when {
+                    needsScroll -> 12.dp
+                    spaceForGapsAndPadding >= fullComfortGapSpace -> 12.dp
+                    else -> 8.dp
+                }
+                val itemSpacing = when {
+                    needsScroll -> 12.dp
+                    spaceForGapsAndPadding >= fullComfortGapSpace -> 16.dp
+                    else -> ((spaceForGapsAndPadding - bottomPadding) / gapCount).coerceIn(8.dp, 16.dp)
+                }
                 val columnModifier = if (needsScroll) {
                     Modifier
                         .fillMaxSize()
@@ -738,7 +753,13 @@ fun DashboardContent(
 
                     // 2. Network Info Card
                     NetworkInfoCard(
-                        modifier = if (needsScroll) Modifier.height(190.dp) else Modifier.weight(1f).heightIn(min = 184.dp),
+                        modifier = if (needsScroll) {
+                            Modifier.height(minHealthyCardHeight)
+                        } else {
+                            Modifier
+                                .weight(1f)
+                                .heightIn(min = minHealthyCardHeight)
+                        },
                         networkInfo = networkInfo,
                         connectionState = connectionState,
                         onMoreClick = {
