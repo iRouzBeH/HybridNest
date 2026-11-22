@@ -11,6 +11,14 @@ import android.provider.Settings
 import java.net.Inet4Address
 import java.net.InetAddress
 import java.net.NetworkInterface
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.EnterTransition
+import androidx.compose.animation.ExitTransition
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -566,11 +574,11 @@ private fun DialogFooterActions(
 }
 
 // =========================================================================
-// 1. ANYCONNECT (OPENCONNECT) SETTINGS DIALOG
+// 1. ANYCONNECT (OPENCONNECT) SETTINGS FULL-SCREEN
 // =========================================================================
 
 @Composable
-fun AnyConnectSettingsDialog(
+fun AnyConnectSettingsFullScreen(
     onDismiss: () -> Unit,
     viewModel: DashboardViewModel,
     connectionState: ConnectionState = ConnectionState.DISCONNECTED,
@@ -582,97 +590,123 @@ fun AnyConnectSettingsDialog(
     var dpdTimeout by remember { mutableStateOf(settings.getOpenConnectDpdTimeout().toString()) }
     var fallbackDns by remember { mutableStateOf(settings.getOpenConnectFallbackDns()) }
 
-    DialogShell(
-        onDismiss = onDismiss,
+    SettingsFullScreenScaffold(
         title = "AnyConnect Settings",
-        subtitle = "OpenConnect JNI, DTLS & DPD parameters"
-    ) {
-        SettingSectionHeader("Data Channel")
-        SettingSwitchRow(
-            title = "DTLS (UDP) Tunneling",
-            description = "Use UDP data channel for lower latency; disable to force TCP/TLS (CSTP) on restricted networks.",
-            checked = dtlsEnabled,
-            onCheckedChange = { dtlsEnabled = it }
-        )
-
-        Spacer(modifier = Modifier.height(16.dp))
-        SettingSectionHeader("Tunnel MTU (1280–1500)")
-        GlassOutlinedTextField(
-            value = mtu,
-            onValueChange = { mtu = it },
-            label = "MTU Bytes",
-            keyboardType = KeyboardType.Number
-        )
-        Spacer(modifier = Modifier.height(8.dp))
-        PresetChipRow(
-            presets = listOf("1280" to "1280", "1350" to "1350", "1400" to "1400", "1450" to "1450", "1500" to "1500"),
-            selectedValue = mtu,
-            onSelect = { mtu = it }
-        )
-
-        Spacer(modifier = Modifier.height(16.dp))
-        SettingSectionHeader("DPD / Keepalive Timeout (30–600s)")
-        GlassOutlinedTextField(
-            value = dpdTimeout,
-            onValueChange = { dpdTimeout = it },
-            label = "Dead Peer Detection Seconds",
-            keyboardType = KeyboardType.Number
-        )
-        Spacer(modifier = Modifier.height(8.dp))
-        PresetChipRow(
-            presets = listOf("60s" to "60", "120s" to "120", "300s (Default)" to "300", "600s" to "600"),
-            selectedValue = dpdTimeout,
-            onSelect = { dpdTimeout = it }
-        )
-
-        Spacer(modifier = Modifier.height(16.dp))
-        SettingSectionHeader("Fallback DNS Server")
-        GlassOutlinedTextField(
-            value = fallbackDns,
-            onValueChange = { fallbackDns = it },
-            label = "DNS IPv4 (Used when server assigns none)"
-        )
-        Spacer(modifier = Modifier.height(8.dp))
-        PresetChipRow(
-            presets = listOf("Google" to "8.8.8.8", "Cloudflare" to "1.1.1.1", "Quad9" to "9.9.9.9"),
-            selectedValue = fallbackDns,
-            onSelect = { fallbackDns = it }
-        )
-
-        DialogFooterActions(
-            onReset = {
-                dtlsEnabled = true
-                mtu = "1400"
-                dpdTimeout = "300"
-                fallbackDns = "8.8.8.8"
-            },
-            onCancel = onDismiss,
-            onSave = {
-                when (ConnectionLockGuard.evaluateControlTap(connectionState)) {
-                    LockActionOutcome.ALLOW -> {
-                        settings.setOpenConnectDtlsEnabled(dtlsEnabled)
-                        settings.setOpenConnectMtu(mtu.toIntOrNull() ?: 1400)
-                        settings.setOpenConnectDpdTimeout(dpdTimeout.toIntOrNull() ?: 300)
-                        settings.setOpenConnectFallbackDns(fallbackDns.trim().ifBlank { "8.8.8.8" })
-                        viewModel.notifySettingsSaved("AnyConnect Settings")
-                        onDismiss()
+        subtitle = "OpenConnect SSL/TLS & DTLS transport",
+        iconRes = R.drawable.ic_openconnect,
+        onBack = onDismiss,
+        bottomBar = {
+            SettingsActionFooter(
+                onReset = {
+                    dtlsEnabled = true
+                    mtu = "1400"
+                    dpdTimeout = "300"
+                    fallbackDns = "8.8.8.8"
+                },
+                onCancel = onDismiss,
+                onSave = {
+                    when (ConnectionLockGuard.evaluateControlTap(connectionState)) {
+                        LockActionOutcome.ALLOW -> {
+                            settings.setOpenConnectDtlsEnabled(dtlsEnabled)
+                            settings.setOpenConnectMtu(mtu.toIntOrNull() ?: 1400)
+                            settings.setOpenConnectDpdTimeout(dpdTimeout.toIntOrNull() ?: 300)
+                            settings.setOpenConnectFallbackDns(fallbackDns.trim().ifBlank { "8.8.8.8" })
+                            viewModel.notifySettingsSaved("AnyConnect Settings")
+                            onDismiss()
+                        }
+                        LockActionOutcome.SHOW_LOCK_WARNING -> {
+                            onShowConnectionWarning("Cannot modify settings while VPN is connected. Please disconnect your active connection and try again.\n\nWould you like to disconnect now?")
+                        }
+                        LockActionOutcome.IGNORE_WHILE_DISCONNECTING -> Unit
                     }
-                    LockActionOutcome.SHOW_LOCK_WARNING -> {
-                        onShowConnectionWarning("Cannot modify settings while VPN is connected. Please disconnect your active connection and try again.\n\nWould you like to disconnect now?")
-                    }
-                    LockActionOutcome.IGNORE_WHILE_DISCONNECTING -> Unit
                 }
-            }
-        )
+            )
+        }
+    ) {
+        // Section 1 — Data Channel
+        SettingsSectionCard(
+            title = "Data Channel",
+            subtitle = "Transport protocol negotiation"
+        ) {
+            SettingsToggleRow(
+                title = "DTLS (UDP) Tunneling",
+                description = "Use UDP data channel for lower latency; disable to force TCP/TLS (CSTP) on restricted networks.",
+                checked = dtlsEnabled,
+                onCheckedChange = { dtlsEnabled = it }
+            )
+        }
+
+        // Section 2 — Tunnel Parameters
+        SettingsSectionCard(
+            title = "Tunnel Parameters",
+            subtitle = "Packet size and session keepalive"
+        ) {
+            SettingsTextFieldWithPresets(
+                value = mtu,
+                onValueChange = { mtu = it },
+                label = "Tunnel MTU (Bytes)",
+                caption = "Valid range: 1280–1500 bytes (default: 1400)",
+                presets = listOf(
+                    "1280" to "1280",
+                    "1350" to "1350",
+                    "1400" to "1400",
+                    "1450" to "1450",
+                    "1500" to "1500"
+                ),
+                keyboardType = KeyboardType.Number
+            )
+
+            HorizontalDivider(color = Color.White.copy(alpha = 0.07f))
+
+            SettingsTextFieldWithPresets(
+                value = dpdTimeout,
+                onValueChange = { dpdTimeout = it },
+                label = "DPD / Keepalive Timeout (Seconds)",
+                caption = "Dead peer detection interval: 30–600 seconds (default: 300s)",
+                presets = listOf(
+                    "60s" to "60",
+                    "120s" to "120",
+                    "300s (Default)" to "300",
+                    "600s" to "600"
+                ),
+                keyboardType = KeyboardType.Number
+            )
+        }
+
+        // Section 3 — Fallback DNS
+        SettingsSectionCard(
+            title = "Fallback DNS",
+            subtitle = "Resolver applied when gateway pushes no nameservers"
+        ) {
+            SettingsTextFieldWithPresets(
+                value = fallbackDns,
+                onValueChange = { fallbackDns = it },
+                label = "Fallback DNS Server (IPv4)",
+                caption = "Primary resolver for unassigned routes",
+                presets = listOf(
+                    "Google 8.8.8.8" to "8.8.8.8",
+                    "Cloudflare 1.1.1.1" to "1.1.1.1",
+                    "Quad9 9.9.9.9" to "9.9.9.9"
+                )
+            )
+        }
     }
 }
 
+@Composable
+fun AnyConnectSettingsDialog(
+    onDismiss: () -> Unit,
+    viewModel: DashboardViewModel,
+    connectionState: ConnectionState = ConnectionState.DISCONNECTED,
+    onShowConnectionWarning: (String) -> Unit = {}
+) = AnyConnectSettingsFullScreen(onDismiss, viewModel, connectionState, onShowConnectionWarning)
+
 // =========================================================================
-// 2. WIREGUARD SETTINGS DIALOG
+// 2. WIREGUARD SETTINGS FULL-SCREEN
 // =========================================================================
 
 @Composable
-fun WireGuardSettingsDialog(
+fun WireGuardSettingsFullScreen(
     onDismiss: () -> Unit,
     viewModel: DashboardViewModel,
     connectionState: ConnectionState = ConnectionState.DISCONNECTED,
@@ -684,90 +718,119 @@ fun WireGuardSettingsDialog(
     var tunnelDns by remember { mutableStateOf(settings.getWireGuardTunnelDns()) }
     var bootstrapResolve by remember { mutableStateOf(settings.isWireGuardBootstrapResolveEnabled()) }
 
-    DialogShell(
-        onDismiss = onDismiss,
+    SettingsFullScreenScaffold(
         title = "WireGuard Settings",
-        subtitle = "gVisor netstack outbound & tunnel overrides"
-    ) {
-        SettingSectionHeader("Interface MTU Override")
-        GlassOutlinedTextField(
-            value = mtuOverride,
-            onValueChange = { mtuOverride = it },
-            label = "MTU (0 = Profile Default, or 1280..1500)",
-            keyboardType = KeyboardType.Number
-        )
-        Spacer(modifier = Modifier.height(8.dp))
-        PresetChipRow(
-            presets = listOf("Default (0)" to "0", "1280" to "1280", "1380" to "1380", "1400" to "1400", "1420" to "1420"),
-            selectedValue = mtuOverride,
-            onSelect = { mtuOverride = it }
-        )
-
-        Spacer(modifier = Modifier.height(16.dp))
-        SettingSectionHeader("Persistent Keepalive Override")
-        GlassOutlinedTextField(
-            value = keepaliveOverride,
-            onValueChange = { keepaliveOverride = it },
-            label = "Seconds (-1 = Profile Default, 0 = Off, or 1..300)",
-            keyboardType = KeyboardType.Number
-        )
-        Spacer(modifier = Modifier.height(8.dp))
-        PresetChipRow(
-            presets = listOf("Default (-1)" to "-1", "Off (0s)" to "0", "15s" to "15", "25s" to "25", "60s" to "60"),
-            selectedValue = keepaliveOverride,
-            onSelect = { keepaliveOverride = it }
-        )
-
-        Spacer(modifier = Modifier.height(16.dp))
-        SettingSectionHeader("Tunnel Advertised DNS")
-        GlassOutlinedTextField(
-            value = tunnelDns,
-            onValueChange = { tunnelDns = it },
-            label = "DNS IPv4 Address"
-        )
-        Spacer(modifier = Modifier.height(8.dp))
-        PresetChipRow(
-            presets = listOf("Quad9" to "9.9.9.9", "Cloudflare" to "1.1.1.1", "Google" to "8.8.8.8", "AdGuard" to "94.140.14.14"),
-            selectedValue = tunnelDns,
-            onSelect = { tunnelDns = it }
-        )
-
-        Spacer(modifier = Modifier.height(16.dp))
-        SettingSectionHeader("DNS Loop Prevention")
-        SettingSwitchRow(
-            title = "Endpoint IPv4 Bootstrap Pinning",
-            description = "Resolve domain endpoints to IPv4 before tunnel start to prevent circular DNS routing deadlocks.",
-            checked = bootstrapResolve,
-            onCheckedChange = { bootstrapResolve = it }
-        )
-
-        DialogFooterActions(
-            onReset = {
-                mtuOverride = "0"
-                keepaliveOverride = "-1"
-                tunnelDns = "9.9.9.9"
-                bootstrapResolve = true
-            },
-            onCancel = onDismiss,
-            onSave = {
-                when (ConnectionLockGuard.evaluateControlTap(connectionState)) {
-                    LockActionOutcome.ALLOW -> {
-                        settings.setWireGuardMtuOverride(mtuOverride.toIntOrNull() ?: 0)
-                        settings.setWireGuardKeepAliveOverride(keepaliveOverride.toIntOrNull() ?: -1)
-                        settings.setWireGuardTunnelDns(tunnelDns.trim().ifBlank { "9.9.9.9" })
-                        settings.setWireGuardBootstrapResolveEnabled(bootstrapResolve)
-                        viewModel.notifySettingsSaved("WireGuard Settings")
-                        onDismiss()
+        subtitle = "User-space gVisor outbound overrides",
+        iconRes = R.drawable.ic_wireguard,
+        onBack = onDismiss,
+        bottomBar = {
+            SettingsActionFooter(
+                onReset = {
+                    mtuOverride = "0"
+                    keepaliveOverride = "-1"
+                    tunnelDns = "9.9.9.9"
+                    bootstrapResolve = true
+                },
+                onCancel = onDismiss,
+                onSave = {
+                    when (ConnectionLockGuard.evaluateControlTap(connectionState)) {
+                        LockActionOutcome.ALLOW -> {
+                            settings.setWireGuardMtuOverride(mtuOverride.toIntOrNull() ?: 0)
+                            settings.setWireGuardKeepAliveOverride(keepaliveOverride.toIntOrNull() ?: -1)
+                            settings.setWireGuardTunnelDns(tunnelDns.trim().ifBlank { "9.9.9.9" })
+                            settings.setWireGuardBootstrapResolveEnabled(bootstrapResolve)
+                            viewModel.notifySettingsSaved("WireGuard Settings")
+                            onDismiss()
+                        }
+                        LockActionOutcome.SHOW_LOCK_WARNING -> {
+                            onShowConnectionWarning("Cannot modify settings while VPN is connected. Please disconnect your active connection and try again.\n\nWould you like to disconnect now?")
+                        }
+                        LockActionOutcome.IGNORE_WHILE_DISCONNECTING -> Unit
                     }
-                    LockActionOutcome.SHOW_LOCK_WARNING -> {
-                        onShowConnectionWarning("Cannot modify settings while VPN is connected. Please disconnect your active connection and try again.\n\nWould you like to disconnect now?")
-                    }
-                    LockActionOutcome.IGNORE_WHILE_DISCONNECTING -> Unit
                 }
-            }
+            )
+        }
+    ) {
+        // Technical note banner
+        SettingsInfoBanner(
+            text = "Overrides take precedence over config files. Use MTU 0 or Keepalive -1 to inherit profile defaults."
         )
+
+        // Section 1 — Interface Overrides
+        SettingsSectionCard(
+            title = "Interface Overrides",
+            subtitle = "User-space netstack MTU and persistent keepalive"
+        ) {
+            SettingsTextFieldWithPresets(
+                value = mtuOverride,
+                onValueChange = { mtuOverride = it },
+                label = "Interface MTU Override",
+                caption = "0 = use profile MTU, or 1280–1500",
+                presets = listOf(
+                    "Default (0)" to "0",
+                    "1280" to "1280",
+                    "1380" to "1380",
+                    "1400" to "1400",
+                    "1420" to "1420"
+                ),
+                keyboardType = KeyboardType.Number
+            )
+
+            HorizontalDivider(color = Color.White.copy(alpha = 0.07f))
+
+            SettingsTextFieldWithPresets(
+                value = keepaliveOverride,
+                onValueChange = { keepaliveOverride = it },
+                label = "Persistent Keepalive Override",
+                caption = "-1 = profile default, 0 = off, 1–300s",
+                presets = listOf(
+                    "Default (-1)" to "-1",
+                    "Off (0s)" to "0",
+                    "15s" to "15",
+                    "25s" to "25",
+                    "60s" to "60"
+                ),
+                keyboardType = KeyboardType.Number
+            )
+        }
+
+        // Section 2 — DNS & Routing
+        SettingsSectionCard(
+            title = "DNS & Routing",
+            subtitle = "Resolver configuration and circular loop avoidance"
+        ) {
+            SettingsTextFieldWithPresets(
+                value = tunnelDns,
+                onValueChange = { tunnelDns = it },
+                label = "Tunnel Advertised DNS",
+                caption = "DNS IPv4 address assigned to the tunnel interface",
+                presets = listOf(
+                    "Quad9" to "9.9.9.9",
+                    "Cloudflare" to "1.1.1.1",
+                    "Google" to "8.8.8.8",
+                    "AdGuard" to "94.140.14.14"
+                )
+            )
+
+            HorizontalDivider(color = Color.White.copy(alpha = 0.07f))
+
+            SettingsToggleRow(
+                title = "Endpoint IPv4 Bootstrap Pinning",
+                description = "Resolve domain endpoints to IPv4 before tunnel start to prevent circular DNS routing deadlocks.",
+                checked = bootstrapResolve,
+                onCheckedChange = { bootstrapResolve = it }
+            )
+        }
     }
 }
+
+@Composable
+fun WireGuardSettingsDialog(
+    onDismiss: () -> Unit,
+    viewModel: DashboardViewModel,
+    connectionState: ConnectionState = ConnectionState.DISCONNECTED,
+    onShowConnectionWarning: (String) -> Unit = {}
+) = WireGuardSettingsFullScreen(onDismiss, viewModel, connectionState, onShowConnectionWarning)
 
 // =========================================================================
 // 3. V2RAYNG (XRAY) SETTINGS DIALOG
@@ -2022,20 +2085,40 @@ fun DrawerModalHost(
     connectionState: ConnectionState = ConnectionState.DISCONNECTED,
     onShowConnectionWarning: (String) -> Unit = {}
 ) {
+    // In-tree Full-Screen converted destinations with smooth slide & fade transitions
+    AnimatedContent(
+        targetState = activeModal,
+        transitionSpec = {
+            if (targetState == DrawerModalType.ANYCONNECT || targetState == DrawerModalType.WIREGUARD ||
+                initialState == DrawerModalType.ANYCONNECT || initialState == DrawerModalType.WIREGUARD
+            ) {
+                (slideInHorizontally(initialOffsetX = { it / 6 }) + fadeIn()) togetherWith
+                    (slideOutHorizontally(targetOffsetX = { it / 6 }) + fadeOut())
+            } else {
+                EnterTransition.None togetherWith ExitTransition.None
+            }
+        },
+        label = "FullScreenDrawerModalHost"
+    ) { modal ->
+        when (modal) {
+            DrawerModalType.ANYCONNECT -> AnyConnectSettingsFullScreen(
+                onDismiss = onDismiss,
+                viewModel = viewModel,
+                connectionState = connectionState,
+                onShowConnectionWarning = onShowConnectionWarning
+            )
+            DrawerModalType.WIREGUARD -> WireGuardSettingsFullScreen(
+                onDismiss = onDismiss,
+                viewModel = viewModel,
+                connectionState = connectionState,
+                onShowConnectionWarning = onShowConnectionWarning
+            )
+            else -> Unit
+        }
+    }
+
+    // Modal dialogs (kept on DialogShell until subsequent sub-phases 4B–4D)
     when (activeModal) {
-        DrawerModalType.NONE -> Unit
-        DrawerModalType.ANYCONNECT -> AnyConnectSettingsDialog(
-            onDismiss = onDismiss,
-            viewModel = viewModel,
-            connectionState = connectionState,
-            onShowConnectionWarning = onShowConnectionWarning
-        )
-        DrawerModalType.WIREGUARD -> WireGuardSettingsDialog(
-            onDismiss = onDismiss,
-            viewModel = viewModel,
-            connectionState = connectionState,
-            onShowConnectionWarning = onShowConnectionWarning
-        )
         DrawerModalType.V2RAY -> V2raySettingsDialog(
             onDismiss = onDismiss,
             viewModel = viewModel,
@@ -2051,6 +2134,9 @@ fun DrawerModalHost(
         )
         DrawerModalType.CHECK_UPDATE -> CheckForUpdateDialog(onDismiss = onDismiss)
         DrawerModalType.ABOUT -> AboutDialog(onDismiss = onDismiss)
+        DrawerModalType.NONE,
+        DrawerModalType.ANYCONNECT,
+        DrawerModalType.WIREGUARD -> Unit
     }
 }
 

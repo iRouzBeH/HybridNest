@@ -392,107 +392,123 @@ fun DashboardScreen(
         }
     }
 
-    androidx.compose.material3.ModalNavigationDrawer(
-        drawerState = drawerState,
-        gesturesEnabled = drawerState.isOpen, // CRITICAL FIX: Disables swipe-to-open
-        drawerContent = {
-            androidx.compose.material3.ModalDrawerSheet(
-                modifier = Modifier.fillMaxWidth(0.80f),
-                drawerContainerColor = SurfaceMenu,
-                windowInsets = androidx.compose.foundation.layout.WindowInsets(0, 0, 0, 0)
-            ) {
-                HybridNestDrawerContent(
-                    isDrawerOpen = drawerState.isOpen,
-                    onSelectModal = { modal ->
-                        scope.launch { drawerState.close() }
-                        when (modal) {
-                            DrawerModalType.ANYCONNECT,
-                            DrawerModalType.WIREGUARD,
-                            DrawerModalType.V2RAY,
-                            DrawerModalType.FEATURES -> {
-                                when (ConnectionLockGuard.evaluateControlTap(connectionState)) {
-                                    LockActionOutcome.ALLOW -> activeDrawerModal = modal
-                                    LockActionOutcome.SHOW_LOCK_WARNING -> {
-                                        onShowDisconnectWarning("Cannot modify settings while VPN is connected. Please disconnect your active connection and try again.\n\nWould you like to disconnect now?")
+    Box(modifier = Modifier.fillMaxSize()) {
+        androidx.compose.material3.ModalNavigationDrawer(
+            drawerState = drawerState,
+            gesturesEnabled = drawerState.isOpen && activeDrawerModal == DrawerModalType.NONE,
+            drawerContent = {
+                androidx.compose.material3.ModalDrawerSheet(
+                    modifier = Modifier.fillMaxWidth(0.80f),
+                    drawerContainerColor = SurfaceMenu,
+                    windowInsets = androidx.compose.foundation.layout.WindowInsets(0, 0, 0, 0)
+                ) {
+                    HybridNestDrawerContent(
+                        isDrawerOpen = drawerState.isOpen,
+                        onSelectModal = { modal ->
+                            scope.launch { drawerState.close() }
+                            when (modal) {
+                                DrawerModalType.ANYCONNECT,
+                                DrawerModalType.WIREGUARD,
+                                DrawerModalType.V2RAY,
+                                DrawerModalType.FEATURES -> {
+                                    when (ConnectionLockGuard.evaluateControlTap(connectionState)) {
+                                        LockActionOutcome.ALLOW -> activeDrawerModal = modal
+                                        LockActionOutcome.SHOW_LOCK_WARNING -> {
+                                            onShowDisconnectWarning("Cannot modify settings while VPN is connected. Please disconnect your active connection and try again.\n\nWould you like to disconnect now?")
+                                        }
+                                        LockActionOutcome.IGNORE_WHILE_DISCONNECTING -> Unit
                                     }
-                                    LockActionOutcome.IGNORE_WHILE_DISCONNECTING -> Unit
                                 }
+                                DrawerModalType.CHECK_UPDATE,
+                                DrawerModalType.ABOUT -> {
+                                    activeDrawerModal = modal
+                                }
+                                DrawerModalType.NONE -> Unit
                             }
-                            DrawerModalType.CHECK_UPDATE,
-                            DrawerModalType.ABOUT -> {
-                                activeDrawerModal = modal
-                            }
-                            DrawerModalType.NONE -> Unit
                         }
-                    }
-                )
+                    )
+                }
             }
+        ) {
+            DashboardContent(
+                uptimeFlow = viewModel.uptime,
+                connectionState = connectionState,
+                networkInfo = networkInfo,
+                isConnectivityDegraded = isConnectivityDegraded,
+                filteredProfiles = filteredProfiles,
+                activeProfile = activeProfile,
+                speed = speed,
+                rawSpeed = rawSpeed,
+                pingResult = pingResult,
+                selectedProtocol = selectedProtocol,
+                installedApps = installedApps,
+                isPerAppEnabled = isPerAppEnabled,
+                isBypassMode = isBypassMode,
+                isRoutingPending = isRoutingPending,
+                currentLogs = currentLogs,
+                onClearLogs = { viewModel.clearLogs(selectedProtocol) },
+                onProtocolSelected = { viewModel.setProtocol(it) },
+                onStartVpn = { context -> viewModel.startVpn(context) },
+                onStopVpn = { context -> viewModel.initiateDisconnect(context) { /* handled in VM */ } },
+                onCancelVpn = { context -> viewModel.cancelConnection(context) },
+                onResetState = { viewModel.resetState() },
+                onSelectServer = { profileId, context -> viewModel.selectServer(profileId, context) },
+                onDeleteServer = { profile -> viewModel.deleteServer(profile) },
+                onAddServer = { name, addr, user, pass, proto ->
+                    viewModel.addServer(
+                        name,
+                        addr,
+                        user,
+                        pass,
+                        proto
+                    )
+                },
+                onUpdateServer = { profile -> viewModel.updateServer(profile) },
+                onDeleteSubGroup = { subKey -> viewModel.deleteSubscriptionGroup(subKey) },
+                onRenameSubGroup = { subKey, newName -> viewModel.renameSubscriptionGroup(subKey, newName) },
+                onTestSinglePing = { viewModel.testSingleV2rayPing(it) },
+                onTestAllV2rayPing = { groupName -> viewModel.testV2rayRealDelay(groupName) },
+                onSortV2ray = { groupName -> viewModel.sortV2rayByTestResults(groupName) },
+                onDeleteInvalidV2ray = { groupName -> viewModel.deleteInvalidV2rayConfigs(groupName) },
+                onUpdateSub = { subKey -> if (!subscriptionUpdateState.isLocked) viewModel.updateSubscription(subKey) },
+                subscriptionUpdateState = subscriptionUpdateState,
+                v2rayPingTabs = v2rayPingTabs,
+                v2rayTabOrder = v2rayTabOrder,
+                v2raySelectedTab = v2raySelectedTab,
+                singleLinksPingProgress = singleLinksPingProgress,
+                onStopSingleLinksPing = { viewModel.stopV2rayPing(V2rayTabOrderResolver.SINGLE_LINKS_TAB) },
+                onSelectV2rayTab = { viewModel.selectV2rayTab(it) },
+                onMoveV2rayTab = { visibleTabs, tabKey, delta -> viewModel.moveV2rayTab(visibleTabs, tabKey, delta) },
+                onTestPing = { viewModel.testPing() },
+                onToggleAppSelection = { viewModel.toggleAppSelection(it) },
+                onSetPerAppEnabled = { viewModel.setPerAppEnabled(it) },
+                onSetBypassMode = { viewModel.setBypassMode(it) },
+                onSelectAllApps = { viewModel.selectAllApps() },
+                onDeselectAllApps = { viewModel.deselectAllApps() },
+                onReconnectWithLatestPolicy = { context -> viewModel.reconnectWithLatestPolicy(context) },
+                onOpenDrawer = { scope.launch { drawerState.open() } },
+                onRetryIpFetch = { viewModel.retryFetchIp() },
+                onImportWireGuardUri = { uri -> viewModel.importWireGuardFromUri(context, uri) },
+                openSplitSheetTrigger = openSplitSheetTrigger,
+                toastFlow = viewModel.toastMessage,
+                subscriptionToastFlow = viewModel.subscriptionToast,
+                onShowDisconnectWarning = onShowDisconnectWarning,
+                isWarningDialogVisible = disconnectWarningMessage != null
+            )
         }
-    ) {
-        DashboardContent(
-            uptimeFlow = viewModel.uptime,
-            connectionState = connectionState,
-            networkInfo = networkInfo,
-            isConnectivityDegraded = isConnectivityDegraded,
-            filteredProfiles = filteredProfiles,
-            activeProfile = activeProfile,
-            speed = speed,
-            rawSpeed = rawSpeed,
-            pingResult = pingResult,
-            selectedProtocol = selectedProtocol,
-            installedApps = installedApps,
-            isPerAppEnabled = isPerAppEnabled,
-            isBypassMode = isBypassMode,
-            isRoutingPending = isRoutingPending,
-            currentLogs = currentLogs,
-            onClearLogs = { viewModel.clearLogs(selectedProtocol) },
-            onProtocolSelected = { viewModel.setProtocol(it) },
-            onStartVpn = { context -> viewModel.startVpn(context) },
-            onStopVpn = { context -> viewModel.initiateDisconnect(context) { /* handled in VM */ } },
-            onCancelVpn = { context -> viewModel.cancelConnection(context) },
-            onResetState = { viewModel.resetState() },
-            onSelectServer = { profileId, context -> viewModel.selectServer(profileId, context) },
-            onDeleteServer = { profile -> viewModel.deleteServer(profile) },
-            onAddServer = { name, addr, user, pass, proto ->
-                viewModel.addServer(
-                    name,
-                    addr,
-                    user,
-                    pass,
-                    proto
-                )
+
+        DrawerModalHost(
+            activeModal = activeDrawerModal,
+            onDismiss = { activeDrawerModal = DrawerModalType.NONE },
+            viewModel = viewModel,
+            onOpenPerAppRouting = {
+                activeDrawerModal = DrawerModalType.NONE
+                openSplitSheetTrigger++
             },
-            onUpdateServer = { profile -> viewModel.updateServer(profile) },
-            onDeleteSubGroup = { subKey -> viewModel.deleteSubscriptionGroup(subKey) },
-            onRenameSubGroup = { subKey, newName -> viewModel.renameSubscriptionGroup(subKey, newName) },
-            onTestSinglePing = { viewModel.testSingleV2rayPing(it) },
-            onTestAllV2rayPing = { groupName -> viewModel.testV2rayRealDelay(groupName) },
-            onSortV2ray = { groupName -> viewModel.sortV2rayByTestResults(groupName) },
-            onDeleteInvalidV2ray = { groupName -> viewModel.deleteInvalidV2rayConfigs(groupName) },
-            onUpdateSub = { subKey -> if (!subscriptionUpdateState.isLocked) viewModel.updateSubscription(subKey) },
-            subscriptionUpdateState = subscriptionUpdateState,
-            v2rayPingTabs = v2rayPingTabs,
-            v2rayTabOrder = v2rayTabOrder,
-            v2raySelectedTab = v2raySelectedTab,
-            singleLinksPingProgress = singleLinksPingProgress,
-            onStopSingleLinksPing = { viewModel.stopV2rayPing(V2rayTabOrderResolver.SINGLE_LINKS_TAB) },
-            onSelectV2rayTab = { viewModel.selectV2rayTab(it) },
-            onMoveV2rayTab = { visibleTabs, tabKey, delta -> viewModel.moveV2rayTab(visibleTabs, tabKey, delta) },
-            onTestPing = { viewModel.testPing() },
-            onToggleAppSelection = { viewModel.toggleAppSelection(it) },
-            onSetPerAppEnabled = { viewModel.setPerAppEnabled(it) },
-            onSetBypassMode = { viewModel.setBypassMode(it) },
-            onSelectAllApps = { viewModel.selectAllApps() },
-            onDeselectAllApps = { viewModel.deselectAllApps() },
-            onReconnectWithLatestPolicy = { context -> viewModel.reconnectWithLatestPolicy(context) },
-            onOpenDrawer = { scope.launch { drawerState.open() } },
-            onRetryIpFetch = { viewModel.retryFetchIp() },
-            onImportWireGuardUri = { uri -> viewModel.importWireGuardFromUri(context, uri) },
-            openSplitSheetTrigger = openSplitSheetTrigger,
-            toastFlow = viewModel.toastMessage,
-            subscriptionToastFlow = viewModel.subscriptionToast,
-            onShowDisconnectWarning = onShowDisconnectWarning,
-            isWarningDialogVisible = disconnectWarningMessage != null
+            connectionState = connectionState,
+            onShowConnectionWarning = { message ->
+                onShowDisconnectWarning(message)
+            }
         )
     }
 
@@ -501,20 +517,6 @@ fun DashboardScreen(
             disconnectWarningMessage = null
         }
     }
-
-    DrawerModalHost(
-        activeModal = activeDrawerModal,
-        onDismiss = { activeDrawerModal = DrawerModalType.NONE },
-        viewModel = viewModel,
-        onOpenPerAppRouting = {
-            activeDrawerModal = DrawerModalType.NONE
-            openSplitSheetTrigger++
-        },
-        connectionState = connectionState,
-        onShowConnectionWarning = { message ->
-            onShowDisconnectWarning(message)
-        }
-    )
 
     ActiveConnectionWarningDialog(
         message = disconnectWarningMessage,
