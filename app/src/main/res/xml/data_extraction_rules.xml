@@ -1,10 +1,21 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!--
-   Data extraction rules (API 31+).
--->
 <data-extraction-rules>
     <cloud-backup>
+        <exclude domain="database" path="cybernest_database" />
+        <exclude domain="database" path="cybernest_database-wal" />
+        <exclude domain="database" path="cybernest_database-shm" />
+        <exclude domain="sharedpref" path="hybridvpn_settings.xml" />
+        <exclude domain="sharedpref" path="hybridvpn_prefs.xml" />
+        <exclude domain="sharedpref" path="exit_reasons.xml" />
+        <exclude domain="sharedpref" path="tab_prefs.xml" />
     </cloud-backup>
     <device-transfer>
+        <exclude domain="database" path="cybernest_database" />
+        <exclude domain="database" path="cybernest_database-wal" />
+        <exclude domain="database" path="cybernest_database-shm" />
+        <exclude domain="sharedpref" path="hybridvpn_settings.xml" />
+        <exclude domain="sharedpref" path="hybridvpn_prefs.xml" />
+        <exclude domain="sharedpref" path="exit_reasons.xml" />
+        <exclude domain="sharedpref" path="tab_prefs.xml" />
     </device-transfer>
 </data-extraction-rules>

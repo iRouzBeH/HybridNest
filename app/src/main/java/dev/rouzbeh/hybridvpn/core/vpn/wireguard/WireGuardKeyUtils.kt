@@ -17,6 +17,7 @@ object WireGuardKeyUtils {
     val U: BigInteger = BigInteger.valueOf(9)
 
     private val secureRandom = SecureRandom()
+    private val BASE_POINT_BYTES = ByteArray(32).apply { this[0] = 9 }
 
     /**
      * Clamps a 32-byte private key according to RFC 7748:
@@ -34,22 +35,31 @@ object WireGuardKeyUtils {
     }
 
     /**
-     * Computes RFC 7748 X25519 scalar multiplication on base point U = 9.
-     * Takes a 32-byte private key, clamps it, runs the 255-bit Montgomery ladder,
-     * and returns the resulting 32-byte little-endian public key.
+     * Computes RFC 7748 X25519 scalar multiplication of scalar k and u-coordinate.
+     * Takes 32-byte private key, clamps it per RFC 7748, masks MSB of byte 31 of u,
+     * reduces u modulo P, runs the 255-bit Montgomery ladder, and returns the
+     * resulting 32-byte little-endian u-coordinate.
      */
-    fun scalarMultBase(privateKeyBytes: ByteArray): ByteArray {
-        require(privateKeyBytes.size == 32) { "Private key bytes must be 32 bytes, was ${privateKeyBytes.size}" }
+    fun scalarMult(privateKeyBytes: ByteArray, uCoordinateBytes: ByteArray): ByteArray {
+        require(privateKeyBytes.size == 32) { "Private key must be 32 bytes, was ${privateKeyBytes.size}" }
+        require(uCoordinateBytes.size == 32) { "u-coordinate must be 32 bytes, was ${uCoordinateBytes.size}" }
+
         val clamped = clampPrivateKey(privateKeyBytes)
 
         // Decode little-endian into scalar BigInteger k
         val beBytes = ByteArray(32) { i -> clamped[31 - i] }
         val k = BigInteger(1, beBytes)
 
-        val x1 = U
+        // RFC 7748 Section 5: Mask the most significant bit of the last byte of u
+        val uCopy = uCoordinateBytes.copyOf()
+        uCopy[31] = (uCopy[31].toInt() and 0x7F).toByte()
+        val uBeBytes = ByteArray(32) { i -> uCopy[31 - i] }
+        val u = BigInteger(1, uBeBytes).mod(P)
+
+        val x1 = u
         var x2 = BigInteger.ONE
         var z2 = BigInteger.ZERO
-        var x3 = U
+        var x3 = u
         var z3 = BigInteger.ONE
         var swap = 0
 
@@ -100,6 +110,13 @@ object WireGuardKeyUtils {
         }
         return result
     }
+
+    /**
+     * Computes RFC 7748 X25519 scalar multiplication on base point U = 9.
+     * Takes a 32-byte private key, clamps it, runs the 255-bit Montgomery ladder,
+     * and returns the resulting 32-byte little-endian public key.
+     */
+    fun scalarMultBase(privateKeyBytes: ByteArray): ByteArray = scalarMult(privateKeyBytes, BASE_POINT_BYTES)
 
     /**
      * Generates a cryptographically secure 32-byte WireGuard private key,

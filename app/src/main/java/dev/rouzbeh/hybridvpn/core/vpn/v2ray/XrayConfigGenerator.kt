@@ -6,6 +6,7 @@ import dev.rouzbeh.hybridvpn.data.local.VpnProfile
 import org.json.JSONArray
 import org.json.JSONObject
 import java.net.URLDecoder
+import java.util.Locale
 
 object XrayConfigGenerator {
 
@@ -162,7 +163,7 @@ object XrayConfigGenerator {
      * into a valid Xray domain rule ("domain:ir", "domain:shaparak.ir", etc.).
      */
     fun toXrayDomainRule(rawEntry: String): String? {
-        var s = rawEntry.trim().lowercase()
+        var s = rawEntry.trim().lowercase(Locale.ROOT)
         if (s.startsWith("geosite:") || s.startsWith("domain:") || s.startsWith("full:") || s.startsWith("regexp:")) {
             return s
         }
@@ -614,9 +615,9 @@ object XrayConfigGenerator {
      * (e.g. xtls-rprx-vision) concurrency is -1 (single stream, no multiplexing).
      */
     private fun normalizedNetworkOf(link: ShareLink): String =
-        when ((link.params["type"] ?: "tcp").lowercase()) {
+        when ((link.params["type"] ?: "tcp").lowercase(Locale.ROOT)) {
             "xhttp", "splithttp", "x-http", "h2", "h3", "http" -> "xhttp"
-            else -> (link.params["type"] ?: "tcp").lowercase()
+            else -> (link.params["type"] ?: "tcp").lowercase(Locale.ROOT)
         }
 
     private fun hasVlessFlow(link: ShareLink): Boolean =
@@ -646,15 +647,15 @@ object XrayConfigGenerator {
         val rawNet = p["type"] ?: "tcp"
         val securityRaw = p["security"]?.takeIf { it.isNotBlank() }
         // v2rayNG: security is "tls" or "reality", otherwise null/no security
-        val security = when (securityRaw?.lowercase()) {
-            "tls", "reality" -> securityRaw.lowercase()
+        val security = when (securityRaw?.lowercase(Locale.ROOT)) {
+            "tls", "reality" -> securityRaw.lowercase(Locale.ROOT)
             else -> null
         }
 
         // Normalize network like v2rayNG NetworkType (+ legacy aliases) but keep
         // xhttp as "xhttp" so we emit the canonical name; Xray accepts both
         // xhttp and splithttp (TransportProtocol.Build maps both to splithttp).
-        val normalizedNet = when (rawNet.lowercase()) {
+        val normalizedNet = when (rawNet.lowercase(Locale.ROOT)) {
             "xhttp", "splithttp", "x-http" -> "xhttp"
             "tcp", "raw" -> "tcp"
             "ws", "websocket" -> "ws"
@@ -665,7 +666,7 @@ object XrayConfigGenerator {
             // without header padding" -> use XHTTP stream-one). Map them to
             // XHTTP for forward-compat instead of emitting an invalid "h2".
             "h2", "h3", "http" -> "xhttp"
-            else -> rawNet.lowercase()
+            else -> rawNet.lowercase(Locale.ROOT)
         }
 
         // Pre-extract fields exactly like FmtBase.getItemFormQuery / CoreOutboundBuilder

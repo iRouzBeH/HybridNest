@@ -15,6 +15,7 @@ import dev.rouzbeh.hybridvpn.data.local.VpnProfile
 import dev.rouzbeh.hybridvpn.core.vpn.v2ray.V2RayManager
 import dev.rouzbeh.hybridvpn.core.vpn.wireguard.WireGuardConfig
 import dev.rouzbeh.hybridvpn.core.vpn.wireguard.WireGuardParsedConfig
+import dev.rouzbeh.hybridvpn.core.utils.LogRedactor
 import dev.rouzbeh.hybridvpn.data.model.AppInfo
 import dev.rouzbeh.hybridvpn.data.repository.SettingsRepository
 import dev.rouzbeh.hybridvpn.service.BroadcastStateManager
@@ -34,7 +35,11 @@ import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import org.json.JSONArray
 import org.json.JSONObject
+import java.net.HttpURLConnection
 import java.net.URL
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 import kotlin.time.Duration.Companion.milliseconds
 
 class DashboardViewModel(application: Application) : AndroidViewModel(application) {
@@ -48,10 +53,36 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
     private var networkFetchJob: Job? = null
     private var postConnectCheckJob: Job? = null
     private var cancelJob: Job? = null
+
+    private val disconnectCoordinator = DisconnectCoordinator(
+        scope = viewModelScope,
+        stateFlow = VpnStateManager.connectionState,
+        setState = { VpnStateManager.updateState(it) },
+        dispatchStopSignal = { dispatchVpnStop(getApplication()) },
+        timeoutMs = 4_000L
+    )
+
     private val _sortedV2rayTabs = MutableStateFlow<Set<String>>(emptySet())
     val sortedV2rayTabs: StateFlow<Set<String>> = _sortedV2rayTabs.asStateFlow()
     private val _v2rayPingTabs = MutableStateFlow<Set<String>>(emptySet())
     val v2rayPingTabs: StateFlow<Set<String>> = _v2rayPingTabs.asStateFlow()
+    private val v2rayPingJobs = ConcurrentHashMap<String, Job>()
+    private val _singleLinksPingProgress = MutableStateFlow<PingProgress?>(null)
+    val singleLinksPingProgress: StateFlow<PingProgress?> = _singleLinksPingProgress.asStateFlow()
+    private val _v2rayPingProgressState = MutableStateFlow(V2rayPingProgressState())
+    private val _v2rayPingingProfileIds = MutableStateFlow<Set<Int>>(emptySet())
+    val v2rayPingingProfileIds: StateFlow<Set<Int>> = _v2rayPingingProfileIds.asStateFlow()
+
+    private fun updateV2rayPingProgress(transform: (V2rayPingProgressState) -> V2rayPingProgressState) {
+        val newState = _v2rayPingProgressState.updateAndGet(transform)
+        _v2rayPingingProfileIds.value = newState.activeProfileIds
+    }
+
+    private val _v2rayTabOrder = MutableStateFlow<List<String>>(emptyList())
+    val v2rayTabOrder: StateFlow<List<String>> = _v2rayTabOrder.asStateFlow()
+    private val _v2raySelectedTab = MutableStateFlow(V2rayTabOrderResolver.SINGLE_LINKS_TAB)
+    val v2raySelectedTab: StateFlow<String> = _v2raySelectedTab.asStateFlow()
+    private var protocolRestoreJob: Job? = null
 
     val allProfiles: StateFlow<List<VpnProfile>> = dao.getAllProfiles()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
@@ -86,9 +117,27 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
     val activeProfile: StateFlow<VpnProfile?> = dao.getActiveProfile()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
 
+    private val _pendingRestoredProfile = MutableStateFlow<VpnProfile?>(null)
+    val displayedActiveProfile: StateFlow<VpnProfile?> = combine(
+        selectedProtocol,
+        activeProfile,
+        _pendingRestoredProfile
+    ) { protocol, roomProfile, pendingProfile ->
+        ProtocolSwitchResolver.resolveDisplayedActiveProfile(protocol, roomProfile, pendingProfile)
+    }.stateIn(
+        viewModelScope,
+        SharingStarted.WhileSubscribed(5000),
+        ProtocolSwitchResolver.resolveDisplayedActiveProfile(
+            _selectedProtocol.value,
+            activeProfile.value,
+            _pendingRestoredProfile.value
+        )
+    )
+
     val connectionState: StateFlow<ConnectionState> = VpnStateManager.connectionState
     val speed: StateFlow<Pair<String, String>> = VpnStateManager.speed
     val networkInfo: StateFlow<NetworkInfo> = VpnStateManager.networkInfo
+    val connectivityDegraded: StateFlow<Boolean> = VpnStateManager.connectivityDegraded
 
     /** Live Log now backed by process-scoped LogStore so it survives re-entry. */
     val currentLogs: StateFlow<List<String>> = combine(
@@ -161,6 +210,10 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
     private val _subscriptionToast = MutableSharedFlow<String>(extraBufferCapacity = 4)
     val subscriptionToast = _subscriptionToast.asSharedFlow()
 
+    private val subscriptionUpdateLock = AtomicBoolean(false)
+    private val _subscriptionUpdateState = MutableStateFlow(SubscriptionUpdateState())
+    val subscriptionUpdateState: StateFlow<SubscriptionUpdateState> = _subscriptionUpdateState.asStateFlow()
+
     private fun showToast(message: String) {
         viewModelScope.launch { _toastMessage.emit(message) }
     }
@@ -193,10 +246,20 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
 
     private var pingJob: Job? = null
 
+    private suspend fun activateProfileAndRemember(profile: VpnProfile) {
+        settingsRepository.setLastServerId(profile.protocol, profile.id)
+        dao.deactivateAll()
+        dao.setActiveProfile(profile.id)
+    }
+
     // Subscription-info detection is shared with DashboardScreen so the UI and
     // the ViewModel agree on which profiles are informational cards.
 
     init {
+        settingsRepository.migrateLegacyTabPrefsIfNeeded(application)
+        _v2rayTabOrder.value = settingsRepository.getV2rayTabOrder()
+        _v2raySelectedTab.value = settingsRepository.getV2rayLastSelectedTab() ?: V2rayTabOrderResolver.SINGLE_LINKS_TAB
+
         VpnStateManager.initPersist(application)
         // Re-hydrate in-memory start time if the process survived but
         // VpnStateManager's singleton lost its cached value (e.g. after
@@ -230,10 +293,21 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
                         it.username == active.username &&
                         !isSubscriptionInfoName(it.name)
                     }
-                    dao.deactivateAll()
                     if (realProfile != null) {
-                        dao.setActiveProfile(realProfile.id)
+                        activateProfileAndRemember(realProfile)
+                    } else {
+                        dao.deactivateAll()
                     }
+                }
+            }
+        }
+
+        viewModelScope.launch {
+            combine(selectedProtocol, activeProfile, _pendingRestoredProfile) { protocol, room, pending ->
+                Triple(protocol, room, pending)
+            }.collect { (protocol, room, pending) ->
+                if (ProtocolSwitchResolver.shouldClearPendingProfile(protocol, room, pending)) {
+                    _pendingRestoredProfile.value = null
                 }
             }
         }
@@ -292,10 +366,28 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
             }
 
             val active = dao.getActiveProfile().firstOrNull()
-            if (active != null) {
-                _selectedProtocol.value = when (active.protocol) {
-                    "OpenConnect", "WireGuard", "v2rayNG" -> active.protocol
-                    else -> "OpenConnect"
+            if (active != null && settingsRepository.getLastServerId(active.protocol) == null) {
+                settingsRepository.setLastServerId(active.protocol, active.id)
+            }
+            if (ConnectionLockGuard.isLocked(connectionState.value) && active != null) {
+                _selectedProtocol.value = active.protocol
+            } else {
+                val targetProtocol = settingsRepository.getLastSelectedProtocol()
+                    ?: active?.protocol?.takeIf { it in setOf("OpenConnect", "WireGuard", "v2rayNG") }
+                    ?: "OpenConnect"
+                _selectedProtocol.value = targetProtocol
+                settingsRepository.setLastSelectedProtocol(targetProtocol)
+                if (active?.protocol != targetProtocol && !ConnectionLockGuard.isLocked(connectionState.value)) {
+                    val savedId = settingsRepository.getLastServerId(targetProtocol)
+                    if (savedId != null) {
+                        val savedProfile = dao.getProfileById(savedId)
+                        if (savedProfile != null && savedProfile.protocol == targetProtocol) {
+                            dao.deactivateAll()
+                            dao.setActiveProfile(savedId)
+                        } else {
+                            settingsRepository.clearLastServerId(targetProtocol)
+                        }
+                    }
                 }
             }
         }
@@ -319,6 +411,15 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
 
         viewModelScope.launch {
             connectionState.collect { state ->
+                if (isIntentionalReconnect) {
+                    if (state == ConnectionState.CONNECTED || state == ConnectionState.ERROR || state == ConnectionState.FAILED) {
+                        isIntentionalReconnect = false
+                    } else {
+                        VpnStateManager.updateState(ConnectionState.RECONNECTING)
+                        return@collect
+                    }
+                }
+
                 if (state.isConnectingState || state == ConnectionState.CONNECTED) {
                     val protocol = activeProfile.value?.protocol ?: _selectedProtocol.value
                     VpnStateManager.startEngine(getApplication(), protocol)
@@ -352,6 +453,7 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
                     postConnectCheckJob?.cancel()
                     VpnStateManager.updateNetworkInfo("Detecting...", "Detecting...", "un")
                 } else if (state.isTerminal) {
+                    disconnectCoordinator.onStateChanged(state)
                     postConnectCheckJob?.cancel()
                     if (isInitialStateEmission) {
                         isInitialStateEmission = false
@@ -367,15 +469,6 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
 
                         VpnStateManager.updateNetworkInfo("Detecting...", "Detecting...", "un")
                         fetchInitialNetworkInfo(initialDelayMs = 300L)
-                    }
-                }
-
-                if (isIntentionalReconnect) {
-                    if (state == ConnectionState.CONNECTED || state.isTerminal) {
-                        isIntentionalReconnect = false
-                    } else {
-                        VpnStateManager.updateState(ConnectionState.RECONNECTING)
-                        return@collect
                     }
                 }
 
@@ -437,9 +530,47 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
     private fun stopUptime() { uptimeJob?.cancel() }
 
     fun setProtocol(protocol: String) {
+        if (protocol !in setOf("OpenConnect", "WireGuard", "v2rayNG")) return
+        if (ConnectionLockGuard.isLocked(connectionState.value)) return
+
+        val savedId = settingsRepository.getLastServerId(protocol)
+        val matchedProfile = if (savedId != null) {
+            allProfiles.value.firstOrNull { it.id == savedId && it.protocol == protocol }
+        } else null
+
+        _pendingRestoredProfile.value = matchedProfile
         _selectedProtocol.value = protocol
+        settingsRepository.setLastSelectedProtocol(protocol)
         // Do NOT clear logs when switching protocol tabs; logs are per-protocol
         // buffers in LogStore and should persist until a new connection starts.
+
+        protocolRestoreJob?.cancel()
+        protocolRestoreJob = viewModelScope.launch(Dispatchers.IO) {
+            if (ConnectionLockGuard.isLocked(connectionState.value)) return@launch
+            val currentSavedId = settingsRepository.getLastServerId(protocol) ?: run {
+                if (_selectedProtocol.value == protocol) {
+                    _pendingRestoredProfile.value = null
+                }
+                return@launch
+            }
+            val savedProfile = dao.getProfileById(currentSavedId)
+            if (savedProfile != null && savedProfile.protocol == protocol) {
+                if (_selectedProtocol.value == protocol && !ConnectionLockGuard.isLocked(connectionState.value)) {
+                    if (_pendingRestoredProfile.value?.id != currentSavedId && _selectedProtocol.value == protocol) {
+                        _pendingRestoredProfile.value = savedProfile
+                    }
+                    if (dao.getActiveProfile().firstOrNull()?.id != currentSavedId) {
+                        dao.deactivateAll()
+                        dao.setActiveProfile(currentSavedId)
+                    }
+                }
+            } else {
+                settingsRepository.clearLastServerId(protocol)
+                if (_selectedProtocol.value == protocol) {
+                    _pendingRestoredProfile.value = null
+                }
+            }
+        }
     }
 
     fun testPing(ipToPing: String = "8.8.8.8") {
@@ -510,7 +641,7 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
                 }.sortedWith(compareByDescending<AppInfo> { it.isSelected }.thenBy { it.appName.lowercase() })
                 _installedApps.value = appInfoList
                 refreshRoutingPendingState()
-            } catch (e: Exception) { android.util.Log.e("DashboardViewModel", "Failed to load apps: ${e.message}") }
+            } catch (e: Exception) { android.util.Log.e("DashboardViewModel", LogRedactor.redact("Failed to load apps: ${e.message}")) }
         }
     }
 
@@ -564,7 +695,7 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
         }
     }
 
-    @Volatile private var lastKnownRealNetworkInfo: IpResult? = null
+    @Volatile private var lastKnownRealNetworkInfo: GeoIpResult? = null
     @Volatile private var ipLookupSessionId = 0L
 
     private fun buildFreshHttpClient(
@@ -595,7 +726,7 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
     private fun executeIpLookupRequest(
         client: okhttp3.OkHttpClient,
         url: String
-    ): IpResult? {
+    ): GeoIpResult? {
         val req = okhttp3.Request.Builder()
             .url(url)
             .get()
@@ -614,10 +745,83 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
                     parseIpResponse(url, body)
                 }
             }
+        } catch (ce: CancellationException) {
+            try { call.cancel() } catch (_: Throwable) {}
+            throw ce
         } catch (_: Throwable) {
             try { call.cancel() } catch (_: Throwable) {}
             null
         }
+    }
+
+    private suspend fun lookupPublicIpWithConsensus(
+        client: okhttp3.OkHttpClient,
+        rejectCandidate: (GeoIpResult) -> Boolean = { false }
+    ): GeoIpResult? = coroutineScope {
+        val primaryDeferred = GeoIpLookup.PRIMARY_PUBLIC_IP_ENDPOINTS.map { url ->
+            async(Dispatchers.IO) {
+                withTimeoutOrNull(3500L) {
+                    executeIpLookupRequest(client, url)
+                }
+            }
+        }
+        val primaryResults = primaryDeferred.awaitAll()
+            .filterNotNull()
+            .filterNot { rejectCandidate(it) }
+
+        val primaryIpv4 = primaryResults.filter { isValidIpv4(it.ip) }
+        val ipv6Candidates = primaryResults.filter { it.ip.contains(':') }.toMutableList()
+
+        if (primaryIpv4.size == 2) {
+            val code0 = primaryIpv4[0].countryCode.trim().lowercase(java.util.Locale.US)
+            val code1 = primaryIpv4[1].countryCode.trim().lowercase(java.util.Locale.US)
+            val hasValidCode0 = code0.length == 2 && code0 != "un" && code0 != "xx"
+            val hasValidCode1 = code1.length == 2 && code1 != "un" && code1 != "xx"
+
+            if (hasValidCode0 && hasValidCode1 && code0 == code1) {
+                return@coroutineScope GeoIpLookup.selectConsensusResult(primaryIpv4)
+            }
+
+            var tieBreaker: GeoIpResult? = null
+            for (fallbackUrl in GeoIpLookup.FALLBACK_PUBLIC_IP_ENDPOINTS) {
+                val candidate = withTimeoutOrNull(3500L) {
+                    executeIpLookupRequest(client, fallbackUrl)
+                }
+                if (candidate != null && !rejectCandidate(candidate)) {
+                    if (isValidIpv4(candidate.ip)) {
+                        tieBreaker = candidate
+                        break
+                    } else if (candidate.ip.contains(':')) {
+                        ipv6Candidates.add(candidate)
+                    }
+                }
+            }
+            val candidates = if (tieBreaker != null) primaryIpv4 + tieBreaker else primaryIpv4
+            return@coroutineScope GeoIpLookup.selectConsensusResult(candidates)
+        }
+
+        if (primaryIpv4.size == 1) {
+            return@coroutineScope primaryIpv4.first()
+        }
+
+        for (fallbackUrl in GeoIpLookup.FALLBACK_PUBLIC_IP_ENDPOINTS) {
+            val candidate = withTimeoutOrNull(3500L) {
+                executeIpLookupRequest(client, fallbackUrl)
+            }
+            if (candidate != null && !rejectCandidate(candidate)) {
+                if (isValidIpv4(candidate.ip)) {
+                    return@coroutineScope candidate
+                } else if (candidate.ip.contains(':')) {
+                    ipv6Candidates.add(candidate)
+                }
+            }
+        }
+
+        if (ipv6Candidates.isNotEmpty()) {
+            return@coroutineScope GeoIpLookup.selectConsensusResult(ipv6Candidates)
+        }
+
+        null
     }
 
     fun fetchInitialNetworkInfo(initialDelayMs: Long = 0L) {
@@ -630,19 +834,7 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
                 if (!isActive || currentLookupId != ipLookupSessionId || !connectionState.value.isTerminal) return@launch
             }
             System.setProperty("http.keepAlive", "false")
-            // Prefer IPv4-only endpoints first; if an endpoint returns IPv6,
-            // remember the first IPv6 result as a fallback and keep trying
-            // remaining endpoints for an IPv4 address.
-            val endpoints = listOf(
-                "http://ip-api.com/json",
-                "https://v4.ifconfig.co/json",
-                "https://ipwho.is/",
-                "https://api-ipv4.ip.sb/geoip",
-                "https://api.myip.world/json",
-                "https://free.freeipapi.com/api/json"
-            )
-            var ipv4Result: IpResult? = null
-            var ipv6Fallback: IpResult? = null
+            var successResult: GeoIpResult? = null
             val retryDelaysMs = longArrayOf(0L, 2000L)
             val client = buildFreshHttpClient()
 
@@ -652,27 +844,16 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
                     if (delayBeforeMs > 0L) delay(delayBeforeMs)
                     if (!isActive || currentLookupId != ipLookupSessionId || !connectionState.value.isTerminal) return@launch
 
-                    for (url in endpoints) {
-                        if (!isActive || currentLookupId != ipLookupSessionId || !connectionState.value.isTerminal) return@launch
-                        val candidate = withTimeoutOrNull(3500L) {
-                            executeIpLookupRequest(client, url)
-                        }
-                        if (candidate != null) {
-                            if (isValidIpv4(candidate.ip)) {
-                                ipv4Result = candidate
-                                break
-                            } else if (candidate.ip.contains(':') && ipv6Fallback == null) {
-                                ipv6Fallback = candidate
-                            }
-                        }
+                    val result = lookupPublicIpWithConsensus(client) { false }
+                    if (result != null) {
+                        successResult = result
+                        break
                     }
-                    if (ipv4Result != null || ipv6Fallback != null) break
                 }
             } finally {
                 try { client.connectionPool.evictAll() } catch (_: Throwable) {}
             }
 
-            val successResult = ipv4Result ?: ipv6Fallback
             if (isActive && currentLookupId == ipLookupSessionId && connectionState.value.isTerminal) {
                 if (successResult != null) {
                     lastKnownRealNetworkInfo = successResult
@@ -718,7 +899,7 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
                     cm.getNetworkCapabilities(net)?.hasTransport(NetworkCapabilities.TRANSPORT_VPN) == true
                 }
 
-            fun isRealIspLeak(candidate: IpResult): Boolean {
+            fun isRealIspLeak(candidate: GeoIpResult): Boolean {
                 val realInfo = lastKnownRealNetworkInfo
                 val realIp = realInfo?.ip ?: VpnStateManager.lastKnownRealIp
                 if (!realIp.isNullOrBlank() && candidate.ip.equals(realIp, ignoreCase = true)) {
@@ -734,20 +915,7 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
                 return false
             }
 
-            // Try all endpoints preferring IPv4; remember the first IPv6 result
-            // as a fallback and use it only if no endpoint returns IPv4.
-            val orderedEndpoints = listOf(
-                "http://ip-api.com/json",
-                "https://v4.ifconfig.co/json",
-                "https://ipwho.is/",
-                "https://api-ipv4.ip.sb/geoip",
-                "https://api.myip.world/json",
-                "https://free.freeipapi.com/api/json"
-            )
-            var ipv4Result: IpResult? = null
-            var ipv6Fallback: IpResult? = null
-            // Sequential retries inside the same job so retries never cancel an
-            // in-flight lookup or reset the UI state prematurely.
+            var successResult: GeoIpResult? = null
             val retryDelaysMs = longArrayOf(0L, 1500L, 3000L, 5000L)
 
             for (attemptIndex in retryDelaysMs.indices) {
@@ -758,61 +926,52 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
                     VpnStateManager.currentSessionId != sessionAtStart
                 ) return@launch
 
-                for (url in orderedEndpoints) {
-                    if (!isActive || currentLookupId != ipLookupSessionId ||
-                        connectionState.value != ConnectionState.CONNECTED ||
-                        VpnStateManager.currentSessionId != sessionAtStart
-                    ) return@launch
-                    val candidate = withTimeoutOrNull(3500L) {
-                        try {
-                            val client = when {
-                                isXray -> buildFreshHttpClient(proxy = proxy)
-                                else -> {
-                                    var vpnNet = findVpnNetwork()
-                                    var waitCount = 0
-                                    while (vpnNet == null && waitCount < 5 && isActive && connectionState.value == ConnectionState.CONNECTED) {
-                                        delay(400)
-                                        vpnNet = findVpnNetwork()
-                                        waitCount++
-                                    }
-                                    if (vpnNet == null) {
-                                        android.util.Log.w("DashboardViewModel", "vpnNetwork null for $url, skipping endpoint (no direct fallback)")
-                                        return@withTimeoutOrNull null
-                                    }
-                                    buildFreshHttpClient(proxy = java.net.Proxy.NO_PROXY, vpnNetwork = vpnNet)
-                                }
+                val client = try {
+                    when {
+                        isXray -> buildFreshHttpClient(proxy = proxy)
+                        else -> {
+                            var vpnNet = findVpnNetwork()
+                            var waitCount = 0
+                            while (vpnNet == null && waitCount < 5 && isActive && connectionState.value == ConnectionState.CONNECTED) {
+                                delay(400)
+                                vpnNet = findVpnNetwork()
+                                waitCount++
                             }
-                            try {
-                                val res = executeIpLookupRequest(client, url)
-                                if (res != null && isRealIspLeak(res)) {
-                                    android.util.Log.w("DashboardViewModel", "Rejected pre-tunnel ISP leak from $url: ${res.ip} (${res.location})")
-                                    null
-                                } else {
-                                    res
-                                }
-                            } finally {
-                                try { client.connectionPool.evictAll() } catch (_: Throwable) {}
+                            if (vpnNet == null) {
+                                android.util.Log.w("DashboardViewModel", "vpnNetwork null, skipping attempt (no direct fallback)")
+                                continue
                             }
-                        } catch (e: Exception) { null }
-                    }
-                    if (candidate != null) {
-                        if (isValidIpv4(candidate.ip)) {
-                            ipv4Result = candidate
-                            break
-                        } else if (candidate.ip.contains(':') && ipv6Fallback == null) {
-                            ipv6Fallback = candidate
+                            buildFreshHttpClient(proxy = java.net.Proxy.NO_PROXY, vpnNetwork = vpnNet)
                         }
                     }
+                } catch (e: Exception) {
+                    if (e is CancellationException) throw e
+                    continue
                 }
-                if (ipv4Result != null || ipv6Fallback != null) break
+
+                try {
+                    val candidate = lookupPublicIpWithConsensus(client) { res ->
+                        val leak = isRealIspLeak(res)
+                        if (leak) {
+                            android.util.Log.w("DashboardViewModel", "Rejected pre-tunnel ISP leak: ${res.ip} (${res.location})")
+                        }
+                        leak
+                    }
+                    if (candidate != null) {
+                        successResult = candidate
+                        break
+                    }
+                } finally {
+                    try { client.connectionPool.evictAll() } catch (_: Throwable) {}
+                }
             }
 
-            val successResult = ipv4Result ?: ipv6Fallback
+            val successFinal = successResult
             if (isActive && connectionState.value == ConnectionState.CONNECTED &&
                 VpnStateManager.currentSessionId == sessionAtStart && currentLookupId == ipLookupSessionId
             ) {
-                if (successResult != null) {
-                    VpnStateManager.updateNetworkInfo(successResult.ip, successResult.location, successResult.flagCode)
+                if (successFinal != null) {
+                    VpnStateManager.updateNetworkInfo(successFinal.ip, successFinal.location, successFinal.flagCode)
                 } else {
                     VpnStateManager.updateNetworkInfo("Unavailable", "VPN exit unavailable", "un")
                 }
@@ -820,96 +979,10 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
         }
     }
 
-    private data class IpResult(val ip: String, val location: String, val flagCode: String)
+    private fun isValidIpv4(ip: String): Boolean = GeoIpLookup.isValidIpv4(ip)
 
-    private fun isValidIpv4(ip: String): Boolean {
-        val trimmed = ip.trim()
-        if (trimmed.isEmpty() || trimmed.contains(':')) return false
-        val parts = trimmed.split('.')
-        if (parts.size != 4) return false
-        return parts.all { part ->
-            part.isNotEmpty() && part.length <= 3 && part.all { it.isDigit() } && (part.toIntOrNull() ?: -1) in 0..255
-        }
-    }
-
-    private fun parseIpResponse(url: String, response: String): IpResult? {
-        return try {
-            val json = JSONObject(response)
-            
-            fun cleanCountryName(name: String): String {
-                val cleaned = if (name.startsWith("The ", ignoreCase = true)) name.substring(4).trim() else name
-                return if (cleaned.isNotBlank()) cleaned else "Unknown"
-            }
-
-            fun resolveCountryCode(rawCode: String, countryName: String): String {
-                val code = rawCode.trim().lowercase()
-                if (code.length == 2 && code != "un" && code.all { it in 'a'..'z' }) {
-                    return code
-                }
-                if (countryName.isNotBlank() && countryName != "Unknown") {
-                    val match = java.util.Locale.getISOCountries().firstOrNull { iso ->
-                        val loc = java.util.Locale("", iso)
-                        loc.displayCountry.equals(countryName, ignoreCase = true) ||
-                        loc.getDisplayCountry(java.util.Locale.ENGLISH).equals(countryName, ignoreCase = true)
-                    }
-                    if (match != null) return match.lowercase()
-                }
-                return "un"
-            }
-
-            val parsed = when {
-                url.contains("ip-api.com") -> {
-                    // ip-api returns {"status":"fail"...} when queried without required fields
-                    if (json.optString("status", "success") == "fail") return null
-                    val ip = json.optString("query", "").trim()
-                    val rawCode = json.optString("countryCode", "un")
-                    val country = cleanCountryName(json.optString("country", java.util.Locale("", rawCode).displayCountry))
-                    val countryCode = resolveCountryCode(rawCode, country)
-                    IpResult(ip, country, countryCode)
-                }
-                url.contains("ipwho.is") -> {
-                    if (json.optBoolean("success", true) == false) return null
-                    val ip = json.optString("ip", "").trim()
-                    val rawCode = json.optString("country_code", "un")
-                    val country = cleanCountryName(json.optString("country", java.util.Locale("", rawCode).displayCountry))
-                    val countryCode = resolveCountryCode(rawCode, country)
-                    IpResult(ip, country, countryCode)
-                }
-                url.contains("ip.sb") -> {
-                    val ip = json.optString("ip", "").trim()
-                    val rawCode = json.optString("country_code", "un")
-                    val country = cleanCountryName(json.optString("country", java.util.Locale("", rawCode).displayCountry))
-                    val countryCode = resolveCountryCode(rawCode, country)
-                    IpResult(ip, country, countryCode)
-                }
-                url.contains("myip.world") -> {
-                    val ip = json.optString("ip", "").trim()
-                    val rawCode = json.optString("country_code", "un")
-                    val country = cleanCountryName(json.optString("country", java.util.Locale("", rawCode).displayCountry))
-                    val countryCode = resolveCountryCode(rawCode, country)
-                    IpResult(ip, country, countryCode)
-                }
-                url.contains("ifconfig.co") -> {
-                    val ip = json.optString("ip", "").trim()
-                    val rawCode = json.optString("country_iso", json.optString("country_code", "un"))
-                    val country = cleanCountryName(json.optString("country", java.util.Locale("", rawCode).displayCountry))
-                    val countryCode = resolveCountryCode(rawCode, country)
-                    IpResult(ip, country, countryCode)
-                }
-                url.contains("freeipapi.com") -> {
-                    val ip = json.optString("ipAddress", "").trim()
-                    val rawCode = json.optString("countryCode", json.optString("country_code", "un"))
-                    val country = cleanCountryName(json.optString("countryName", java.util.Locale("", rawCode).displayCountry))
-                    val countryCode = resolveCountryCode(rawCode, country)
-                    IpResult(ip, country, countryCode)
-                }
-                else -> null
-            } ?: return null
-
-            // Accept valid IPv4 or IPv6 addresses; caller prioritizes IPv4 and
-            // uses IPv6 only as a fallback when no endpoint returns IPv4.
-            if (parsed.ip.isBlank() || parsed.ip == "0.0.0.0" || (!isValidIpv4(parsed.ip) && !parsed.ip.contains(':'))) null else parsed
-        } catch (e: Exception) { null }
+    private fun parseIpResponse(url: String, response: String): GeoIpResult? {
+        return GeoIpLookup.parseResponse(url, response)
     }
 
     /**
@@ -979,7 +1052,7 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
                 }
                 startVpn(context)
             } catch (e: Exception) {
-                android.util.Log.e("DashboardViewModel", "reconnectWithLatestPolicy failed", e)
+                android.util.Log.e("DashboardViewModel", LogRedactor.redact("reconnectWithLatestPolicy failed: ${e.javaClass.simpleName}: ${e.message}"))
                 VpnStateManager.updateState(ConnectionState.ERROR)
             }
         }
@@ -1039,6 +1112,7 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
      * disconnect vs. a cancel, branch on VpnStateManager.connectionState here.
      */
     fun cancelConnection(context: Context) {
+        isIntentionalReconnect = false
         val current = VpnStateManager.connectionState.value
         if (current == ConnectionState.CANCELING || current == ConnectionState.DISCONNECTED) {
             android.util.Log.d("DashboardViewModel", "cancelConnection: already $current, ignoring re-entrant call")
@@ -1048,6 +1122,7 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
         ++ipLookupSessionId
         networkFetchJob?.cancel()
         postConnectCheckJob?.cancel()
+        VpnStateManager.beginIntentionalCancel()
         VpnStateManager.updateState(ConnectionState.CANCELING)
         dispatchVpnStop(context)
 
@@ -1080,22 +1155,26 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
      * This addresses the report that the button "immediately shuts down the
      * VPN state as if doing a force stop".
      */
-    fun initiateDisconnect(context: Context, onActualStop: (Context) -> Unit = {}) {
-        android.util.Log.d("DashboardViewModel", "initiateDisconnect (graceful) from ${VpnStateManager.connectionState.value}")
+    fun initiateDisconnect(context: Context = getApplication(), onActualStop: (Context) -> Unit = {}) {
+        isIntentionalReconnect = false
+        android.util.Log.d("DashboardViewModel", "initiateDisconnect via DisconnectCoordinator from ${VpnStateManager.connectionState.value}")
         ++ipLookupSessionId
         networkFetchJob?.cancel()
         postConnectCheckJob?.cancel()
         cancelJob?.cancel()
         stopUptime()
-        VpnStateManager.updateState(ConnectionState.DISCONNECTING)
-        dispatchVpnStop(context)
+        if (VpnStateManager.connectionState.value == ConnectionState.CONNECTING) {
+            cancelConnection(context)
+        } else {
+            disconnectCoordinator.requestDisconnect()
+        }
         onActualStop(context)
-        // No forced DISCONNECTED — the service broadcasts the final
-        // terminal state once TUN/FDs are closed. We leave the state in
-        // DISCONNECTING so the button/indicator can animate "Disconnecting".
     }
 
-    fun resetState() { VpnStateManager.updateStateFromNative(0) }
+    fun resetState() {
+        isIntentionalReconnect = false
+        VpnStateManager.updateStateFromNative(0)
+    }
 
     fun addServer(name: String, serverAddress: String, user: String, pass: String, protocol: String, countryCode: String = "un") {
         val cName = name.trim(); val cAddr = serverAddress.trim()
@@ -1163,6 +1242,10 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
                 dao.insertProfile(VpnProfile(name = cName, protocol = protocol, serverAddress = cAddr, username = cUser, password = cPass, isActive = true, countryCode = countryCode))
                 withContext(Dispatchers.Main) { showToast("Server added successfully") }
             }
+            val newActive = dao.getActiveProfile().firstOrNull()
+            if (newActive != null) {
+                settingsRepository.setLastServerId(newActive.protocol, newActive.id)
+            }
         }
     }
 
@@ -1170,17 +1253,72 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
      * Resolves country code from a hostname or IP address.
      */
     suspend fun resolveHostCountryCode(host: String): String {
-        val tld = host.substringAfterLast('.').lowercase()
+        val tld = host.substringAfterLast('.').lowercase(java.util.Locale.US)
         if (tld.length == 2 && BundledFlags.isSupported(tld)) {
             return tld
         }
         return withContext(Dispatchers.IO) {
             try {
                 val ip = java.net.InetAddress.getByName(host).hostAddress ?: return@withContext "un"
-                val url = "http://ip-api.com/json/$ip"
                 val client = buildFreshHttpClient()
-                val result = executeIpLookupRequest(client, url)
-                result?.flagCode?.let { BundledFlags.normalizeCode(it) } ?: "un"
+                try {
+                    val primaryUrls = GeoIpLookup.primaryHostLookupUrls(ip)
+                    val primaryResults = coroutineScope {
+                        primaryUrls.map { url ->
+                            async(Dispatchers.IO) {
+                                withTimeoutOrNull(2500L) {
+                                    executeIpLookupRequest(client, url)
+                                }
+                            }
+                        }.awaitAll().filterNotNull()
+                    }
+
+                    val consensusResult = if (primaryResults.size == 2) {
+                        val code0 = primaryResults[0].countryCode.trim().lowercase(java.util.Locale.US)
+                        val code1 = primaryResults[1].countryCode.trim().lowercase(java.util.Locale.US)
+                        val valid0 = code0.length == 2 && code0 != "un" && code0 != "xx"
+                        val valid1 = code1.length == 2 && code1 != "un" && code1 != "xx"
+                        if (valid0 && valid1 && code0 == code1) {
+                            GeoIpLookup.selectConsensusResult(primaryResults)
+                        } else {
+                            var tieBreaker: GeoIpResult? = null
+                            for (fallbackUrl in GeoIpLookup.fallbackHostLookupUrls(ip)) {
+                                val candidate = withTimeoutOrNull(2500L) {
+                                    executeIpLookupRequest(client, fallbackUrl)
+                                }
+                                if (candidate != null) {
+                                    tieBreaker = candidate
+                                    break
+                                }
+                            }
+                            val pool = if (tieBreaker != null) primaryResults + tieBreaker else primaryResults
+                            GeoIpLookup.selectConsensusResult(pool)
+                        }
+                    } else if (primaryResults.size == 1) {
+                        primaryResults.first()
+                    } else {
+                        var fallbackResult: GeoIpResult? = null
+                        for (fallbackUrl in GeoIpLookup.fallbackHostLookupUrls(ip)) {
+                            val candidate = withTimeoutOrNull(2500L) {
+                                executeIpLookupRequest(client, fallbackUrl)
+                            }
+                            if (candidate != null) {
+                                fallbackResult = candidate
+                                break
+                            }
+                        }
+                        fallbackResult
+                    }
+
+                    val code = consensusResult?.countryCode?.let { BundledFlags.normalizeCode(it) }
+                    if (code != null && code != "un") {
+                        code
+                    } else {
+                        "un"
+                    }
+                } finally {
+                    try { client.connectionPool.evictAll() } catch (_: Throwable) {}
+                }
             } catch (_: Exception) {
                 "un"
             }
@@ -1231,7 +1369,7 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
             }
             return true
         } catch (e: Exception) {
-            android.util.Log.e("DashboardViewModel", "importWireGuardConfig failed: ${e.message}")
+            android.util.Log.e("DashboardViewModel", LogRedactor.redact("importWireGuardConfig failed: ${e.message}"))
             return false
         }
     }
@@ -1369,7 +1507,7 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
                     }
                 }
             } catch (e: Exception) {
-                android.util.Log.e("DashboardViewModel", "importWireGuardFromUri failed: ${e.message}")
+                android.util.Log.e("DashboardViewModel", LogRedactor.redact("importWireGuardFromUri failed: ${e.message}"))
                 withContext(Dispatchers.Main) {
                     showToast(e.message ?: "Failed to import WireGuard profile(s)")
                 }
@@ -1453,7 +1591,7 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
                     )
                 )
             } catch (e: Exception) {
-                android.util.Log.e("DashboardViewModel", "saveWireGuardProfile failed: ${e.message}")
+                android.util.Log.e("DashboardViewModel", LogRedactor.redact("saveWireGuardProfile failed: ${e.message}"))
                 showToast(e.message ?: "Failed to save WireGuard profile")
             }
         }
@@ -1474,6 +1612,11 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
     fun updateServer(profile: VpnProfile) { viewModelScope.launch(Dispatchers.IO) { dao.updateProfile(profile) } }
 
     fun selectServer(profileId: Int, context: Context) {
+        val currentState = connectionState.value
+        if (currentState.isConnectingState || currentState == ConnectionState.DISCONNECTING || currentState == ConnectionState.CANCELING) {
+            return
+        }
+        _pendingRestoredProfile.value = null
         viewModelScope.launch(Dispatchers.IO) {
             try {
                 val isConnected = connectionState.value == ConnectionState.CONNECTED
@@ -1490,6 +1633,9 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
                 val currentProfile = activeProfile.value
                 if (isConnected) {
                     if (currentProfile?.protocol == newProfile?.protocol) {
+                        if (currentProfile?.id == newProfile.id) {
+                            return@launch
+                        }
                         withContext(Dispatchers.Main) {
                             isIntentionalReconnect = true; VpnStateManager.updateState(ConnectionState.RECONNECTING)
                             context.startService(Intent(context, HybridVpnService::class.java).apply { action = "ACTION_STOP_VPN" })
@@ -1501,7 +1647,7 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
                         delay(1000)
                     }
                 }
-                dao.deactivateAll(); dao.setActiveProfile(profileId)
+                activateProfileAndRemember(newProfile)
                 if (isConnected) withContext(Dispatchers.Main) { startVpn(context) }
             } catch (e: Exception) {
                 withContext(Dispatchers.Main) { isIntentionalReconnect = false; VpnStateManager.updateState(ConnectionState.ERROR) }
@@ -1509,8 +1655,39 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
         }
     }
 
-    fun deleteServer(profile: VpnProfile) { viewModelScope.launch(Dispatchers.IO) { dao.deleteProfile(profile) } }
-    fun deleteSubscriptionGroup(subKey: String) { viewModelScope.launch(Dispatchers.IO) { allProfiles.value.filter { it.username == subKey }.forEach { dao.deleteProfile(it) } } }
+    fun deleteServer(profile: VpnProfile) {
+        if (_pendingRestoredProfile.value?.id == profile.id) {
+            _pendingRestoredProfile.value = null
+        }
+        viewModelScope.launch(Dispatchers.IO) {
+            if (settingsRepository.getLastServerId(profile.protocol) == profile.id) {
+                settingsRepository.clearLastServerId(profile.protocol)
+            }
+            dao.deleteProfile(profile)
+        }
+    }
+
+    fun deleteSubscriptionGroup(subKey: String) {
+        stopV2rayPing(subKey)
+        if (_pendingRestoredProfile.value?.username == subKey) {
+            _pendingRestoredProfile.value = null
+        }
+        viewModelScope.launch(Dispatchers.IO) {
+            val targets = allProfiles.value.filter { it.username == subKey }
+            val savedId = settingsRepository.getLastServerId("v2rayNG")
+            if (savedId != null && targets.any { it.id == savedId }) {
+                settingsRepository.clearLastServerId("v2rayNG")
+            }
+            val updatedOrder = V2rayTabOrderResolver.removeTabFromSavedOrder(_v2rayTabOrder.value, subKey)
+            _v2rayTabOrder.value = updatedOrder
+            settingsRepository.setV2rayTabOrder(updatedOrder)
+            if (_v2raySelectedTab.value == subKey) {
+                _v2raySelectedTab.value = V2rayTabOrderResolver.SINGLE_LINKS_TAB
+                settingsRepository.setV2rayLastSelectedTab(V2rayTabOrderResolver.SINGLE_LINKS_TAB)
+            }
+            targets.forEach { dao.deleteProfile(it) }
+        }
+    }
     fun renameSubscriptionGroup(subKey: String, newName: String) { viewModelScope.launch(Dispatchers.IO) { allProfiles.value.filter { it.username == subKey }.forEach { dao.updateProfile(it.copy(subName = newName)) } } }
 
     private fun extractHostPort(config: String): Pair<String, Int>? {
@@ -1542,6 +1719,20 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
         }
     }
 
+    fun stopV2rayPing(groupName: String = V2rayTabOrderResolver.SINGLE_LINKS_TAB) {
+        val previousJob = v2rayPingJobs.remove(groupName)
+        val wasActive = previousJob?.isActive == true
+        previousJob?.cancel()
+        updateV2rayPingProgress { it.clearBatch(groupName) }
+        _v2rayPingTabs.value = _v2rayPingTabs.value - groupName
+        if (groupName == V2rayTabOrderResolver.SINGLE_LINKS_TAB) {
+            _singleLinksPingProgress.value = null
+        }
+        if (wasActive) {
+            _subscriptionToast.tryEmit("Ping stopped")
+        }
+    }
+
     /**
      * True v2rayNG-style "Test real delay": builds each profile's full Xray
      * JSON (inbounds stripped internally by MeasureOutboundDelay) and dials
@@ -1555,41 +1746,86 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
      * mirrors that concurrency model.
      */
     fun testV2rayRealDelay(groupName: String) {
-        viewModelScope.launch(Dispatchers.IO) {
-            // Scope to the selected tab: "SingleLinks" pings only non-subscription
-            // servers; a sub key (sub:<url>) pings only that group. This avoids
-            // grinding through every tab's configs before reaching the one shown.
-            val base = allProfiles.value.filter { it.protocol == "v2rayNG" && !isSubscriptionInfoName(it.name) }
-            val targets = when (groupName) {
-                "SingleLinks" -> base.filter { !it.username.startsWith("sub:") }
-                else -> base.filter { it.username == groupName }
-            }
-            if (targets.isEmpty()) return@launch
-            // Mark this tab as pinging so only its UI shows the loading state.
-            _v2rayPingTabs.value = _v2rayPingTabs.value + groupName
-            // Reset first so user sees immediate feedback
-            targets.forEach { dao.updateProfile(it.copy(ping = 0L)) }
+        if (v2rayPingJobs[groupName]?.isActive == true) return
 
-            // v2rayNG default concurrency when not configured
-            val concurrency = 5
-            val semaphore = Semaphore(concurrency)
+        val job = viewModelScope.launch(Dispatchers.IO, start = CoroutineStart.LAZY) {
+            val currentJob = coroutineContext[Job]
+            fun isStillCurrent(): Boolean = isActive && v2rayPingJobs[groupName] === currentJob
 
             try {
+                // Scope to the selected tab: "SingleLinks" pings only non-subscription
+                // servers; a sub key (sub:<url>) pings only that group. This avoids
+                // grinding through every tab's configs before reaching the one shown.
+                val base = allProfiles.value.filter { it.protocol == "v2rayNG" && !isSubscriptionInfoName(it.name) }
+                val targets = when (groupName) {
+                    V2rayTabOrderResolver.SINGLE_LINKS_TAB -> base.filter { !it.username.startsWith("sub:") }
+                    else -> base.filter { it.username == groupName }
+                }
+                if (targets.isEmpty() || !isStillCurrent()) return@launch
+
+                val targetIds = targets.map { it.id }.toSet()
+                updateV2rayPingProgress { it.startBatch(groupName, targetIds) }
+
+                // Mark this tab as pinging so only its UI shows the loading state.
+                _v2rayPingTabs.value = _v2rayPingTabs.value + groupName
+                if (groupName == V2rayTabOrderResolver.SINGLE_LINKS_TAB) {
+                    _singleLinksPingProgress.value = PingProgress(0, targets.size)
+                }
+
+                // Reset first so user sees immediate feedback
+                for (target in targets) {
+                    if (!isStillCurrent()) return@launch
+                    ensureActive()
+                    dao.updateProfile(target.copy(ping = 0L))
+                }
+
+                // v2rayNG default concurrency when not configured
+                val completedCounter = AtomicInteger(0)
+                val concurrency = 5
+                val semaphore = Semaphore(concurrency)
+
                 coroutineScope {
                     targets.map { profile ->
                         async(Dispatchers.IO) {
-                            semaphore.withPermit {
-                                val ping = measureProfileDelay(profile)
-                                dao.updateProfile(profile.copy(ping = ping))
+                            if (!isStillCurrent()) return@async
+                            try {
+                                semaphore.withPermit {
+                                    if (!isStillCurrent()) return@withPermit
+                                    val ping = try {
+                                        measureProfileDelay(profile)
+                                    } catch (ce: CancellationException) {
+                                        throw ce
+                                    } catch (_: Exception) {
+                                        -1L
+                                    }
+                                    if (!isStillCurrent()) return@withPermit
+                                    dao.updateProfile(profile.copy(ping = ping))
+                                    if (groupName == V2rayTabOrderResolver.SINGLE_LINKS_TAB && isStillCurrent()) {
+                                        _singleLinksPingProgress.value = PingProgress(
+                                            completedCounter.incrementAndGet(),
+                                            targets.size
+                                        )
+                                    }
+                                }
+                            } finally {
+                                updateV2rayPingProgress { it.finishProfileInBatch(groupName, profile.id) }
                             }
                         }
                     }.awaitAll()
                 }
             } finally {
-                // Always clear this tab's loading flag, even if the test errors out.
-                _v2rayPingTabs.value = _v2rayPingTabs.value - groupName
+                updateV2rayPingProgress { it.clearBatch(groupName) }
+                if (v2rayPingJobs.remove(groupName, currentJob)) {
+                    _v2rayPingTabs.value = _v2rayPingTabs.value - groupName
+                    if (groupName == V2rayTabOrderResolver.SINGLE_LINKS_TAB) {
+                        _singleLinksPingProgress.value = null
+                    }
+                }
             }
         }
+
+        v2rayPingJobs[groupName] = job
+        job.start()
     }
 
     /**
@@ -1607,6 +1843,9 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
      * tabs are untouched. Info cards are never treated as deletable configs.
      */
     fun deleteInvalidV2rayConfigs(groupName: String) {
+        if (_pendingRestoredProfile.value?.ping == -1L) {
+            _pendingRestoredProfile.value = null
+        }
         viewModelScope.launch(Dispatchers.IO) {
             val base = allProfiles.value.filter {
                 it.protocol == "v2rayNG" && !isSubscriptionInfoName(it.name) && it.ping == -1L
@@ -1615,15 +1854,29 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
                 "SingleLinks" -> base.filter { !it.username.startsWith("sub:") }
                 else -> base.filter { it.username == groupName }
             }
+            val savedId = settingsRepository.getLastServerId("v2rayNG")
+            if (savedId != null && targets.any { it.id == savedId }) {
+                settingsRepository.clearLastServerId("v2rayNG")
+            }
             targets.forEach { dao.deleteProfile(it) }
         }
     }
 
     fun testServerPing(profile: VpnProfile) {
         if (isSubscriptionInfoName(profile.name)) return
+        val isV2ray = profile.protocol == "v2rayNG"
+        if (isV2ray) {
+            updateV2rayPingProgress { it.startSingle(profile.id) }
+        }
         viewModelScope.launch(Dispatchers.IO) {
-            val ping = measureProfileDelay(profile)
-            dao.updateProfile(profile.copy(ping = ping))
+            try {
+                val ping = measureProfileDelay(profile)
+                dao.updateProfile(profile.copy(ping = ping))
+            } finally {
+                if (isV2ray) {
+                    updateV2rayPingProgress { it.finishSingle(profile.id) }
+                }
+            }
         }
     }
 
@@ -1655,7 +1908,7 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
         if (protocol == "WireGuard") {
             testAllWireGuardPing()
         } else if (protocol == "v2rayNG") {
-            testV2rayRealDelay("SingleLinks")
+            testV2rayRealDelay(V2rayTabOrderResolver.SINGLE_LINKS_TAB)
         }
     }
 
@@ -1670,11 +1923,14 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
                 configJson,
                 testUrl
             )
+        } catch (ce: CancellationException) {
+            throw ce
         } catch (e: Exception) {
-            android.util.Log.w("DashboardViewModel", "measureProfileDelay failed for ${profile.name}: ${e.message}")
+            android.util.Log.w("DashboardViewModel", LogRedactor.redact("measureProfileDelay failed for ${profile.name}: ${e.message}"))
             -1L
         } catch (t: Throwable) {
-            android.util.Log.w("DashboardViewModel", "measureProfileDelay throwable for ${profile.name}: ${t.message}")
+            if (t is CancellationException) throw t
+            android.util.Log.w("DashboardViewModel", LogRedactor.redact("measureProfileDelay throwable for ${profile.name}: ${t.message}"))
             -1L
         }
     }
@@ -1683,44 +1939,180 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
      * Refreshes exactly one subscription group (the one matching [groupName]).
      * Only profiles in that group are deleted and re-inserted; other groups,
      * single links, and other protocols are untouched.
+     *
+     * Protected by an atomic lock and full-screen interaction guard to prevent
+     * spamming or concurrent mutations.
      */
     fun updateSubscription(groupName: String) {
-        if (connectionState.value == ConnectionState.CONNECTED && activeProfile.value?.protocol == "v2rayNG") {
+        if (!SubscriptionUpdatePolicy.canStartUpdate(_subscriptionUpdateState.value, groupName)) {
+            return
+        }
+
+        if ((connectionState.value == ConnectionState.CONNECTED || ConnectionLockGuard.isLocked(connectionState.value)) && activeProfile.value?.protocol == "v2rayNG") {
             viewModelScope.launch(Dispatchers.Main) { _subscriptionToast.emit("Please disconnect V2Ray before updating subscription.") }
             return
         }
+
+        if (!subscriptionUpdateLock.compareAndSet(false, true)) {
+            return
+        }
+
+        val initialProfile = allProfiles.value.firstOrNull { it.username == groupName && it.protocol == "v2rayNG" }
+        val initialDisplayName = SubscriptionUpdatePolicy.safeDisplayName(initialProfile?.subName, groupName)
+
+        _subscriptionUpdateState.value = SubscriptionUpdateState(
+            phase = SubscriptionUpdatePhase.UPDATING,
+            targetGroupName = groupName,
+            targetDisplayName = initialDisplayName,
+            detailText = "Syncing servers..."
+        )
+
         viewModelScope.launch(Dispatchers.IO) {
             try {
-                val existingProfiles = allProfiles.value.filter { it.username == groupName && it.protocol == "v2rayNG" }
-                if (existingProfiles.isEmpty()) return@launch
-                val url = existingProfiles.first().password.trim()
-                if (!url.startsWith("http")) return@launch
-                val preservedSubName = existingProfiles.first().subName
-                val connection = URL(url).openConnection().apply {
-                    connectTimeout = 10000
-                    val ua = settingsRepository.getSubUserAgent().trim()
-                    if (ua.isNotEmpty()) setRequestProperty("User-Agent", ua)
-                }
-                val response = connection.getInputStream().bufferedReader().use { it.readText() }
-                val decoded = try { String(android.util.Base64.decode(response, android.util.Base64.DEFAULT)) } catch (e: Exception) { response }
-                val validPrefixes = listOf("vmess://", "vless://", "trojan://", "v2ray://")
-                val lines = decoded.lines().map { it.trim() }.filter { line -> line.isNotBlank() && validPrefixes.any { line.startsWith(it, true) } }
-                if (lines.isNotEmpty()) {
-                    // Deactivate the group first so a currently-active profile in
-                    // it (possible when another protocol is connected) isn't left
-                    // dangling after the delete. New rows are inserted below.
-                    existingProfiles.forEach { dao.deleteProfile(it) }
-                    val firstRealIndex = lines.indexOfFirst {
-                        val name = extractV2rayName(it) ?: ""
-                        !isSubscriptionInfoName(name)
-                    }.let { if (it >= 0) it else 0 }
-                    lines.forEachIndexed { index, config ->
-                        val parsedName = extractV2rayName(config) ?: "SubLink ${index + 1}"
-                        dao.insertProfile(VpnProfile(name = parsedName.trim(), protocol = "v2rayNG", serverAddress = config, username = groupName.trim(), password = url, isActive = index == firstRealIndex, subName = preservedSubName))
+                val startNano = System.nanoTime()
+                var updatedCount = 0
+                var succeeded = false
+                var resolvedDisplayName = initialDisplayName
+
+                try {
+                    stopV2rayPing(groupName)
+
+                    val existingProfiles = allProfiles.value.filter { it.username == groupName && it.protocol == "v2rayNG" }
+                    if (existingProfiles.isNotEmpty()) {
+                        val url = existingProfiles.first().password.trim()
+                        val preservedSubName = existingProfiles.first().subName
+                        resolvedDisplayName = SubscriptionUpdatePolicy.safeDisplayName(preservedSubName, groupName)
+
+                        if (url.startsWith("http")) {
+                            val prevSavedId = settingsRepository.getLastServerId("v2rayNG")
+                            val prevSavedProfile = existingProfiles.firstOrNull { it.id == prevSavedId }
+                            val wasActive = prevSavedProfile?.isActive == true
+
+                            val connection = (URL(url).openConnection() as HttpURLConnection).apply {
+                                connectTimeout = SubscriptionUpdatePolicy.CONNECT_TIMEOUT_MS
+                                readTimeout = SubscriptionUpdatePolicy.READ_TIMEOUT_MS
+                                instanceFollowRedirects = true
+                                val ua = settingsRepository.getSubUserAgent().trim()
+                                if (ua.isNotEmpty()) setRequestProperty("User-Agent", ua)
+                            }
+
+                            val response = try {
+                                connection.inputStream.bufferedReader().use { it.readText() }
+                            } finally {
+                                connection.disconnect()
+                            }
+
+                            val decoded = try {
+                                String(android.util.Base64.decode(response, android.util.Base64.DEFAULT))
+                            } catch (e: Exception) {
+                                response
+                            }
+
+                            val validPrefixes = listOf("vmess://", "vless://", "trojan://", "v2ray://")
+                            val lines = decoded.lines()
+                                .map { it.trim() }
+                                .filter { line -> line.isNotBlank() && validPrefixes.any { line.startsWith(it, true) } }
+
+                            if (lines.isNotEmpty()) {
+                                // Deactivate the group first so a currently-active profile in
+                                // it (possible when another protocol is connected) isn't left
+                                // dangling after the delete. New rows are inserted below.
+                                existingProfiles.forEach { dao.deleteProfile(it) }
+                                val firstRealIndex = lines.indexOfFirst {
+                                    val name = extractV2rayName(it) ?: ""
+                                    !isSubscriptionInfoName(name)
+                                }.let { if (it >= 0) it else 0 }
+
+                                lines.forEachIndexed { index, config ->
+                                    val parsedName = extractV2rayName(config) ?: "SubLink ${index + 1}"
+                                    val initialActive = if (prevSavedProfile != null) false else (index == firstRealIndex)
+                                    dao.insertProfile(
+                                        VpnProfile(
+                                            name = parsedName.trim(),
+                                            protocol = "v2rayNG",
+                                            serverAddress = config,
+                                            username = groupName.trim(),
+                                            password = url,
+                                            isActive = initialActive,
+                                            subName = preservedSubName
+                                        )
+                                    )
+                                }
+
+                                if (prevSavedProfile != null) {
+                                    val newProfiles = dao.getAllProfiles().firstOrNull()?.filter { it.username == groupName && it.protocol == "v2rayNG" } ?: emptyList()
+                                    val matched = newProfiles.firstOrNull { it.serverAddress == prevSavedProfile.serverAddress }
+                                        ?: newProfiles.firstOrNull { it.name == prevSavedProfile.name }
+                                    if (matched != null) {
+                                        settingsRepository.setLastServerId("v2rayNG", matched.id)
+                                        if (wasActive && !ConnectionLockGuard.isLocked(connectionState.value)) {
+                                            dao.deactivateAll()
+                                            dao.setActiveProfile(matched.id)
+                                        }
+                                    } else {
+                                        settingsRepository.clearLastServerId("v2rayNG")
+                                    }
+                                }
+
+                                updatedCount = lines.size
+                                succeeded = true
+                            }
+                        }
                     }
-                    withContext(Dispatchers.Main) { _subscriptionToast.emit("Subscription Updated Successfully") }
+                } catch (e: Exception) {
+                    if (e is CancellationException) throw e
+                    android.util.Log.e("DashboardViewModel", "Subscription update failed for group: $groupName", e)
+                    succeeded = false
                 }
-            } catch (e: Exception) { withContext(Dispatchers.Main) { _subscriptionToast.emit("Update Failed") } }
+
+                val elapsedMs = (System.nanoTime() - startNano) / 1_000_000L
+                val waitMs = SubscriptionUpdatePolicy.remainingAnimationDelayMs(elapsedMs)
+                if (waitMs > 0L) {
+                    delay(waitMs)
+                }
+
+                if (succeeded) {
+                    val countDetail = if (updatedCount == 1) "1 server synced" else "$updatedCount servers synced"
+                    _subscriptionUpdateState.value = SubscriptionUpdateState(
+                        phase = SubscriptionUpdatePhase.SUCCESS,
+                        targetGroupName = groupName,
+                        targetDisplayName = resolvedDisplayName,
+                        detailText = countDetail
+                    )
+                    delay(SubscriptionUpdatePolicy.SUCCESS_DISPLAY_MS)
+                } else {
+                    _subscriptionUpdateState.value = SubscriptionUpdateState(
+                        phase = SubscriptionUpdatePhase.FAILED,
+                        targetGroupName = groupName,
+                        targetDisplayName = resolvedDisplayName,
+                        detailText = "Could not refresh subscription"
+                    )
+                    delay(SubscriptionUpdatePolicy.FAILURE_DISPLAY_MS)
+                }
+            } catch (e: Exception) {
+                if (e is CancellationException) throw e
+            } finally {
+                withContext(NonCancellable) {
+                    _subscriptionUpdateState.value = SubscriptionUpdateState()
+                    subscriptionUpdateLock.set(false)
+                }
+            }
+        }
+    }
+
+    fun selectV2rayTab(tabKey: String) {
+        if (tabKey.isNotBlank()) {
+            _v2raySelectedTab.value = tabKey
+            settingsRepository.setV2rayLastSelectedTab(tabKey)
+        }
+    }
+
+    fun moveV2rayTab(displayedTabs: List<String>, tabKey: String, delta: Int) {
+        val moved = V2rayTabOrderResolver.moveTab(displayedTabs, tabKey, delta)
+        if (moved != displayedTabs) {
+            val merged = V2rayTabOrderResolver.mergeMovedOrderIntoSaved(_v2rayTabOrder.value, moved)
+            _v2rayTabOrder.value = merged
+            settingsRepository.setV2rayTabOrder(merged)
         }
     }
 
@@ -1816,7 +2208,7 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
                     showToast("Restored $importedCount profiles ($skippedCount duplicates skipped)")
                 }
             } catch (e: Exception) {
-                android.util.Log.e("DashboardViewModel", "restoreProfilesFromBackupJson failed: ${e.message}")
+                android.util.Log.e("DashboardViewModel", LogRedactor.redact("restoreProfilesFromBackupJson failed: ${e.message}"))
                 withContext(Dispatchers.Main) {
                     showToast("Invalid backup data in clipboard")
                 }
@@ -1834,5 +2226,9 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
 
     override fun onCleared() {
         super.onCleared()
+        disconnectCoordinator.cancel()
+        v2rayPingJobs.values.forEach { it.cancel() }
+        v2rayPingJobs.clear()
+        updateV2rayPingProgress { V2rayPingProgressState() }
     }
 }

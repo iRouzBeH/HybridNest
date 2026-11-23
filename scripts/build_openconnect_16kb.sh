@@ -1,7 +1,7 @@
 #!/bin/bash
 
-# Define NDK path (Update this to your actual NDK path on Kubuntu)
-export NDK_DIR=$HOME/Android/Sdk/ndk/27.0.11718014
+# Define NDK path (Update this to your actual NDK path on Linux)
+export NDK_DIR=$HOME/Android/Sdk/ndk/26.3.11579264
 export TOOLCHAIN=$NDK_DIR/toolchains/llvm/prebuilt/linux-x86_64
 export TARGET=aarch64-linux-android
 export API=35 # Targeting newer APIs

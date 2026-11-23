@@ -5,11 +5,15 @@ import android.content.SharedPreferences
 import dev.rouzbeh.hybridvpn.core.routing.RoutingPolicy
 import dev.rouzbeh.hybridvpn.core.utils.LogRedactor
 import dev.rouzbeh.hybridvpn.core.vpn.v2ray.V2raySettings
+import dev.rouzbeh.hybridvpn.feature.dashboard.V2rayTabOrderResolver
+import java.net.IDN
+import java.net.URLDecoder
+import java.util.Locale
 
 /**
  * Source of truth for user settings and protocol configurations.
  */
-class SettingsRepository(context: Context) {
+class SettingsRepository(private val context: Context) {
     private val prefs: SharedPreferences =
         context.getSharedPreferences("hybridvpn_settings", Context.MODE_PRIVATE)
 
@@ -253,14 +257,32 @@ class SettingsRepository(context: Context) {
     }
 
     fun getBypassedDomains(): Set<String> =
-        prefs.getStringSet(KEY_BYPASSED_DOMAINS, emptySet()) ?: emptySet()
+        resolveBypassedDomains(
+            hasStoredKey = prefs.contains(KEY_BYPASSED_DOMAINS),
+            isConfigured = prefs.getBoolean(KEY_BYPASSED_DOMAINS_CONFIGURED, false),
+            storedDomains = prefs.getStringSet(KEY_BYPASSED_DOMAINS, null)
+        )
 
     fun setBypassedDomains(domains: Set<String>) {
-        val normalized = domains.map { normalizeDomainEntry(it) }
+        val normalized = domains.flatMap { parseAndNormalizeDomainEntries(it) }
             .filter { it.isNotBlank() }
             .toSet()
-        prefs.edit().putStringSet(KEY_BYPASSED_DOMAINS, normalized).apply()
+        prefs.edit()
+            .putStringSet(KEY_BYPASSED_DOMAINS, HashSet(normalized))
+            .putBoolean(KEY_BYPASSED_DOMAINS_CONFIGURED, true)
+            .apply()
         syncRuntimeSettings()
+    }
+
+    fun addBypassedDomain(domain: String) {
+        val entries = parseAndNormalizeDomainEntries(domain)
+        if (entries.isNotEmpty()) {
+            setBypassedDomains(getBypassedDomains() + entries)
+        }
+    }
+
+    fun removeBypassedDomain(domain: String) {
+        setBypassedDomains(getBypassedDomains() - domain)
     }
 
     fun isAllowLanHotspotEnabled(): Boolean =
@@ -278,6 +300,7 @@ class SettingsRepository(context: Context) {
             .remove(KEY_SUB_USER_AGENT)
             .remove(KEY_STRICT_LOG_REDACTION)
             .remove(KEY_BYPASSED_DOMAINS)
+            .remove(KEY_BYPASSED_DOMAINS_CONFIGURED)
             .remove(KEY_ALLOW_LAN_HOTSPOT)
             .apply()
         syncRuntimeSettings()
@@ -305,23 +328,281 @@ class SettingsRepository(context: Context) {
         LogRedactor.strictRedactionEnabled = isStrictLogRedactionEnabled()
     }
 
-    companion object {
-        fun normalizeDomainEntry(entry: String): String {
-            var s = entry.trim().lowercase()
-            if (s.startsWith("geosite:") || s.startsWith("domain:") || s.startsWith("full:") || s.startsWith("regexp:")) {
-                return s
+    // --- Protocol & Server Persistence ---
+
+    fun getLastSelectedProtocol(): String? {
+        val proto = prefs.getString(KEY_LAST_SELECTED_PROTOCOL, null)
+        return if (proto in VALID_PROTOCOLS) proto else null
+    }
+
+    fun setLastSelectedProtocol(protocol: String) {
+        if (protocol in VALID_PROTOCOLS) {
+            prefs.edit().putString(KEY_LAST_SELECTED_PROTOCOL, protocol).apply()
+        }
+    }
+
+    fun getLastServerId(protocol: String): Int? {
+        if (protocol !in VALID_PROTOCOLS) return null
+        val key = KEY_LAST_SERVER_ID_PREFIX + protocol
+        if (!prefs.contains(key)) return null
+        val id = prefs.getInt(key, -1)
+        return if (id > 0) id else null
+    }
+
+    fun setLastServerId(protocol: String, profileId: Int) {
+        if (protocol in VALID_PROTOCOLS && profileId > 0) {
+            prefs.edit().putInt(KEY_LAST_SERVER_ID_PREFIX + protocol, profileId).apply()
+        }
+    }
+
+    fun clearLastServerId(protocol: String) {
+        prefs.edit().remove(KEY_LAST_SERVER_ID_PREFIX + protocol).apply()
+    }
+
+    // --- v2rayNG Tab Persistence & Migration ---
+
+    fun getV2rayTabOrder(): List<String> {
+        val raw = prefs.getString(KEY_V2RAY_TAB_ORDER, null)
+        return V2rayTabOrderResolver.decodeTabOrder(raw)
+    }
+
+    fun setV2rayTabOrder(order: List<String>) {
+        val encoded = V2rayTabOrderResolver.encodeTabOrder(order)
+        prefs.edit().putString(KEY_V2RAY_TAB_ORDER, encoded).apply()
+    }
+
+    fun getV2rayLastSelectedTab(): String? {
+        val tab = prefs.getString(KEY_V2RAY_LAST_SELECTED_TAB, null)?.trim()
+        return if (!tab.isNullOrBlank()) tab else null
+    }
+
+    fun setV2rayLastSelectedTab(tabKey: String) {
+        val trimmed = tabKey.trim()
+        if (trimmed.isNotBlank()) {
+            prefs.edit().putString(KEY_V2RAY_LAST_SELECTED_TAB, trimmed).apply()
+        }
+    }
+
+    fun migrateLegacyTabPrefsIfNeeded(targetContext: Context = context) {
+        if (prefs.getBoolean(KEY_LEGACY_TAB_PREFS_MIGRATED, false)) return
+        val legacyPrefs = targetContext.getSharedPreferences("tab_prefs", Context.MODE_PRIVATE)
+        if (!prefs.contains(KEY_V2RAY_TAB_ORDER)) {
+            val legacyOrderRaw = legacyPrefs.getString("order", null)
+            val decoded = V2rayTabOrderResolver.decodeTabOrder(legacyOrderRaw)
+            if (decoded.size > 1) {
+                setV2rayTabOrder(decoded)
             }
-            if (s.startsWith("http://")) s = s.removePrefix("http://")
-            if (s.startsWith("https://")) s = s.removePrefix("https://")
-            if (s.contains('/')) s = s.substringBefore('/')
-            if (s.contains(':')) s = s.substringBefore(':')
-            return s
+        }
+        if (!prefs.contains(KEY_V2RAY_LAST_SELECTED_TAB)) {
+            val legacyTab = legacyPrefs.getString("last_selected_tab", null)?.trim()
+            if (!legacyTab.isNullOrBlank()) {
+                setV2rayLastSelectedTab(legacyTab)
+            }
+        }
+        prefs.edit().putBoolean(KEY_LEGACY_TAB_PREFS_MIGRATED, true).apply()
+    }
+
+    companion object {
+        /**
+         * Parses a potentially multi-domain or complex input string (e.g. Google redirect URLs,
+         * comma/space/newline separated domains) into a deduplicated list of valid normalized domains.
+         */
+        fun parseAndNormalizeDomainEntries(rawInput: String): List<String> {
+            if (rawInput.isBlank()) return emptyList()
+
+            val initialTokens = rawInput.trim().split(Regex("[\\s;]+")).filter { it.isNotBlank() }
+            val candidateTokens = mutableListOf<String>()
+
+            for (token in initialTokens) {
+                if (token.startsWith("regexp:", ignoreCase = true)) {
+                    val clean = token.trim().trimEnd(',')
+                    if (clean.isNotBlank()) candidateTokens.add(clean)
+                } else {
+                    val subTokens = token.split(',').map { it.trim() }.filter { it.isNotBlank() }
+                    candidateTokens.addAll(subTokens)
+                }
+            }
+
+            return candidateTokens
+                .map { normalizeDomainEntry(it) }
+                .filter { it.isNotBlank() }
+                .distinct()
+        }
+
+        /**
+         * Normalizes a single domain or URL entry into a clean domain rule (e.g. "shad.ir" or ".ir").
+         * Returns an empty string "" if the input is malformed, invalid, or cannot be resolved.
+         */
+        fun normalizeDomainEntry(entry: String): String {
+            return normalizeDomainEntryInternal(entry, depth = 0)
+        }
+
+        private fun normalizeDomainEntryInternal(entry: String, depth: Int): String {
+            if (depth > 3) return ""
+            var s = entry.trim().trim('"', '\'')
+            if (s.isEmpty()) return ""
+
+            // 1. Explicit Xray routing prefixes (geosite:, domain:, full:, regexp:)
+            val xrayPrefixes = listOf("geosite:", "domain:", "full:", "regexp:")
+            for (prefix in xrayPrefixes) {
+                if (s.startsWith(prefix, ignoreCase = true)) {
+                    val ruleType = prefix.lowercase(Locale.ROOT)
+                    val rest = s.substring(prefix.length).trim().lowercase(Locale.ROOT)
+                    return if (rest.isNotEmpty() && !rest.any { it.isWhitespace() || it.isISOControl() }) {
+                        "$ruleType$rest"
+                    } else {
+                        ""
+                    }
+                }
+            }
+
+            // Optional percent-decode for direct URL-encoded inputs (e.g. https%3A%2F%2F...)
+            if (s.contains('%')) {
+                s = try {
+                    URLDecoder.decode(s, "UTF-8")
+                } catch (_: Exception) {
+                    s
+                }
+            }
+
+            // 2. Google Redirect URL Extraction
+            val googleCandidate = s.replace(Regex("^[a-zA-Z][a-zA-Z0-9+.-]*://"), "")
+            if (googleCandidate.contains('?')) {
+                val beforeQuery = googleCandidate.substringBefore('?')
+                val query = googleCandidate.substringAfter('?')
+                if (beforeQuery.contains('/')) {
+                    val rawHost = beforeQuery.substringBefore('/')
+                    val hostWithoutCreds = if (rawHost.contains('@')) rawHost.substringAfterLast('@') else rawHost
+                    val host = (if (hostWithoutCreds.contains(':')) hostWithoutCreds.substringBefore(':') else hostWithoutCreds).lowercase(Locale.ROOT)
+                    val path = "/" + beforeQuery.substringAfter('/').trim('/')
+
+                    val isGoogleHost = host == "google.com" ||
+                        host == "www.google.com" ||
+                        host.startsWith("google.") ||
+                        host.startsWith("www.google.") ||
+                        host.contains(".google.")
+
+                    if (isGoogleHost && path == "/url") {
+                        val cleanQuery = query.substringBefore('#').replace("&amp;", "&")
+                        val params = cleanQuery.split('&').mapNotNull { param ->
+                            val eq = param.indexOf('=')
+                            if (eq != -1) {
+                                val k = param.substring(0, eq).trim()
+                                val v = param.substring(eq + 1).trim()
+                                k to v
+                            } else null
+                        }
+                        val rawTarget = params.firstOrNull { it.first == "url" && it.second.isNotEmpty() }?.second
+                            ?: params.firstOrNull { it.first == "q" && it.second.isNotEmpty() }?.second
+
+                        if (rawTarget.isNullOrBlank()) {
+                            return "" // Reject: Google redirect link missing target URL
+                        }
+                        var decodedTarget = try {
+                            URLDecoder.decode(rawTarget, "UTF-8")
+                        } catch (_: Exception) {
+                            rawTarget
+                        }
+                        if (decodedTarget.contains('%')) {
+                            decodedTarget = try {
+                                URLDecoder.decode(decodedTarget, "UTF-8")
+                            } catch (_: Exception) {
+                                decodedTarget
+                            }
+                        }
+                        return normalizeDomainEntryInternal(decodedTarget, depth + 1)
+                    }
+                }
+            }
+
+            // 3. Scheme removal
+            s = s.replace(Regex("^[a-zA-Z][a-zA-Z0-9+.-]*://"), "")
+
+            // 4. Credentials removal
+            if (s.contains('@')) {
+                s = s.substringAfterLast('@')
+            }
+
+            // 5. Path, query, fragment removal
+            s = s.substringBefore('/').substringBefore('?').substringBefore('#')
+
+            // 6. Port removal (and reject bracketed IPv6)
+            if (s.startsWith('[') || s.endsWith(']')) return ""
+            if (s.contains(':')) {
+                s = s.substringBefore(':')
+            }
+            s = s.trim()
+            if (s.isEmpty()) return ""
+
+            // 7. Case conversion & trailing dots
+            s = s.lowercase(Locale.ROOT).trimEnd('.')
+            if (s.isEmpty()) return ""
+
+            // 8. Leading dot & www. prefix handling
+            val hasLeadingDot = s.startsWith('.')
+            var coreDomain = s.trimStart('.')
+            if (coreDomain.startsWith("www.") && coreDomain.substringAfter("www.").contains('.')) {
+                coreDomain = coreDomain.removePrefix("www.")
+            }
+            coreDomain = coreDomain.trim()
+            if (coreDomain.isEmpty()) return ""
+
+            // 9. IDN / Punycode conversion
+            val asciiDomain = try {
+                IDN.toASCII(coreDomain, IDN.ALLOW_UNASSIGNED).lowercase(Locale.ROOT)
+            } catch (_: Exception) {
+                return ""
+            }
+
+            // 10. Strict domain validation
+            if (asciiDomain.isEmpty() || asciiDomain.length > 253 || asciiDomain.any { it.isWhitespace() || it.isISOControl() }) {
+                return ""
+            }
+
+            // Reject raw IPv4 literals (4 numeric octets)
+            if (asciiDomain.matches(Regex("""^\d{1,3}(\.\d{1,3}){3}$"""))) {
+                return ""
+            }
+
+            val labels = asciiDomain.split('.')
+
+            // Case A: Single-label TLD rule with leading dot (e.g. .ir or .xn--mgba3a4f16a)
+            if (hasLeadingDot && labels.size == 1) {
+                val tld = labels[0]
+                val isValidTld = tld.matches(Regex("^[a-z]{2,63}$")) || tld.matches(Regex("^xn--[a-z0-9-]{1,59}$"))
+                return if (isValidTld) ".$tld" else ""
+            }
+
+            // Case B: Full domain (requires at least 2 labels)
+            if (labels.size < 2) {
+                return ""
+            }
+
+            for (label in labels) {
+                if (label.isEmpty() || label.length > 63) return ""
+                if (label.startsWith('-') || label.endsWith('-')) return ""
+                if (!label.matches(Regex("^[a-z0-9-]+$"))) return ""
+            }
+
+            val tld = labels.last()
+            val isValidTld = tld.matches(Regex("^[a-z]{2,63}$")) || tld.matches(Regex("^xn--[a-z0-9-]{1,59}$"))
+            if (!isValidTld) return ""
+
+            return asciiDomain
         }
 
         private const val KEY_PER_APP_ENABLED = "per_app_enabled"
         private const val KEY_BYPASS_MODE = "bypass_mode"
         private const val KEY_SELECTED_APPS = "selected_apps"
         private const val KEY_ROUTING_REVISION = "routing_revision"
+
+        // Protocol & Server Persistence
+        private const val KEY_LAST_SELECTED_PROTOCOL = "last_selected_protocol"
+        private const val KEY_LAST_SERVER_ID_PREFIX = "last_server_id_"
+        private const val KEY_V2RAY_TAB_ORDER = "v2ray_tab_order"
+        private const val KEY_V2RAY_LAST_SELECTED_TAB = "v2ray_last_selected_tab"
+        private const val KEY_LEGACY_TAB_PREFS_MIGRATED = "legacy_tab_prefs_migrated"
+        private val VALID_PROTOCOLS = setOf("OpenConnect", "WireGuard", "v2rayNG")
 
         // AnyConnect
         private const val KEY_OC_DTLS_ENABLED = "oc_dtls_enabled"
@@ -346,11 +627,27 @@ class SettingsRepository(context: Context) {
         private const val KEY_V2RAY_BYPASS_LAN = "v2ray_bypass_lan"
 
         // Features
+        val DEFAULT_BYPASSED_DOMAINS: Set<String> = setOf(".ir")
+        private const val KEY_BYPASSED_DOMAINS_CONFIGURED = "feature_bypassed_domains_configured"
         private const val KEY_CONNECTIVITY_CHECK_ENABLED = "feature_connectivity_check_enabled"
         private const val KEY_PING_TEST_URL = "feature_ping_test_url"
         private const val KEY_SUB_USER_AGENT = "feature_sub_user_agent"
         private const val KEY_STRICT_LOG_REDACTION = "feature_strict_log_redaction"
         private const val KEY_BYPASSED_DOMAINS = "feature_bypassed_domains"
         private const val KEY_ALLOW_LAN_HOTSPOT = "feature_allow_lan_hotspot"
+
+        fun resolveBypassedDomains(
+            hasStoredKey: Boolean,
+            isConfigured: Boolean,
+            storedDomains: Set<String>?
+        ): Set<String> {
+            if (isConfigured) {
+                return storedDomains?.toSet() ?: emptySet()
+            }
+            if (hasStoredKey && !storedDomains.isNullOrEmpty()) {
+                return storedDomains.toSet()
+            }
+            return DEFAULT_BYPASSED_DOMAINS
+        }
     }
 }

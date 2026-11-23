@@ -6,6 +6,7 @@ import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.layout.size
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.VpnKey
@@ -43,13 +44,20 @@ fun SplashScreen(onTimeout: () -> Unit) {
             .background(SurfaceDark), // Matching SurfaceDark
         contentAlignment = Alignment.Center
     ) {
-        Icon(
-            imageVector = Icons.Default.VpnKey,
-            contentDescription = "Logo",
-            tint = PrimaryCyan,
+        Box(
             modifier = Modifier
-                .size(100.dp)
-                .scale(scale.value)
-        )
+                .fillMaxSize()
+                .safeDrawingPadding(),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(
+                imageVector = Icons.Default.VpnKey,
+                contentDescription = "Logo",
+                tint = PrimaryCyan,
+                modifier = Modifier
+                    .size(100.dp)
+                    .scale(scale.value)
+            )
+        }
     }
 }

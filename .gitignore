@@ -25,3 +25,19 @@ PROJECT_CONTEXT.md
 .agents/
 .junie/
 .kotlin/
+
+# Security & Secret Patterns
+*.key
+*.pem
+*.p12
+*.pfx
+*.pkcs12
+.env.*
+
+# Logs & Patch Artifacts
+*.log
+*.orig
+*.rej
+
+# OS Artifacts
+Thumbs.db
