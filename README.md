@@ -39,14 +39,31 @@
 
 ## 🌟 Key Features
 
+- **Full-Screen Glass UI & Unsaved Changes Guard**:
+  - Redesigned full-screen settings (AnyConnect, WireGuard, v2rayNG, Features & Diagnostics, Check for Update, About), harmonized Server List, and Split Tunneling screen with squircle app icons.
+  - Unsaved-changes confirmation prompts across configuration screens to prevent accidental data loss.
+
+- **Per-Protocol State Persistence & Seamless Server Switching**:
+  - Remembers the last selected server per protocol and custom `v2rayNG` tab order/selection across restarts.
+  - Supports direct same-protocol server switching (`Reconnecting`) while connected without requiring manual disconnection.
+
+- **Multi-Provider Parallel GeoIP Consensus**:
+  - Exit IP and country detection powered by parallel HTTPS lookups (`ipinfo.io` + `ipwho.is` with fallback tie-breaking) for accurate and resilient detection.
+
+- **Real GitHub Releases Update Check**:
+  - Queries the official GitHub Releases API on demand (proxy-aware when connected via `v2rayNG` or `WireGuard`) and opens the official release page in the browser.
+
+- **Enhanced `v2rayNG` Subscription & Ping Controls**:
+  - Full-screen locking animation during subscription updates, animated batch ping cards, and instant stoppable ping on `SingleLinks` and subscription tabs.
+
+- **Default `.ir` Domain Bypass**:
+  - Pre-selects `.ir` for domain bypass out of the box while preserving explicit user edits and removal.
+  - Custom domain routing rules in Xray-core for low-latency direct local access without disconnecting.
+
 - **Fail-Closed Per-App Split Tunneling**:
   - **Allow Mode**: Only selected applications route traffic through the encrypted VPN tunnel.
   - **Bypass Mode**: Selected applications bypass the VPN directly while all other device traffic is tunneled.
   - Dynamic installed app scanner with real-time search, package filtering, and state persistence.
-
-- **Domain Bypass (Direct Sites)**:
-  - Built-in one-tap direct routing for domestic domains (`.ir` direct bypass rule).
-  - Custom domain routing rules in Xray-core for low-latency direct local access without disconnecting.
 
 - **Universal Hotspot & LAN VPN Sharing (No Root Required)**:
   - Built-in HTTP / SOCKS5 proxy relay server running over active VPN tunnels.
@@ -71,9 +88,9 @@ Download the latest signed release APKs directly from [GitHub Releases](https://
 
 | APK File | Architecture | Description & Recommendation |
 |:---|:---:|:---|
-| **`HybridNest-v1.0-arm64-v8a.apk`** | `arm64-v8a` | **Recommended (Modern Phones)**<br>Optimized for 64-bit ARM devices (95%+ of Android smartphones manufactured since 2018). Provides the smallest download size and maximum CPU performance. |
-| **`HybridNest-v1.0-armeabi-v7a.apk`** | `armeabi-v7a` | **Older / 32-bit Phones**<br>Targeted for older 32-bit ARM smartphones, legacy budget tablets, and 32-bit Android TV boxes. |
-| **`HybridNest-v1.0-universal.apk`** | Multi-ABI | **Universal (All ARM Devices)**<br>Contains native binaries for both 32-bit and 64-bit architectures. Recommended if you are unsure of your device architecture or redistributing across multiple hardware types. |
+| **`HybridNest-v1.1-arm64-v8a.apk`** | `arm64-v8a` | **Recommended (Modern Phones)**<br>Optimized for 64-bit ARM devices (95%+ of Android smartphones manufactured since 2018). Provides the smallest download size and maximum CPU performance. |
+| **`HybridNest-v1.1-armeabi-v7a.apk`** | `armeabi-v7a` | **Older / 32-bit Phones**<br>Targeted for older 32-bit ARM smartphones, legacy budget tablets, and 32-bit Android TV boxes. |
+| **`HybridNest-v1.1-universal.apk`** | Multi-ABI | **Universal (All ARM Devices)**<br>Contains native binaries for both 32-bit and 64-bit architectures. Recommended if you are unsure of your device architecture or redistributing across multiple hardware types. |
 
 > [!TIP]
 > Download the `SHA256SUMS.txt` file from [GitHub Releases](https://github.com/iRouzBeH/HybridNest/releases) to verify the file integrity of your downloaded APK.
