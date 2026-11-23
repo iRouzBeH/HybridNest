@@ -641,7 +641,7 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
         }
     }
 
-    @Volatile private var lastKnownRealNetworkInfo: IpResult? = null
+    @Volatile private var lastKnownRealNetworkInfo: GeoIpResult? = null
     @Volatile private var ipLookupSessionId = 0L
 
     private fun buildFreshHttpClient(
@@ -672,7 +672,7 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
     private fun executeIpLookupRequest(
         client: okhttp3.OkHttpClient,
         url: String
-    ): IpResult? {
+    ): GeoIpResult? {
         val req = okhttp3.Request.Builder()
             .url(url)
             .get()
@@ -710,16 +710,9 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
             // Prefer IPv4-only endpoints first; if an endpoint returns IPv6,
             // remember the first IPv6 result as a fallback and keep trying
             // remaining endpoints for an IPv4 address.
-            val endpoints = listOf(
-                "http://ip-api.com/json",
-                "https://v4.ifconfig.co/json",
-                "https://ipwho.is/",
-                "https://api-ipv4.ip.sb/geoip",
-                "https://api.myip.world/json",
-                "https://free.freeipapi.com/api/json"
-            )
-            var ipv4Result: IpResult? = null
-            var ipv6Fallback: IpResult? = null
+            val endpoints = GeoIpLookup.PUBLIC_IP_ENDPOINTS
+            var ipv4Result: GeoIpResult? = null
+            var ipv6Fallback: GeoIpResult? = null
             val retryDelaysMs = longArrayOf(0L, 2000L)
             val client = buildFreshHttpClient()
 
@@ -795,7 +788,7 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
                     cm.getNetworkCapabilities(net)?.hasTransport(NetworkCapabilities.TRANSPORT_VPN) == true
                 }
 
-            fun isRealIspLeak(candidate: IpResult): Boolean {
+            fun isRealIspLeak(candidate: GeoIpResult): Boolean {
                 val realInfo = lastKnownRealNetworkInfo
                 val realIp = realInfo?.ip ?: VpnStateManager.lastKnownRealIp
                 if (!realIp.isNullOrBlank() && candidate.ip.equals(realIp, ignoreCase = true)) {
@@ -813,16 +806,9 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
 
             // Try all endpoints preferring IPv4; remember the first IPv6 result
             // as a fallback and use it only if no endpoint returns IPv4.
-            val orderedEndpoints = listOf(
-                "http://ip-api.com/json",
-                "https://v4.ifconfig.co/json",
-                "https://ipwho.is/",
-                "https://api-ipv4.ip.sb/geoip",
-                "https://api.myip.world/json",
-                "https://free.freeipapi.com/api/json"
-            )
-            var ipv4Result: IpResult? = null
-            var ipv6Fallback: IpResult? = null
+            val orderedEndpoints = GeoIpLookup.PUBLIC_IP_ENDPOINTS
+            var ipv4Result: GeoIpResult? = null
+            var ipv6Fallback: GeoIpResult? = null
             // Sequential retries inside the same job so retries never cancel an
             // in-flight lookup or reset the UI state prematurely.
             val retryDelaysMs = longArrayOf(0L, 1500L, 3000L, 5000L)
@@ -897,96 +883,10 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
         }
     }
 
-    private data class IpResult(val ip: String, val location: String, val flagCode: String)
+    private fun isValidIpv4(ip: String): Boolean = GeoIpLookup.isValidIpv4(ip)
 
-    private fun isValidIpv4(ip: String): Boolean {
-        val trimmed = ip.trim()
-        if (trimmed.isEmpty() || trimmed.contains(':')) return false
-        val parts = trimmed.split('.')
-        if (parts.size != 4) return false
-        return parts.all { part ->
-            part.isNotEmpty() && part.length <= 3 && part.all { it.isDigit() } && (part.toIntOrNull() ?: -1) in 0..255
-        }
-    }
-
-    private fun parseIpResponse(url: String, response: String): IpResult? {
-        return try {
-            val json = JSONObject(response)
-            
-            fun cleanCountryName(name: String): String {
-                val cleaned = if (name.startsWith("The ", ignoreCase = true)) name.substring(4).trim() else name
-                return if (cleaned.isNotBlank()) cleaned else "Unknown"
-            }
-
-            fun resolveCountryCode(rawCode: String, countryName: String): String {
-                val code = rawCode.trim().lowercase()
-                if (code.length == 2 && code != "un" && code.all { it in 'a'..'z' }) {
-                    return code
-                }
-                if (countryName.isNotBlank() && countryName != "Unknown") {
-                    val match = java.util.Locale.getISOCountries().firstOrNull { iso ->
-                        val loc = java.util.Locale("", iso)
-                        loc.displayCountry.equals(countryName, ignoreCase = true) ||
-                        loc.getDisplayCountry(java.util.Locale.ENGLISH).equals(countryName, ignoreCase = true)
-                    }
-                    if (match != null) return match.lowercase()
-                }
-                return "un"
-            }
-
-            val parsed = when {
-                url.contains("ip-api.com") -> {
-                    // ip-api returns {"status":"fail"...} when queried without required fields
-                    if (json.optString("status", "success") == "fail") return null
-                    val ip = json.optString("query", "").trim()
-                    val rawCode = json.optString("countryCode", "un")
-                    val country = cleanCountryName(json.optString("country", java.util.Locale("", rawCode).displayCountry))
-                    val countryCode = resolveCountryCode(rawCode, country)
-                    IpResult(ip, country, countryCode)
-                }
-                url.contains("ipwho.is") -> {
-                    if (json.optBoolean("success", true) == false) return null
-                    val ip = json.optString("ip", "").trim()
-                    val rawCode = json.optString("country_code", "un")
-                    val country = cleanCountryName(json.optString("country", java.util.Locale("", rawCode).displayCountry))
-                    val countryCode = resolveCountryCode(rawCode, country)
-                    IpResult(ip, country, countryCode)
-                }
-                url.contains("ip.sb") -> {
-                    val ip = json.optString("ip", "").trim()
-                    val rawCode = json.optString("country_code", "un")
-                    val country = cleanCountryName(json.optString("country", java.util.Locale("", rawCode).displayCountry))
-                    val countryCode = resolveCountryCode(rawCode, country)
-                    IpResult(ip, country, countryCode)
-                }
-                url.contains("myip.world") -> {
-                    val ip = json.optString("ip", "").trim()
-                    val rawCode = json.optString("country_code", "un")
-                    val country = cleanCountryName(json.optString("country", java.util.Locale("", rawCode).displayCountry))
-                    val countryCode = resolveCountryCode(rawCode, country)
-                    IpResult(ip, country, countryCode)
-                }
-                url.contains("ifconfig.co") -> {
-                    val ip = json.optString("ip", "").trim()
-                    val rawCode = json.optString("country_iso", json.optString("country_code", "un"))
-                    val country = cleanCountryName(json.optString("country", java.util.Locale("", rawCode).displayCountry))
-                    val countryCode = resolveCountryCode(rawCode, country)
-                    IpResult(ip, country, countryCode)
-                }
-                url.contains("freeipapi.com") -> {
-                    val ip = json.optString("ipAddress", "").trim()
-                    val rawCode = json.optString("countryCode", json.optString("country_code", "un"))
-                    val country = cleanCountryName(json.optString("countryName", java.util.Locale("", rawCode).displayCountry))
-                    val countryCode = resolveCountryCode(rawCode, country)
-                    IpResult(ip, country, countryCode)
-                }
-                else -> null
-            } ?: return null
-
-            // Accept valid IPv4 or IPv6 addresses; caller prioritizes IPv4 and
-            // uses IPv6 only as a fallback when no endpoint returns IPv4.
-            if (parsed.ip.isBlank() || parsed.ip == "0.0.0.0" || (!isValidIpv4(parsed.ip) && !parsed.ip.contains(':'))) null else parsed
-        } catch (e: Exception) { null }
+    private fun parseIpResponse(url: String, response: String): GeoIpResult? {
+        return GeoIpLookup.parseResponse(url, response)
     }
 
     /**
@@ -1259,10 +1159,19 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
         return withContext(Dispatchers.IO) {
             try {
                 val ip = java.net.InetAddress.getByName(host).hostAddress ?: return@withContext "un"
-                val url = "http://ip-api.com/json/$ip"
                 val client = buildFreshHttpClient()
-                val result = executeIpLookupRequest(client, url)
-                result?.flagCode?.let { BundledFlags.normalizeCode(it) } ?: "un"
+                try {
+                    for (url in GeoIpLookup.hostLookupUrls(ip)) {
+                        val result = executeIpLookupRequest(client, url)
+                        val code = result?.countryCode?.let { BundledFlags.normalizeCode(it) }
+                        if (code != null && code != "un") {
+                            return@withContext code
+                        }
+                    }
+                } finally {
+                    try { client.connectionPool.evictAll() } catch (_: Throwable) {}
+                }
+                "un"
             } catch (_: Exception) {
                 "un"
             }

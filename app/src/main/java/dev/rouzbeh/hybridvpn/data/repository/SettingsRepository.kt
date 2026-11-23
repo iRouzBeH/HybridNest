@@ -257,13 +257,20 @@ class SettingsRepository(private val context: Context) {
     }
 
     fun getBypassedDomains(): Set<String> =
-        prefs.getStringSet(KEY_BYPASSED_DOMAINS, emptySet()) ?: emptySet()
+        resolveBypassedDomains(
+            hasStoredKey = prefs.contains(KEY_BYPASSED_DOMAINS),
+            isConfigured = prefs.getBoolean(KEY_BYPASSED_DOMAINS_CONFIGURED, false),
+            storedDomains = prefs.getStringSet(KEY_BYPASSED_DOMAINS, null)
+        )
 
     fun setBypassedDomains(domains: Set<String>) {
         val normalized = domains.flatMap { parseAndNormalizeDomainEntries(it) }
             .filter { it.isNotBlank() }
             .toSet()
-        prefs.edit().putStringSet(KEY_BYPASSED_DOMAINS, normalized).apply()
+        prefs.edit()
+            .putStringSet(KEY_BYPASSED_DOMAINS, HashSet(normalized))
+            .putBoolean(KEY_BYPASSED_DOMAINS_CONFIGURED, true)
+            .apply()
         syncRuntimeSettings()
     }
 
@@ -293,6 +300,7 @@ class SettingsRepository(private val context: Context) {
             .remove(KEY_SUB_USER_AGENT)
             .remove(KEY_STRICT_LOG_REDACTION)
             .remove(KEY_BYPASSED_DOMAINS)
+            .remove(KEY_BYPASSED_DOMAINS_CONFIGURED)
             .remove(KEY_ALLOW_LAN_HOTSPOT)
             .apply()
         syncRuntimeSettings()
@@ -619,11 +627,27 @@ class SettingsRepository(private val context: Context) {
         private const val KEY_V2RAY_BYPASS_LAN = "v2ray_bypass_lan"
 
         // Features
+        val DEFAULT_BYPASSED_DOMAINS: Set<String> = setOf(".ir")
+        private const val KEY_BYPASSED_DOMAINS_CONFIGURED = "feature_bypassed_domains_configured"
         private const val KEY_CONNECTIVITY_CHECK_ENABLED = "feature_connectivity_check_enabled"
         private const val KEY_PING_TEST_URL = "feature_ping_test_url"
         private const val KEY_SUB_USER_AGENT = "feature_sub_user_agent"
         private const val KEY_STRICT_LOG_REDACTION = "feature_strict_log_redaction"
         private const val KEY_BYPASSED_DOMAINS = "feature_bypassed_domains"
         private const val KEY_ALLOW_LAN_HOTSPOT = "feature_allow_lan_hotspot"
+
+        fun resolveBypassedDomains(
+            hasStoredKey: Boolean,
+            isConfigured: Boolean,
+            storedDomains: Set<String>?
+        ): Set<String> {
+            if (isConfigured) {
+                return storedDomains?.toSet() ?: emptySet()
+            }
+            if (hasStoredKey && !storedDomains.isNullOrEmpty()) {
+                return storedDomains.toSet()
+            }
+            return DEFAULT_BYPASSED_DOMAINS
+        }
     }
 }

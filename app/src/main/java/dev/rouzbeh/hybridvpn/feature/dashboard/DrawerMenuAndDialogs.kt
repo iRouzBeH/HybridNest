@@ -916,7 +916,7 @@ fun FeaturesFullScreen(
                             pingUrl = "https://www.google.com/generate_204"
                             subUa = "v2rayNG/1.8.23"
                             strictRedaction = true
-                            bypassedDomains = emptySet()
+                            bypassedDomains = SettingsRepository.DEFAULT_BYPASSED_DOMAINS
                             allowLanHotspot = false
                         }
                         LockActionOutcome.SHOW_LOCK_WARNING -> {
