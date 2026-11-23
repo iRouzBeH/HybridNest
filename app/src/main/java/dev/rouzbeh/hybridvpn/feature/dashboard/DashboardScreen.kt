@@ -2,7 +2,11 @@ package dev.rouzbeh.hybridvpn.feature.dashboard
 
 import android.app.Activity
 import android.content.Intent
+import android.graphics.Bitmap
+import android.graphics.drawable.Drawable
 import android.net.VpnService
+import android.util.LruCache
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedContent
@@ -20,6 +24,7 @@ import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.combinedClickable
@@ -64,6 +69,7 @@ import androidx.compose.material.icons.automirrored.filled.KeyboardArrowLeft
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.automirrored.filled.Undo
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Android
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ContentCopy
@@ -110,6 +116,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
@@ -123,7 +130,10 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.graphics.ColorMatrix
+import androidx.compose.ui.graphics.FilterQuality
+import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.Shadow
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.vector.path
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
@@ -140,6 +150,7 @@ import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.VisualTransformation
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextDirection
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withStyle
@@ -148,10 +159,12 @@ import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.graphics.drawable.toBitmap
 import androidx.core.net.toUri
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
-import coil.compose.AsyncImage
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import dev.rouzbeh.hybridvpn.R
 import dev.rouzbeh.hybridvpn.core.designsystem.BackgroundDark
 import dev.rouzbeh.hybridvpn.core.designsystem.BorderGlass
@@ -3860,6 +3873,83 @@ fun RoutingSelectorButton(
     }
 }
 
+private object AppIconBitmapCache : LruCache<String, ImageBitmap>(160)
+
+@Composable
+private fun AppIconThumbnail(
+    packageName: String,
+    iconDrawable: Drawable?,
+    appName: String,
+    modifier: Modifier = Modifier
+) {
+    val density = LocalDensity.current
+    val iconPx = remember(density) {
+        with(density) { 44.dp.roundToPx().coerceIn(64, 192) }
+    }
+    val cacheKey = "$packageName@$iconPx"
+    val cachedBitmap = remember(cacheKey) { AppIconBitmapCache.get(cacheKey) }
+
+    val imageBitmapState = produceState<ImageBitmap?>(
+        initialValue = cachedBitmap,
+        key1 = cacheKey,
+        key2 = iconDrawable
+    ) {
+        if (cachedBitmap != null) {
+            value = cachedBitmap
+            return@produceState
+        }
+        if (iconDrawable == null) {
+            value = null
+            return@produceState
+        }
+        val bitmap = withContext(Dispatchers.Default) {
+            runCatching {
+                val safeDrawable = iconDrawable.constantState?.newDrawable()?.mutate() ?: iconDrawable
+                val bmp = safeDrawable.toBitmap(
+                    width = iconPx,
+                    height = iconPx,
+                    config = Bitmap.Config.ARGB_8888
+                )
+                val imgBitmap = bmp.asImageBitmap()
+                AppIconBitmapCache.put(cacheKey, imgBitmap)
+                imgBitmap
+            }.getOrNull()
+        }
+        value = bitmap
+    }
+
+    val currentBitmap = imageBitmapState.value
+
+    Box(
+        modifier = modifier
+            .size(44.dp)
+            .clip(RoundedCornerShape(12.dp))
+            .background(Color.White.copy(alpha = 0.06f))
+            .border(1.dp, Color.White.copy(alpha = 0.10f), RoundedCornerShape(12.dp)),
+        contentAlignment = Alignment.Center
+    ) {
+        if (currentBitmap != null) {
+            Image(
+                bitmap = currentBitmap,
+                contentDescription = appName,
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(3.dp)
+                    .clip(RoundedCornerShape(9.dp)),
+                contentScale = ContentScale.Fit,
+                filterQuality = FilterQuality.High
+            )
+        } else {
+            Icon(
+                imageVector = Icons.Default.Android,
+                contentDescription = appName,
+                tint = PrimaryCyan.copy(alpha = 0.45f),
+                modifier = Modifier.size(22.dp)
+            )
+        }
+    }
+}
+
 @Composable
 fun SplitTunnelingSheetContent(
     isPerAppEnabled: Boolean,
@@ -3885,54 +3975,103 @@ fun SplitTunnelingSheetContent(
         ) {
             Box(
                 modifier = Modifier
-                    .size(width = 32.dp, height = 4.dp)
+                    .size(width = 36.dp, height = 4.dp)
                     .clip(CircleShape)
-                    .background(TextSecondary)
+                    .background(Color.White.copy(alpha = 0.20f))
             )
         }
-        Text(
-            "Split Tunneling Settings", color = Color.White, fontSize = 20.sp,
-            fontWeight = FontWeight.Bold, fontFamily = SoraFamily, modifier = Modifier.padding(horizontal = 24.dp)
-        )
-        Spacer(modifier = Modifier.height(16.dp))
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 24.dp)
-                .clip(RoundedCornerShape(16.dp))
-                .background(SurfaceGlass)
-                .border(1.dp, BorderGlass, RoundedCornerShape(16.dp))
-                .padding(16.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
+                .padding(horizontal = 24.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Column(modifier = Modifier.weight(1f)) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
+            Box(
+                modifier = Modifier
+                    .size(36.dp)
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(PrimaryCyan.copy(alpha = 0.12f))
+                    .border(1.dp, PrimaryCyan.copy(alpha = 0.30f), RoundedCornerShape(10.dp)),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    imageVector = androidx.compose.material.icons.Icons.AutoMirrored.Filled.AltRoute,
+                    contentDescription = null,
+                    tint = PrimaryCyan,
+                    modifier = Modifier.size(20.dp)
+                )
+            }
+            Spacer(modifier = Modifier.width(12.dp))
+            Column {
+                Text(
+                    text = "Split Tunneling Settings",
+                    color = Color.White,
+                    fontSize = 19.sp,
+                    fontWeight = FontWeight.Bold,
+                    fontFamily = SoraFamily
+                )
+                Spacer(modifier = Modifier.height(2.dp))
+                Text(
+                    text = "Per-app traffic routing rules",
+                    color = Color(0xFF94A3B8),
+                    fontSize = 12.sp,
+                    fontFamily = SoraFamily
+                )
+            }
+        }
+        Spacer(modifier = Modifier.height(18.dp))
+        Surface(
+            shape = RoundedCornerShape(18.dp),
+            color = Color(0xFF0F172A).copy(alpha = 0.85f),
+            border = BorderStroke(1.dp, Color.White.copy(alpha = 0.09f)),
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 24.dp)
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(18.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
                     Text(
-                        "Per-App",
+                        text = "Per-App Routing",
                         color = Color.White,
                         fontSize = 16.sp,
                         fontWeight = FontWeight.Bold,
                         fontFamily = SoraFamily
                     )
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = "Route selected apps through VPN or allow them to bypass it directly.",
+                        color = Color(0xFF94A3B8),
+                        fontSize = 12.sp,
+                        lineHeight = 16.sp,
+                        fontFamily = SoraFamily
+                    )
                 }
-            }
-            androidx.compose.material3.Switch(
-                checked = isPerAppEnabled,
-                onCheckedChange = {
-                    when (ConnectionLockGuard.evaluateControlTap(connectionState)) {
-                        LockActionOutcome.ALLOW -> if (it) onEnable()
-                        LockActionOutcome.SHOW_LOCK_WARNING -> {
-                            onShowDisconnectWarning("Cannot modify Split Tunneling while VPN is active. Please disconnect first and try again.\n\nWould you like to disconnect now?")
+                Spacer(modifier = Modifier.width(16.dp))
+                androidx.compose.material3.Switch(
+                    checked = isPerAppEnabled,
+                    onCheckedChange = {
+                        when (ConnectionLockGuard.evaluateControlTap(connectionState)) {
+                            LockActionOutcome.ALLOW -> if (it) onEnable()
+                            LockActionOutcome.SHOW_LOCK_WARNING -> {
+                                onShowDisconnectWarning("Cannot modify Split Tunneling while VPN is active. Please disconnect first and try again.\n\nWould you like to disconnect now?")
+                            }
+                            LockActionOutcome.IGNORE_WHILE_DISCONNECTING -> Unit
                         }
-                        LockActionOutcome.IGNORE_WHILE_DISCONNECTING -> Unit
-                    }
-                },
-                colors = androidx.compose.material3.SwitchDefaults.colors(
-                    uncheckedThumbColor = TextSecondary,
-                    uncheckedTrackColor = SurfaceDark
+                    },
+                    colors = androidx.compose.material3.SwitchDefaults.colors(
+                        checkedThumbColor = PrimaryCyan,
+                        checkedTrackColor = PrimaryCyan.copy(alpha = 0.5f),
+                        uncheckedThumbColor = TextSecondary,
+                        uncheckedTrackColor = SurfaceDark
+                    )
                 )
-            )
+            }
         }
         Spacer(modifier = Modifier.height(24.dp))
     }
@@ -3957,18 +4096,9 @@ fun AppRoutingScreen(
     val context = androidx.compose.ui.platform.LocalContext.current
     var showSystemApps by remember { mutableStateOf(false) }
     var searchQuery by remember { mutableStateOf("") }
+    var selectedFilter by remember { mutableStateOf(SplitAppFilter.ALL) }
     var showMenu by remember { mutableStateOf(false) }
     var toastMessage by remember { mutableStateOf<String?>(null) }
-
-    val filteredApps = remember(apps, showSystemApps, searchQuery) {
-        apps.filter { app ->
-            (showSystemApps || !app.isSystemApp) &&
-                    (searchQuery.isEmpty() || app.appName.contains(
-                        searchQuery,
-                        ignoreCase = true
-                    ) || app.packageName.contains(searchQuery, ignoreCase = true))
-        }
-    }
 
     LaunchedEffect(toastMessage) {
         if (toastMessage != null) {
@@ -3977,383 +4107,800 @@ fun AppRoutingScreen(
         }
     }
 
-    Box(modifier = Modifier
-        .fillMaxSize()
-        .background(SurfaceMenu)) {
-        Column(
+    val selectedCount = remember(apps) { countSelectedApps(apps) { it.isSelected } }
+    val visibleAllCount = remember(apps, showSystemApps) {
+        countVisibleApps(
+            items = apps,
+            showSystemApps = showSystemApps,
+            isSystemOf = { it.isSystemApp },
+            isSelectedOf = { it.isSelected }
+        )
+    }
+
+    val filteredApps = remember(apps, showSystemApps, searchQuery, selectedFilter) {
+        filterApps(
+            items = apps,
+            query = searchQuery,
+            filter = selectedFilter,
+            showSystemApps = showSystemApps,
+            nameOf = { it.appName },
+            packageOf = { it.packageName },
+            isSystemOf = { it.isSystemApp },
+            isSelectedOf = { it.isSelected }
+        )
+    }
+
+    val subtitleText = remember(isPerAppEnabled, isBypassMode, selectedCount, apps.size) {
+        formatRoutingSubtitle(
+            isPerAppEnabled = isPerAppEnabled,
+            isBypassMode = isBypassMode,
+            selectedCount = selectedCount,
+            totalLoadedCount = apps.size
+        )
+    }
+
+    val handleAppToggle: (String) -> Unit = { pkg ->
+        when (ConnectionLockGuard.evaluateControlTap(connectionState)) {
+            LockActionOutcome.ALLOW -> onToggleApp(pkg)
+            LockActionOutcome.SHOW_LOCK_WARNING -> {
+                onShowDisconnectWarning("Cannot modify app routing while VPN is active. Please disconnect first and try again.\n\nWould you like to disconnect now?")
+            }
+            LockActionOutcome.IGNORE_WHILE_DISCONNECTING -> Unit
+        }
+    }
+
+    CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
+        BackHandler(enabled = true) { onNavigateBack() }
+
+        Box(
             modifier = Modifier
                 .fillMaxSize()
-                .statusBarsPadding()
-                .displayCutoutPadding()
-                .navigationBarsPadding()
-                .imePadding()
+                .background(BackgroundDark)
+                .clickable(
+                    indication = null,
+                    interactionSource = remember { MutableInteractionSource() }
+                ) { /* Consume touches to prevent pass-through */ }
         ) {
-            // ... (top bar code stays same)
-            Row(
+            // Ambient radial glow matching SettingsFullScreenScaffold
+            Canvas(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(top = 8.dp, start = 16.dp, end = 16.dp, bottom = 16.dp),
-                verticalAlignment = Alignment.CenterVertically
+                    .height(280.dp)
+                    .align(Alignment.TopCenter)
             ) {
-                Icon(
-                    imageVector = androidx.compose.material.icons.Icons.AutoMirrored.Filled.ArrowBack,
-                    contentDescription = "Back",
-                    tint = Color.White,
-                    modifier = Modifier
-                        .size(28.dp)
-                        .bounceClick { onNavigateBack() }
+                val center = Offset(size.width / 2f, 0f)
+                val radius = size.width * 0.85f
+                drawCircle(
+                    brush = Brush.radialGradient(
+                        colors = listOf(
+                            PrimaryCyan.copy(alpha = 0.10f),
+                            PrimaryCyan.copy(alpha = 0.03f),
+                            Color.Transparent
+                        ),
+                        center = center,
+                        radius = radius
+                    ),
+                    radius = radius,
+                    center = center
                 )
-                Spacer(modifier = Modifier.width(16.dp))
-                Text(
-                    "Per-App Settings",
-                    color = Color.White,
-                    fontSize = 20.sp,
-                    fontWeight = FontWeight.Bold,
-                    fontFamily = SoraFamily
-                )
-                Spacer(modifier = Modifier.weight(1f))
-
-                // Three-dots menu (Always visible when ON)
-                Box {
-                    Icon(
-                        imageVector = androidx.compose.material.icons.Icons.Default.MoreVert,
-                        contentDescription = "Options",
-                        tint = Color.White,
-                        modifier = Modifier
-                            .size(28.dp)
-                            .bounceClick { showMenu = true }
-                    )
-                    androidx.compose.material3.DropdownMenu(
-                        expanded = showMenu,
-                        onDismissRequest = { showMenu = false },
-                        modifier = Modifier
-                            .background(SurfaceMenu)
-                            .border(1.dp, BorderGlass, RoundedCornerShape(8.dp))
-                    ) {
-                        CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
-                            androidx.compose.material3.DropdownMenuItem(
-                                text = {
-                                    Text(
-                                        if (showSystemApps) "Hide System Apps" else "Show System Apps",
-                                        color = Color.White,
-                                        fontFamily = SoraFamily
-                                    )
-                                },
-                                onClick = { showSystemApps = !showSystemApps; showMenu = false }
-                            )
-                            androidx.compose.material3.DropdownMenuItem(
-                                text = { Text("Select All", color = Color.White, fontFamily = SoraFamily) },
-                                onClick = {
-                                    when (ConnectionLockGuard.evaluateControlTap(connectionState)) {
-                                        LockActionOutcome.ALLOW -> {
-                                            onSelectAllApps()
-                                            showMenu = false
-                                        }
-                                        LockActionOutcome.SHOW_LOCK_WARNING -> {
-                                            showMenu = false
-                                            onShowDisconnectWarning("Cannot modify app routing while VPN is active. Please disconnect first and try again.\n\nWould you like to disconnect now?")
-                                        }
-                                        LockActionOutcome.IGNORE_WHILE_DISCONNECTING -> {
-                                            showMenu = false
-                                        }
-                                    }
-                                }
-                            )
-                            androidx.compose.material3.DropdownMenuItem(
-                                text = { Text("Deselect All", color = Color.White, fontFamily = SoraFamily) },
-                                onClick = {
-                                    when (ConnectionLockGuard.evaluateControlTap(connectionState)) {
-                                        LockActionOutcome.ALLOW -> {
-                                            onDeselectAllApps()
-                                            showMenu = false
-                                        }
-                                        LockActionOutcome.SHOW_LOCK_WARNING -> {
-                                            showMenu = false
-                                            onShowDisconnectWarning("Cannot modify app routing while VPN is active. Please disconnect first and try again.\n\nWould you like to disconnect now?")
-                                        }
-                                        LockActionOutcome.IGNORE_WHILE_DISCONNECTING -> {
-                                            showMenu = false
-                                        }
-                                    }
-                                }
-                            )
-                        }
-                    }
-                }
             }
 
-            // Pending-changes banner: settings changed since the active tunnel was
-            // established with its routing snapshot. Never applied silently.
-            if (isPending) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 16.dp, vertical = 4.dp)
-                        .clip(RoundedCornerShape(12.dp))
-                        .background(Color(0xFFFFD700).copy(alpha = 0.12f))
-                        .border(1.dp, Color(0xFFFFD700).copy(alpha = 0.45f), RoundedCornerShape(12.dp))
-                        .padding(horizontal = 12.dp, vertical = 10.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text(
-                        "Routing changes apply after reconnect",
-                        color = Color(0xFFFFD700),
-                        fontSize = 13.sp,
-                        fontWeight = FontWeight.SemiBold,
-                        fontFamily = SoraFamily,
-                        modifier = Modifier.weight(1f)
-                    )
-                    Text(
-                        "RECONNECT",
-                        color = PrimaryCyan,
-                        fontSize = 13.sp,
-                        fontWeight = FontWeight.Bold,
-                        fontFamily = SoraFamily,
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(8.dp))
-                            .clickable { onReconnect() }
-                            .padding(horizontal = 8.dp, vertical = 4.dp)
-                    )
-                }
-            }
-
-            // ... (toggles container code stays same)
             Column(
                 modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp)
-                    .clip(RoundedCornerShape(16.dp))
-                    .background(SurfaceGlass)
-                    .border(1.dp, BorderGlass, RoundedCornerShape(16.dp))
-                    .padding(16.dp)
-            ) {
-                // Main Enable Toggle
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Column(modifier = Modifier.weight(1f)) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text(
-                                "Per-App",
-                                color = Color.White,
-                                fontSize = 16.sp,
-                                fontWeight = FontWeight.Bold,
-                                fontFamily = SoraFamily
-                            )
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Icon(
-                                imageVector = androidx.compose.material.icons.Icons.Outlined.Info,
-                                contentDescription = "Info",
-                                tint = TextSecondary,
-                                modifier = Modifier
-                                    .size(18.dp)
-                                    .bounceClick {
-                                        toastMessage = "Disable this option to have\nall apps use the VPN."
-                                    }
-                            )
-                        }
-                    }
-                    androidx.compose.material3.Switch(
-                        checked = isPerAppEnabled,
-                        onCheckedChange = {
-                            when (ConnectionLockGuard.evaluateControlTap(connectionState)) {
-                                LockActionOutcome.ALLOW -> if (!it) onDisablePerApp()
-                                LockActionOutcome.SHOW_LOCK_WARNING -> {
-                                    onShowDisconnectWarning("Cannot modify Split Tunneling while VPN is active. Please disconnect first and try again.\n\nWould you like to disconnect now?")
-                                }
-                                LockActionOutcome.IGNORE_WHILE_DISCONNECTING -> Unit
-                            }
-                        },
-                        colors = androidx.compose.material3.SwitchDefaults.colors(
-                            checkedThumbColor = PrimaryCyan,
-                            checkedTrackColor = PrimaryCyan.copy(alpha = 0.5f)
-                        )
-                    )
-                }
-
-                androidx.compose.material3.HorizontalDivider(
-                    color = BorderGlass,
-                    modifier = Modifier.padding(vertical = 12.dp)
-                )
-
-                // Bypass Mode Toggle
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Column(modifier = Modifier.weight(1f)) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text(
-                                "Bypass Mode",
-                                color = Color.White,
-                                fontSize = 16.sp,
-                                fontWeight = FontWeight.Bold,
-                                fontFamily = SoraFamily
-                            )
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Icon(
-                                imageVector = androidx.compose.material.icons.Icons.Outlined.Info,
-                                contentDescription = "Info",
-                                tint = TextSecondary,
-                                modifier = Modifier
-                                    .size(18.dp)
-                                    .bounceClick {
-                                        toastMessage =
-                                            if (isBypassMode) {
-                                                "Disable this option to only allow apps you select to use the VPN."
-                                            } else {
-                                                "Enable this option to prevent apps you select from using the VPN and allow other apps you don't select to use the VPN."
-                                            }
-                                    }
-                            )
-                        }
-                    }
-                    androidx.compose.material3.Switch(
-                        checked = isBypassMode,
-                        onCheckedChange = {
-                            when (ConnectionLockGuard.evaluateControlTap(connectionState)) {
-                                LockActionOutcome.ALLOW -> onBypassModeChange(it)
-                                LockActionOutcome.SHOW_LOCK_WARNING -> {
-                                    onShowDisconnectWarning("Cannot modify Split Tunneling while VPN is active. Please disconnect first and try again.\n\nWould you like to disconnect now?")
-                                }
-                                LockActionOutcome.IGNORE_WHILE_DISCONNECTING -> Unit
-                            }
-                        },
-                        colors = androidx.compose.material3.SwitchDefaults.colors(
-                            checkedThumbColor = PrimaryCyan,
-                            checkedTrackColor = PrimaryCyan.copy(alpha = 0.5f)
-                        )
-                    )
-                }
-
-                androidx.compose.material3.HorizontalDivider(
-                    color = BorderGlass,
-                    modifier = Modifier.padding(vertical = 12.dp)
-                )
-
-                // Custom Search Bar
-                androidx.compose.foundation.text.BasicTextField(
-                    value = searchQuery,
-                    onValueChange = { searchQuery = it },
-                    textStyle = androidx.compose.ui.text.TextStyle(
-                        color = Color.White,
-                        fontSize = 14.sp,
-                        fontFamily = SoraFamily,
-                        textDirection = TextDirection.Ltr
-                    ),
-                    cursorBrush = androidx.compose.ui.graphics.SolidColor(PrimaryCyan),
-                    decorationBox = { innerTextField ->
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clip(RoundedCornerShape(12.dp))
-                                .background(SurfaceDark.copy(alpha = 0.5f))
-                                .padding(horizontal = 12.dp, vertical = 10.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Icon(
-                                androidx.compose.material.icons.Icons.Default.Search,
-                                contentDescription = "Search",
-                                tint = PrimaryCyan,
-                                modifier = Modifier.size(20.dp)
-                            )
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Box(modifier = Modifier.weight(1f)) {
-                                if (searchQuery.isEmpty()) Text(
-                                    "Search Apps",
-                                    color = TextSecondary,
-                                    fontSize = 14.sp,
-                                    fontFamily = SoraFamily
-                                )
-                                innerTextField()
-                            }
-                            if (searchQuery.isNotEmpty()) {
-                                Icon(
-                                    androidx.compose.material.icons.Icons.Default.Close,
-                                    contentDescription = "Clear",
-                                    tint = TextSecondary,
-                                    modifier = Modifier
-                                        .size(20.dp)
-                                        .clickable { searchQuery = "" }
-                                )
-                            }
-                        }
-                    }
-                )
-            }
-
-            Spacer(modifier = Modifier.height(16.dp))
-
-            // App List
-            androidx.compose.foundation.lazy.LazyColumn(
-                modifier = Modifier
                     .fillMaxSize()
-                    .padding(horizontal = 16.dp)
+                    .statusBarsPadding()
+                    .displayCutoutPadding()
+                    .navigationBarsPadding()
+                    .imePadding()
             ) {
-                items(filteredApps, key = { it.packageName }) { app ->
+                // Glass Top Header Bar
+                Column(modifier = Modifier.fillMaxWidth()) {
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(vertical = 6.dp)
-                            .clip(RoundedCornerShape(12.dp))
-                            .background(SurfaceGlass)
-                            .clickable {
-                                when (ConnectionLockGuard.evaluateControlTap(connectionState)) {
-                                    LockActionOutcome.ALLOW -> onToggleApp(app.packageName)
-                                    LockActionOutcome.SHOW_LOCK_WARNING -> {
-                                        onShowDisconnectWarning("Cannot modify app routing while VPN is active. Please disconnect first and try again.\n\nWould you like to disconnect now?")
-                                    }
-                                    LockActionOutcome.IGNORE_WHILE_DISCONNECTING -> Unit
-                                }
-                            }
-                            .padding(12.dp),
+                            .padding(horizontal = 16.dp, vertical = 12.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        AsyncImage(
-                            model = app.icon,
-                            contentDescription = app.appName,
+                        // 40dp circular glass back button
+                        Box(
                             modifier = Modifier
                                 .size(40.dp)
-                                .clip(androidx.compose.foundation.shape.CircleShape)
-                                .background(SurfaceDark)
-                        )
-                        Spacer(modifier = Modifier.width(12.dp))
+                                .clip(CircleShape)
+                                .background(Color.White.copy(alpha = 0.06f))
+                                .border(1.dp, Color.White.copy(alpha = 0.10f), CircleShape)
+                                .clickable { onNavigateBack() },
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                                contentDescription = "Back",
+                                tint = Color.White,
+                                modifier = Modifier.size(20.dp)
+                            )
+                        }
+
+                        Spacer(modifier = Modifier.width(14.dp))
+
                         Column(modifier = Modifier.weight(1f)) {
                             Text(
-                                app.appName,
+                                text = "Split Tunneling",
                                 color = Color.White,
-                                fontSize = 14.sp,
+                                fontSize = 18.sp,
                                 fontWeight = FontWeight.Bold,
                                 fontFamily = SoraFamily,
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis
                             )
+                            Spacer(modifier = Modifier.height(2.dp))
                             Text(
-                                app.packageName,
-                                color = TextSecondary,
-                                fontSize = 10.sp,
+                                text = subtitleText,
+                                color = PrimaryCyan.copy(alpha = 0.85f),
+                                fontSize = 12.sp,
                                 fontFamily = SoraFamily,
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis
                             )
                         }
-                        androidx.compose.material3.Checkbox(
-                            checked = app.isSelected,
-                            onCheckedChange = { onToggleApp(app.packageName) },
-                            colors = androidx.compose.material3.CheckboxDefaults.colors(
-                                checkedColor = PrimaryCyan,
-                                checkmarkColor = Color.Black,
-                                uncheckedColor = TextSecondary
-                            )
+
+                        Spacer(modifier = Modifier.width(8.dp))
+
+                        // Trailing 40dp circular glass overflow menu button
+                        Box {
+                            Box(
+                                modifier = Modifier
+                                    .size(40.dp)
+                                    .clip(CircleShape)
+                                    .background(Color.White.copy(alpha = 0.06f))
+                                    .border(1.dp, Color.White.copy(alpha = 0.10f), CircleShape)
+                                    .clickable { showMenu = true },
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.MoreVert,
+                                    contentDescription = "Options",
+                                    tint = Color.White,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                            }
+
+                            androidx.compose.material3.DropdownMenu(
+                                expanded = showMenu,
+                                onDismissRequest = { showMenu = false },
+                                modifier = Modifier
+                                    .background(Color(0xFF0F172A))
+                                    .border(1.dp, Color.White.copy(alpha = 0.10f), RoundedCornerShape(12.dp))
+                            ) {
+                                CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
+                                    androidx.compose.material3.DropdownMenuItem(
+                                        text = {
+                                            Text(
+                                                if (showSystemApps) "Hide System Apps" else "Show System Apps",
+                                                color = Color.White,
+                                                fontFamily = SoraFamily
+                                            )
+                                        },
+                                        onClick = {
+                                            showSystemApps = !showSystemApps
+                                            showMenu = false
+                                        }
+                                    )
+                                    androidx.compose.material3.DropdownMenuItem(
+                                        text = { Text("Select All", color = Color.White, fontFamily = SoraFamily) },
+                                        onClick = {
+                                            when (ConnectionLockGuard.evaluateControlTap(connectionState)) {
+                                                LockActionOutcome.ALLOW -> {
+                                                    onSelectAllApps()
+                                                    showMenu = false
+                                                }
+                                                LockActionOutcome.SHOW_LOCK_WARNING -> {
+                                                    showMenu = false
+                                                    onShowDisconnectWarning("Cannot modify app routing while VPN is active. Please disconnect first and try again.\n\nWould you like to disconnect now?")
+                                                }
+                                                LockActionOutcome.IGNORE_WHILE_DISCONNECTING -> {
+                                                    showMenu = false
+                                                }
+                                            }
+                                        }
+                                    )
+                                    androidx.compose.material3.DropdownMenuItem(
+                                        text = { Text("Deselect All", color = Color.White, fontFamily = SoraFamily) },
+                                        onClick = {
+                                            when (ConnectionLockGuard.evaluateControlTap(connectionState)) {
+                                                LockActionOutcome.ALLOW -> {
+                                                    onDeselectAllApps()
+                                                    showMenu = false
+                                                }
+                                                LockActionOutcome.SHOW_LOCK_WARNING -> {
+                                                    showMenu = false
+                                                    onShowDisconnectWarning("Cannot modify app routing while VPN is active. Please disconnect first and try again.\n\nWould you like to disconnect now?")
+                                                }
+                                                LockActionOutcome.IGNORE_WHILE_DISCONNECTING -> {
+                                                    showMenu = false
+                                                }
+                                            }
+                                        }
+                                    )
+                                }
+                            }
+                        }
+                    }
+
+                    HorizontalDivider(
+                        thickness = 1.dp,
+                        color = Color.White.copy(alpha = 0.07f)
+                    )
+                }
+
+                // Pending Reconnect Banner
+                androidx.compose.animation.AnimatedVisibility(
+                    visible = isPending,
+                    enter = androidx.compose.animation.fadeIn() + androidx.compose.animation.expandVertically(),
+                    exit = androidx.compose.animation.fadeOut() + androidx.compose.animation.shrinkVertically()
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp, vertical = 6.dp)
+                            .clip(RoundedCornerShape(14.dp))
+                            .background(Color(0xFFFFD700).copy(alpha = 0.12f))
+                            .border(1.dp, Color(0xFFFFD700).copy(alpha = 0.40f), RoundedCornerShape(14.dp))
+                            .padding(horizontal = 14.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Warning,
+                            contentDescription = null,
+                            tint = Color(0xFFFFD700),
+                            modifier = Modifier.size(18.dp)
                         )
+                        Spacer(modifier = Modifier.width(10.dp))
+                        Text(
+                            text = "Routing changes apply after reconnect",
+                            color = Color(0xFFFFD700),
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            fontFamily = SoraFamily,
+                            modifier = Modifier.weight(1f)
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Surface(
+                            shape = RoundedCornerShape(8.dp),
+                            color = PrimaryCyan.copy(alpha = 0.20f),
+                            border = BorderStroke(1.dp, PrimaryCyan.copy(alpha = 0.50f)),
+                            modifier = Modifier.clickable { onReconnect() }
+                        ) {
+                            Text(
+                                text = "RECONNECT",
+                                color = PrimaryCyan,
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Bold,
+                                fontFamily = SoraFamily,
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
+                            )
+                        }
+                    }
+                }
+
+                // Compact Glass Routing Control Card
+                Surface(
+                    shape = RoundedCornerShape(18.dp),
+                    color = Color(0xFF0F172A).copy(alpha = 0.85f),
+                    border = BorderStroke(1.dp, Color.White.copy(alpha = 0.09f)),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 6.dp)
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(16.dp)
+                    ) {
+                        // Row 1: Per-App VPN Master Switch
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Text(
+                                        text = "Per-App Routing",
+                                        color = Color.White,
+                                        fontSize = 15.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        fontFamily = SoraFamily
+                                    )
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Icon(
+                                        imageVector = Icons.Outlined.Info,
+                                        contentDescription = "Info",
+                                        tint = TextSecondary,
+                                        modifier = Modifier
+                                            .size(16.dp)
+                                            .clickable {
+                                                toastMessage = "Disable this option to have all apps use the VPN."
+                                            }
+                                    )
+                                }
+                                Spacer(modifier = Modifier.height(2.dp))
+                                Text(
+                                    text = if (isPerAppEnabled) "Selective application tunneling active" else "All apps route through VPN",
+                                    color = Color(0xFF94A3B8),
+                                    fontSize = 11.sp,
+                                    fontFamily = SoraFamily
+                                )
+                            }
+                            androidx.compose.material3.Switch(
+                                checked = isPerAppEnabled,
+                                onCheckedChange = {
+                                    when (ConnectionLockGuard.evaluateControlTap(connectionState)) {
+                                        LockActionOutcome.ALLOW -> if (!it) onDisablePerApp()
+                                        LockActionOutcome.SHOW_LOCK_WARNING -> {
+                                            onShowDisconnectWarning("Cannot modify Split Tunneling while VPN is active. Please disconnect first and try again.\n\nWould you like to disconnect now?")
+                                        }
+                                        LockActionOutcome.IGNORE_WHILE_DISCONNECTING -> Unit
+                                    }
+                                },
+                                colors = androidx.compose.material3.SwitchDefaults.colors(
+                                    checkedThumbColor = PrimaryCyan,
+                                    checkedTrackColor = PrimaryCyan.copy(alpha = 0.5f),
+                                    uncheckedThumbColor = TextSecondary,
+                                    uncheckedTrackColor = SurfaceDark
+                                )
+                            )
+                        }
+
+                        HorizontalDivider(
+                            color = Color.White.copy(alpha = 0.07f),
+                            modifier = Modifier.padding(vertical = 12.dp)
+                        )
+
+                        // Row 2: Segmented Routing Mode Selector (Two Glass Pills)
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            val isAllowSelected = !isBypassMode
+                            val allowPillBg = if (isAllowSelected) PrimaryCyan.copy(alpha = 0.18f) else Color.White.copy(alpha = 0.04f)
+                            val allowPillBorder = if (isAllowSelected) PrimaryCyan.copy(alpha = 0.55f) else Color.White.copy(alpha = 0.08f)
+                            val allowPillText = if (isAllowSelected) Color.White else Color(0xFF94A3B8)
+
+                            Surface(
+                                shape = RoundedCornerShape(10.dp),
+                                color = allowPillBg,
+                                border = BorderStroke(1.dp, allowPillBorder),
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .clickable {
+                                        if (isBypassMode) {
+                                            when (ConnectionLockGuard.evaluateControlTap(connectionState)) {
+                                                LockActionOutcome.ALLOW -> onBypassModeChange(false)
+                                                LockActionOutcome.SHOW_LOCK_WARNING -> {
+                                                    onShowDisconnectWarning("Cannot modify Split Tunneling while VPN is active. Please disconnect first and try again.\n\nWould you like to disconnect now?")
+                                                }
+                                                LockActionOutcome.IGNORE_WHILE_DISCONNECTING -> Unit
+                                            }
+                                        }
+                                    }
+                            ) {
+                                Box(
+                                    modifier = Modifier.padding(vertical = 10.dp),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Text(
+                                        text = "Allow Only",
+                                        color = allowPillText,
+                                        fontSize = 13.sp,
+                                        fontWeight = if (isAllowSelected) FontWeight.Bold else FontWeight.Medium,
+                                        fontFamily = SoraFamily
+                                    )
+                                }
+                            }
+
+                            val isBypassSelected = isBypassMode
+                            val bypassPillBg = if (isBypassSelected) PrimaryCyan.copy(alpha = 0.18f) else Color.White.copy(alpha = 0.04f)
+                            val bypassPillBorder = if (isBypassSelected) PrimaryCyan.copy(alpha = 0.55f) else Color.White.copy(alpha = 0.08f)
+                            val bypassPillText = if (isBypassSelected) Color.White else Color(0xFF94A3B8)
+
+                            Surface(
+                                shape = RoundedCornerShape(10.dp),
+                                color = bypassPillBg,
+                                border = BorderStroke(1.dp, bypassPillBorder),
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .clickable {
+                                        if (!isBypassMode) {
+                                            when (ConnectionLockGuard.evaluateControlTap(connectionState)) {
+                                                LockActionOutcome.ALLOW -> onBypassModeChange(true)
+                                                LockActionOutcome.SHOW_LOCK_WARNING -> {
+                                                    onShowDisconnectWarning("Cannot modify Split Tunneling while VPN is active. Please disconnect first and try again.\n\nWould you like to disconnect now?")
+                                                }
+                                                LockActionOutcome.IGNORE_WHILE_DISCONNECTING -> Unit
+                                            }
+                                        }
+                                    }
+                            ) {
+                                Box(
+                                    modifier = Modifier.padding(vertical = 10.dp),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Text(
+                                        text = "Bypass Selected",
+                                        color = bypassPillText,
+                                        fontSize = 13.sp,
+                                        fontWeight = if (isBypassSelected) FontWeight.Bold else FontWeight.Medium,
+                                        fontFamily = SoraFamily
+                                    )
+                                }
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.height(8.dp))
+
+                        // Concise 1-line helper caption underneath explaining the active mode cleanly
+                        Text(
+                            text = if (isBypassMode) {
+                                "Selected apps will bypass the VPN directly."
+                            } else {
+                                "Only selected apps will route through the VPN."
+                            },
+                            color = Color(0xFF94A3B8),
+                            fontSize = 11.sp,
+                            fontFamily = SoraFamily
+                        )
+
+                        // Subtle amber inline hint for fail-closed ALLOW mode when 0 apps selected
+                        if (isPerAppEnabled && !isBypassMode && selectedCount == 0) {
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .background(Color(0xFFFFD700).copy(alpha = 0.10f))
+                                    .padding(horizontal = 10.dp, vertical = 6.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Warning,
+                                    contentDescription = null,
+                                    tint = Color(0xFFFFD700),
+                                    modifier = Modifier.size(14.dp)
+                                )
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text(
+                                    text = "Select at least one app before connecting in Allow mode.",
+                                    color = Color(0xFFFFD700),
+                                    fontSize = 11.sp,
+                                    fontFamily = SoraFamily
+                                )
+                            }
+                        }
+                    }
+                }
+
+                // Glass Search Bar
+                Surface(
+                    shape = RoundedCornerShape(14.dp),
+                    color = Color(0xFF0F172A).copy(alpha = 0.90f),
+                    border = BorderStroke(1.dp, Color.White.copy(alpha = 0.10f)),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 6.dp)
+                ) {
+                    androidx.compose.foundation.text.BasicTextField(
+                        value = searchQuery,
+                        onValueChange = { searchQuery = it },
+                        textStyle = TextStyle(
+                            color = Color.White,
+                            fontSize = 14.sp,
+                            fontFamily = SoraFamily,
+                            textDirection = TextDirection.Ltr
+                        ),
+                        cursorBrush = androidx.compose.ui.graphics.SolidColor(PrimaryCyan),
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                        decorationBox = { innerTextField ->
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 14.dp, vertical = 12.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Search,
+                                    contentDescription = "Search",
+                                    tint = PrimaryCyan,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                                Spacer(modifier = Modifier.width(10.dp))
+                                Box(modifier = Modifier.weight(1f)) {
+                                    if (searchQuery.isEmpty()) {
+                                        Text(
+                                            text = "Search apps or package name...",
+                                            color = TextSecondary,
+                                            fontSize = 14.sp,
+                                            fontFamily = SoraFamily
+                                        )
+                                    }
+                                    innerTextField()
+                                }
+                                if (searchQuery.isNotEmpty()) {
+                                    Icon(
+                                        imageVector = Icons.Default.Close,
+                                        contentDescription = "Clear",
+                                        tint = TextSecondary,
+                                        modifier = Modifier
+                                            .size(20.dp)
+                                            .clickable { searchQuery = "" }
+                                    )
+                                }
+                            }
+                        }
+                    )
+                }
+
+                // Compact horizontal row of glass filter chips
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 4.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    // 1. All chip
+                    val isAllSelected = selectedFilter == SplitAppFilter.ALL
+                    Surface(
+                        shape = RoundedCornerShape(10.dp),
+                        color = if (isAllSelected) PrimaryCyan.copy(alpha = 0.18f) else Color(0xFF0F172A).copy(alpha = 0.80f),
+                        border = BorderStroke(1.dp, if (isAllSelected) PrimaryCyan.copy(alpha = 0.55f) else Color.White.copy(alpha = 0.08f)),
+                        modifier = Modifier.clickable { selectedFilter = SplitAppFilter.ALL }
+                    ) {
+                        Text(
+                            text = "All ($visibleAllCount)",
+                            color = if (isAllSelected) PrimaryCyan else Color(0xFF94A3B8),
+                            fontSize = 12.sp,
+                            fontWeight = if (isAllSelected) FontWeight.Bold else FontWeight.Medium,
+                            fontFamily = SoraFamily,
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp)
+                        )
+                    }
+
+                    // 2. Selected chip
+                    val isSelectedTab = selectedFilter == SplitAppFilter.SELECTED
+                    Surface(
+                        shape = RoundedCornerShape(10.dp),
+                        color = if (isSelectedTab) PrimaryCyan.copy(alpha = 0.18f) else Color(0xFF0F172A).copy(alpha = 0.80f),
+                        border = BorderStroke(1.dp, if (isSelectedTab) PrimaryCyan.copy(alpha = 0.55f) else Color.White.copy(alpha = 0.08f)),
+                        modifier = Modifier.clickable { selectedFilter = SplitAppFilter.SELECTED }
+                    ) {
+                        Text(
+                            text = "Selected ($selectedCount)",
+                            color = if (isSelectedTab) PrimaryCyan else Color(0xFF94A3B8),
+                            fontSize = 12.sp,
+                            fontWeight = if (isSelectedTab) FontWeight.Bold else FontWeight.Medium,
+                            fontFamily = SoraFamily,
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp)
+                        )
+                    }
+
+                    // 3. System toggle chip
+                    Surface(
+                        shape = RoundedCornerShape(10.dp),
+                        color = if (showSystemApps) PrimaryCyan.copy(alpha = 0.18f) else Color(0xFF0F172A).copy(alpha = 0.80f),
+                        border = BorderStroke(1.dp, if (showSystemApps) PrimaryCyan.copy(alpha = 0.55f) else Color.White.copy(alpha = 0.08f)),
+                        modifier = Modifier.clickable { showSystemApps = !showSystemApps }
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp)
+                        ) {
+                            Text(
+                                text = "System",
+                                color = if (showSystemApps) PrimaryCyan else Color(0xFF94A3B8),
+                                fontSize = 12.sp,
+                                fontWeight = if (showSystemApps) FontWeight.Bold else FontWeight.Medium,
+                                fontFamily = SoraFamily
+                            )
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(4.dp))
+
+                // App List or Empty/Loading State
+                if (apps.isEmpty()) {
+                    Box(
+                        modifier = Modifier
+                            .weight(1f)
+                            .fillMaxWidth()
+                            .padding(24.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Surface(
+                            shape = RoundedCornerShape(18.dp),
+                            color = Color(0xFF0F172A).copy(alpha = 0.85f),
+                            border = BorderStroke(1.dp, Color.White.copy(alpha = 0.10f)),
+                            modifier = Modifier.padding(16.dp)
+                        ) {
+                            Column(
+                                modifier = Modifier.padding(28.dp),
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                verticalArrangement = Arrangement.Center
+                            ) {
+                                CircularProgressIndicator(
+                                    color = PrimaryCyan,
+                                    strokeWidth = 3.dp,
+                                    modifier = Modifier.size(36.dp)
+                                )
+                                Spacer(modifier = Modifier.height(16.dp))
+                                Text(
+                                    text = "Loading installed apps...",
+                                    color = Color.White,
+                                    fontSize = 15.sp,
+                                    fontWeight = FontWeight.Medium,
+                                    fontFamily = SoraFamily
+                                )
+                            }
+                        }
+                    }
+                } else if (filteredApps.isEmpty()) {
+                    Box(
+                        modifier = Modifier
+                            .weight(1f)
+                            .fillMaxWidth()
+                            .padding(24.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Surface(
+                            shape = RoundedCornerShape(18.dp),
+                            color = Color(0xFF0F172A).copy(alpha = 0.85f),
+                            border = BorderStroke(1.dp, Color.White.copy(alpha = 0.10f)),
+                            modifier = Modifier.padding(16.dp)
+                        ) {
+                            Column(
+                                modifier = Modifier.padding(28.dp),
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                verticalArrangement = Arrangement.Center
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Search,
+                                    contentDescription = null,
+                                    tint = Color(0xFF94A3B8),
+                                    modifier = Modifier.size(40.dp)
+                                )
+                                Spacer(modifier = Modifier.height(12.dp))
+                                Text(
+                                    text = "No apps match your filter",
+                                    color = Color.White,
+                                    fontSize = 15.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    fontFamily = SoraFamily
+                                )
+                                Spacer(modifier = Modifier.height(6.dp))
+                                Text(
+                                    text = "Try adjusting your search query or filter selection.",
+                                    color = Color(0xFF94A3B8),
+                                    fontSize = 12.sp,
+                                    fontFamily = SoraFamily,
+                                    textAlign = TextAlign.Center
+                                )
+                                Spacer(modifier = Modifier.height(16.dp))
+                                Surface(
+                                    shape = RoundedCornerShape(10.dp),
+                                    color = PrimaryCyan.copy(alpha = 0.18f),
+                                    border = BorderStroke(1.dp, PrimaryCyan.copy(alpha = 0.50f)),
+                                    modifier = Modifier.clickable {
+                                        searchQuery = ""
+                                        selectedFilter = SplitAppFilter.ALL
+                                    }
+                                ) {
+                                    Text(
+                                        text = "Reset Filters",
+                                        color = PrimaryCyan,
+                                        fontSize = 13.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        fontFamily = SoraFamily,
+                                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
+                                    )
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    androidx.compose.foundation.lazy.LazyColumn(
+                        modifier = Modifier
+                            .weight(1f)
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp),
+                        contentPadding = PaddingValues(top = 6.dp, bottom = 28.dp),
+                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        items(filteredApps, key = { it.packageName }) { app ->
+                            val cardBg = if (app.isSelected) PrimaryCyan.copy(alpha = 0.12f) else Color(0xFF0F172A).copy(alpha = 0.78f)
+                            val cardBorder = if (app.isSelected) PrimaryCyan.copy(alpha = 0.45f) else Color.White.copy(alpha = 0.08f)
+
+                            Surface(
+                                shape = RoundedCornerShape(16.dp),
+                                color = cardBg,
+                                border = BorderStroke(1.dp, cardBorder),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable { handleAppToggle(app.packageName) }
+                            ) {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 14.dp, vertical = 12.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    AppIconThumbnail(
+                                        packageName = app.packageName,
+                                        iconDrawable = app.icon,
+                                        appName = app.appName
+                                    )
+
+                                    Spacer(modifier = Modifier.width(12.dp))
+
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Row(verticalAlignment = Alignment.CenterVertically) {
+                                            Text(
+                                                text = app.appName,
+                                                color = Color.White,
+                                                fontSize = 15.sp,
+                                                fontWeight = FontWeight.SemiBold,
+                                                fontFamily = SoraFamily,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis,
+                                                modifier = Modifier.weight(1f, fill = false)
+                                            )
+                                            if (app.isSystemApp) {
+                                                Spacer(modifier = Modifier.width(6.dp))
+                                                Surface(
+                                                    shape = RoundedCornerShape(4.dp),
+                                                    color = Color.White.copy(alpha = 0.08f),
+                                                    border = BorderStroke(1.dp, Color.White.copy(alpha = 0.15f))
+                                                ) {
+                                                    Text(
+                                                        text = "System",
+                                                        color = Color(0xFF94A3B8),
+                                                        fontSize = 10.sp,
+                                                        fontWeight = FontWeight.Medium,
+                                                        fontFamily = SoraFamily,
+                                                        modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.dp)
+                                                    )
+                                                }
+                                            }
+                                        }
+                                        Spacer(modifier = Modifier.height(2.dp))
+                                        Text(
+                                            text = app.packageName,
+                                            color = Color(0xFF94A3B8),
+                                            fontSize = 11.sp,
+                                            fontFamily = SoraFamily,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                    }
+
+                                    Spacer(modifier = Modifier.width(8.dp))
+
+                                    androidx.compose.material3.Checkbox(
+                                        checked = app.isSelected,
+                                        onCheckedChange = { handleAppToggle(app.packageName) },
+                                        colors = androidx.compose.material3.CheckboxDefaults.colors(
+                                            checkedColor = PrimaryCyan,
+                                            checkmarkColor = BackgroundDark,
+                                            uncheckedColor = TextSecondary
+                                        )
+                                    )
+                                }
+                            }
+                        }
                     }
                 }
             }
+
+            CustomGlassToast(message = toastMessage, modifier = Modifier.align(Alignment.BottomCenter))
         }
-        CustomGlassToast(message = toastMessage, modifier = Modifier.align(Alignment.BottomCenter))
     }
 }
 
