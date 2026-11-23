@@ -323,11 +323,52 @@ fun AnyConnectSettingsFullScreen(
     var dpdTimeout by remember { mutableStateOf(settings.getOpenConnectDpdTimeout().toString()) }
     var fallbackDns by remember { mutableStateOf(settings.getOpenConnectFallbackDns()) }
 
+    val initialSnapshot = remember {
+        AnyConnectSettingsSnapshot.create(
+            dtlsEnabled = settings.isOpenConnectDtlsEnabled(),
+            mtu = settings.getOpenConnectMtu().toString(),
+            dpdTimeout = settings.getOpenConnectDpdTimeout().toString(),
+            fallbackDns = settings.getOpenConnectFallbackDns()
+        )
+    }
+    val currentSnapshot = AnyConnectSettingsSnapshot.create(
+        dtlsEnabled = dtlsEnabled,
+        mtu = mtu,
+        dpdTimeout = dpdTimeout,
+        fallbackDns = fallbackDns
+    )
+    val hasUnsavedChanges = currentSnapshot != initialSnapshot
+    var showUnsavedDialog by remember { mutableStateOf(false) }
+
+    val attemptSave: () -> Unit = {
+        when (ConnectionLockGuard.evaluateControlTap(connectionState)) {
+            LockActionOutcome.ALLOW -> {
+                settings.setOpenConnectDtlsEnabled(dtlsEnabled)
+                settings.setOpenConnectMtu(mtu.toIntOrNull() ?: 1400)
+                settings.setOpenConnectDpdTimeout(dpdTimeout.toIntOrNull() ?: 300)
+                settings.setOpenConnectFallbackDns(fallbackDns.trim().ifBlank { "8.8.8.8" })
+                viewModel.notifySettingsSaved("AnyConnect Settings")
+                onDismiss()
+            }
+            LockActionOutcome.SHOW_LOCK_WARNING -> {
+                onShowConnectionWarning("Cannot modify settings while VPN is connected. Please disconnect your active connection and try again.\n\nWould you like to disconnect now?")
+            }
+            LockActionOutcome.IGNORE_WHILE_DISCONNECTING -> Unit
+        }
+    }
+
+    val handleExitRequest: () -> Unit = {
+        when (resolveSettingsExit(hasUnsavedChanges)) {
+            SettingsExitDecision.EXIT_IMMEDIATELY -> onDismiss()
+            SettingsExitDecision.PROMPT_UNSAVED_CHANGES -> showUnsavedDialog = true
+        }
+    }
+
     SettingsFullScreenScaffold(
         title = "AnyConnect Settings",
         subtitle = "OpenConnect SSL/TLS & DTLS transport",
         iconRes = R.drawable.ic_openconnect,
-        onBack = onDismiss,
+        onBack = handleExitRequest,
         bottomBar = {
             SettingsActionFooter(
                 onReset = {
@@ -336,23 +377,8 @@ fun AnyConnectSettingsFullScreen(
                     dpdTimeout = "300"
                     fallbackDns = "8.8.8.8"
                 },
-                onCancel = onDismiss,
-                onSave = {
-                    when (ConnectionLockGuard.evaluateControlTap(connectionState)) {
-                        LockActionOutcome.ALLOW -> {
-                            settings.setOpenConnectDtlsEnabled(dtlsEnabled)
-                            settings.setOpenConnectMtu(mtu.toIntOrNull() ?: 1400)
-                            settings.setOpenConnectDpdTimeout(dpdTimeout.toIntOrNull() ?: 300)
-                            settings.setOpenConnectFallbackDns(fallbackDns.trim().ifBlank { "8.8.8.8" })
-                            viewModel.notifySettingsSaved("AnyConnect Settings")
-                            onDismiss()
-                        }
-                        LockActionOutcome.SHOW_LOCK_WARNING -> {
-                            onShowConnectionWarning("Cannot modify settings while VPN is connected. Please disconnect your active connection and try again.\n\nWould you like to disconnect now?")
-                        }
-                        LockActionOutcome.IGNORE_WHILE_DISCONNECTING -> Unit
-                    }
-                }
+                onCancel = handleExitRequest,
+                onSave = attemptSave
             )
         }
     ) {
@@ -424,6 +450,23 @@ fun AnyConnectSettingsFullScreen(
             )
         }
     }
+
+    if (showUnsavedDialog) {
+        SettingsUnsavedChangesDialog(
+            accentColor = PrimaryCyan,
+            onSave = {
+                showUnsavedDialog = false
+                attemptSave()
+            },
+            onDiscard = {
+                showUnsavedDialog = false
+                onDismiss()
+            },
+            onCancel = {
+                showUnsavedDialog = false
+            }
+        )
+    }
 }
 
 @Composable
@@ -451,11 +494,52 @@ fun WireGuardSettingsFullScreen(
     var tunnelDns by remember { mutableStateOf(settings.getWireGuardTunnelDns()) }
     var bootstrapResolve by remember { mutableStateOf(settings.isWireGuardBootstrapResolveEnabled()) }
 
+    val initialSnapshot = remember {
+        WireGuardSettingsSnapshot.create(
+            mtuOverride = settings.getWireGuardMtuOverride().toString(),
+            keepaliveOverride = settings.getWireGuardKeepAliveOverride().toString(),
+            tunnelDns = settings.getWireGuardTunnelDns(),
+            bootstrapResolve = settings.isWireGuardBootstrapResolveEnabled()
+        )
+    }
+    val currentSnapshot = WireGuardSettingsSnapshot.create(
+        mtuOverride = mtuOverride,
+        keepaliveOverride = keepaliveOverride,
+        tunnelDns = tunnelDns,
+        bootstrapResolve = bootstrapResolve
+    )
+    val hasUnsavedChanges = currentSnapshot != initialSnapshot
+    var showUnsavedDialog by remember { mutableStateOf(false) }
+
+    val attemptSave: () -> Unit = {
+        when (ConnectionLockGuard.evaluateControlTap(connectionState)) {
+            LockActionOutcome.ALLOW -> {
+                settings.setWireGuardMtuOverride(mtuOverride.toIntOrNull() ?: 0)
+                settings.setWireGuardKeepAliveOverride(keepaliveOverride.toIntOrNull() ?: -1)
+                settings.setWireGuardTunnelDns(tunnelDns.trim().ifBlank { "9.9.9.9" })
+                settings.setWireGuardBootstrapResolveEnabled(bootstrapResolve)
+                viewModel.notifySettingsSaved("WireGuard Settings")
+                onDismiss()
+            }
+            LockActionOutcome.SHOW_LOCK_WARNING -> {
+                onShowConnectionWarning("Cannot modify settings while VPN is connected. Please disconnect your active connection and try again.\n\nWould you like to disconnect now?")
+            }
+            LockActionOutcome.IGNORE_WHILE_DISCONNECTING -> Unit
+        }
+    }
+
+    val handleExitRequest: () -> Unit = {
+        when (resolveSettingsExit(hasUnsavedChanges)) {
+            SettingsExitDecision.EXIT_IMMEDIATELY -> onDismiss()
+            SettingsExitDecision.PROMPT_UNSAVED_CHANGES -> showUnsavedDialog = true
+        }
+    }
+
     SettingsFullScreenScaffold(
         title = "WireGuard Settings",
         subtitle = "User-space gVisor outbound overrides",
         iconRes = R.drawable.ic_wireguard,
-        onBack = onDismiss,
+        onBack = handleExitRequest,
         bottomBar = {
             SettingsActionFooter(
                 onReset = {
@@ -464,23 +548,8 @@ fun WireGuardSettingsFullScreen(
                     tunnelDns = "9.9.9.9"
                     bootstrapResolve = true
                 },
-                onCancel = onDismiss,
-                onSave = {
-                    when (ConnectionLockGuard.evaluateControlTap(connectionState)) {
-                        LockActionOutcome.ALLOW -> {
-                            settings.setWireGuardMtuOverride(mtuOverride.toIntOrNull() ?: 0)
-                            settings.setWireGuardKeepAliveOverride(keepaliveOverride.toIntOrNull() ?: -1)
-                            settings.setWireGuardTunnelDns(tunnelDns.trim().ifBlank { "9.9.9.9" })
-                            settings.setWireGuardBootstrapResolveEnabled(bootstrapResolve)
-                            viewModel.notifySettingsSaved("WireGuard Settings")
-                            onDismiss()
-                        }
-                        LockActionOutcome.SHOW_LOCK_WARNING -> {
-                            onShowConnectionWarning("Cannot modify settings while VPN is connected. Please disconnect your active connection and try again.\n\nWould you like to disconnect now?")
-                        }
-                        LockActionOutcome.IGNORE_WHILE_DISCONNECTING -> Unit
-                    }
-                }
+                onCancel = handleExitRequest,
+                onSave = attemptSave
             )
         }
     ) {
@@ -555,6 +624,23 @@ fun WireGuardSettingsFullScreen(
             )
         }
     }
+
+    if (showUnsavedDialog) {
+        SettingsUnsavedChangesDialog(
+            accentColor = PrimaryCyan,
+            onSave = {
+                showUnsavedDialog = false
+                attemptSave()
+            },
+            onDiscard = {
+                showUnsavedDialog = false
+                onDismiss()
+            },
+            onCancel = {
+                showUnsavedDialog = false
+            }
+        )
+    }
 }
 
 @Composable
@@ -586,11 +672,64 @@ fun V2raySettingsFullScreen(
     var muxConcurrency by remember { mutableStateOf(settings.getV2rayMuxConcurrency().toString()) }
     var muxQuicPolicy by remember { mutableStateOf(settings.getV2rayMuxQuicPolicy()) }
 
+    val initialSnapshot = remember {
+        V2raySettingsSnapshot.create(
+            vpnDns = settings.getV2rayVpnDns(),
+            remoteDns = settings.getV2rayRemoteDns(),
+            domesticDns = settings.getV2rayDomesticDns(),
+            sniffingEnabled = settings.isV2raySniffingEnabled(),
+            bypassLan = settings.isV2rayBypassLanEnabled(),
+            muxEnabled = settings.isV2rayMuxEnabled(),
+            muxConcurrency = settings.getV2rayMuxConcurrency().toString(),
+            muxQuicPolicy = settings.getV2rayMuxQuicPolicy()
+        )
+    }
+    val currentSnapshot = V2raySettingsSnapshot.create(
+        vpnDns = vpnDns,
+        remoteDns = remoteDns,
+        domesticDns = domesticDns,
+        sniffingEnabled = sniffingEnabled,
+        bypassLan = bypassLan,
+        muxEnabled = muxEnabled,
+        muxConcurrency = muxConcurrency,
+        muxQuicPolicy = muxQuicPolicy
+    )
+    val hasUnsavedChanges = currentSnapshot != initialSnapshot
+    var showUnsavedDialog by remember { mutableStateOf(false) }
+
+    val attemptSave: () -> Unit = {
+        when (ConnectionLockGuard.evaluateControlTap(connectionState)) {
+            LockActionOutcome.ALLOW -> {
+                settings.setV2rayVpnDns(vpnDns.trim().ifBlank { V2raySettings.DEFAULT_VPN_DNS })
+                settings.setV2rayRemoteDns(remoteDns.trim().ifBlank { V2raySettings.DEFAULT_REMOTE_DNS })
+                settings.setV2rayDomesticDns(domesticDns.trim().ifBlank { V2raySettings.DEFAULT_DOMESTIC_DNS })
+                settings.setV2raySniffingEnabled(sniffingEnabled)
+                settings.setV2rayBypassLanEnabled(bypassLan)
+                settings.setV2rayMuxEnabled(muxEnabled)
+                settings.setV2rayMuxConcurrency(muxConcurrency.toIntOrNull()?.coerceIn(1, 64) ?: 10)
+                settings.setV2rayMuxQuicPolicy(muxQuicPolicy)
+                viewModel.notifySettingsSaved("v2rayNG Settings")
+                onDismiss()
+            }
+            LockActionOutcome.SHOW_LOCK_WARNING -> {
+                onShowConnectionWarning("Cannot modify settings while VPN is connected. Please disconnect your active connection and try again.\n\nWould you like to disconnect now?")
+            }
+            LockActionOutcome.IGNORE_WHILE_DISCONNECTING -> Unit
+        }
+    }
+
+    val handleExitRequest: () -> Unit = {
+        when (resolveSettingsExit(hasUnsavedChanges)) {
+            SettingsExitDecision.EXIT_IMMEDIATELY -> onDismiss()
+            SettingsExitDecision.PROMPT_UNSAVED_CHANGES -> showUnsavedDialog = true
+        }
+    }
+
     SettingsFullScreenScaffold(
         title = "v2rayNG Settings",
         subtitle = "Xray-core DNS, routing & multiplexing",
         iconRes = R.drawable.ic_v2rayng,
-        onBack = onDismiss,
+        onBack = handleExitRequest,
         bottomBar = {
             SettingsActionFooter(
                 onReset = {
@@ -603,27 +742,8 @@ fun V2raySettingsFullScreen(
                     muxConcurrency = "10"
                     muxQuicPolicy = "reject"
                 },
-                onCancel = onDismiss,
-                onSave = {
-                    when (ConnectionLockGuard.evaluateControlTap(connectionState)) {
-                        LockActionOutcome.ALLOW -> {
-                            settings.setV2rayVpnDns(vpnDns.trim().ifBlank { V2raySettings.DEFAULT_VPN_DNS })
-                            settings.setV2rayRemoteDns(remoteDns.trim().ifBlank { V2raySettings.DEFAULT_REMOTE_DNS })
-                            settings.setV2rayDomesticDns(domesticDns.trim().ifBlank { V2raySettings.DEFAULT_DOMESTIC_DNS })
-                            settings.setV2raySniffingEnabled(sniffingEnabled)
-                            settings.setV2rayBypassLanEnabled(bypassLan)
-                            settings.setV2rayMuxEnabled(muxEnabled)
-                            settings.setV2rayMuxConcurrency(muxConcurrency.toIntOrNull()?.coerceIn(1, 64) ?: 10)
-                            settings.setV2rayMuxQuicPolicy(muxQuicPolicy)
-                            viewModel.notifySettingsSaved("v2rayNG Settings")
-                            onDismiss()
-                        }
-                        LockActionOutcome.SHOW_LOCK_WARNING -> {
-                            onShowConnectionWarning("Cannot modify settings while VPN is connected. Please disconnect your active connection and try again.\n\nWould you like to disconnect now?")
-                        }
-                        LockActionOutcome.IGNORE_WHILE_DISCONNECTING -> Unit
-                    }
-                }
+                onCancel = handleExitRequest,
+                onSave = attemptSave
             )
         }
     ) {
@@ -790,6 +910,23 @@ fun V2raySettingsFullScreen(
             }
         }
     }
+
+    if (showUnsavedDialog) {
+        SettingsUnsavedChangesDialog(
+            accentColor = PrimaryCyan,
+            onSave = {
+                showUnsavedDialog = false
+                attemptSave()
+            },
+            onDiscard = {
+                showUnsavedDialog = false
+                onDismiss()
+            },
+            onCancel = {
+                showUnsavedDialog = false
+            }
+        )
+    }
 }
 
 // =========================================================================
@@ -885,6 +1022,53 @@ fun FeaturesFullScreen(
     var detectedIp by remember { mutableStateOf(detectHotspotOrLanIp()) }
     var localToastMessage by remember { mutableStateOf<String?>(null) }
 
+    val initialSnapshot = remember {
+        FeaturesSettingsSnapshot.create(
+            connectivityCheck = settings.isConnectivityCheckEnabled(),
+            pingUrl = settings.getPingTestUrl(),
+            subUa = settings.getSubUserAgent(),
+            strictRedaction = settings.isStrictLogRedactionEnabled(),
+            bypassedDomains = settings.getBypassedDomains(),
+            allowLanHotspot = settings.isAllowLanHotspotEnabled()
+        )
+    }
+    val currentSnapshot = FeaturesSettingsSnapshot.create(
+        connectivityCheck = connectivityCheck,
+        pingUrl = pingUrl,
+        subUa = subUa,
+        strictRedaction = strictRedaction,
+        bypassedDomains = bypassedDomains,
+        allowLanHotspot = allowLanHotspot
+    )
+    val hasUnsavedChanges = currentSnapshot != initialSnapshot
+    var showUnsavedDialog by remember { mutableStateOf(false) }
+
+    val attemptSave: () -> Unit = {
+        when (ConnectionLockGuard.evaluateControlTap(connectionState)) {
+            LockActionOutcome.ALLOW -> {
+                settings.setConnectivityCheckEnabled(connectivityCheck)
+                settings.setPingTestUrl(pingUrl.trim().ifBlank { "https://www.google.com/generate_204" })
+                settings.setSubUserAgent(subUa.trim().ifBlank { "v2rayNG/1.8.23" })
+                settings.setStrictLogRedactionEnabled(strictRedaction)
+                settings.setBypassedDomains(bypassedDomains)
+                settings.setAllowLanHotspotEnabled(allowLanHotspot)
+                viewModel.notifySettingsSaved("Features")
+                onDismiss()
+            }
+            LockActionOutcome.SHOW_LOCK_WARNING -> {
+                onShowConnectionWarning("Cannot modify settings while VPN is connected. Please disconnect your active connection and try again.\n\nWould you like to disconnect now?")
+            }
+            LockActionOutcome.IGNORE_WHILE_DISCONNECTING -> Unit
+        }
+    }
+
+    val handleExitRequest: () -> Unit = {
+        when (resolveSettingsExit(hasUnsavedChanges)) {
+            SettingsExitDecision.EXIT_IMMEDIATELY -> onDismiss()
+            SettingsExitDecision.PROMPT_UNSAVED_CHANGES -> showUnsavedDialog = true
+        }
+    }
+
     LaunchedEffect(localToastMessage) {
         if (localToastMessage != null) {
             delay(2500L)
@@ -903,9 +1087,9 @@ fun FeaturesFullScreen(
 
     SettingsFullScreenScaffold(
         title = "Features & Diagnostics",
-        subtitle = "Domain bypass, LAN sharing, privacy & backup",
+        subtitle = "Domain bypass, LAN, privacy & backup",
         iconVector = Icons.Default.Tune,
-        onBack = onDismiss,
+        onBack = handleExitRequest,
         toastMessage = localToastMessage,
         bottomBar = {
             SettingsActionFooter(
@@ -925,25 +1109,8 @@ fun FeaturesFullScreen(
                         LockActionOutcome.IGNORE_WHILE_DISCONNECTING -> Unit
                     }
                 },
-                onCancel = onDismiss,
-                onSave = {
-                    when (ConnectionLockGuard.evaluateControlTap(connectionState)) {
-                        LockActionOutcome.ALLOW -> {
-                            settings.setConnectivityCheckEnabled(connectivityCheck)
-                            settings.setPingTestUrl(pingUrl.trim().ifBlank { "https://www.google.com/generate_204" })
-                            settings.setSubUserAgent(subUa.trim().ifBlank { "v2rayNG/1.8.23" })
-                            settings.setStrictLogRedactionEnabled(strictRedaction)
-                            settings.setBypassedDomains(bypassedDomains)
-                            settings.setAllowLanHotspotEnabled(allowLanHotspot)
-                            viewModel.notifySettingsSaved("Features")
-                            onDismiss()
-                        }
-                        LockActionOutcome.SHOW_LOCK_WARNING -> {
-                            onShowConnectionWarning("Cannot modify settings while VPN is connected. Please disconnect your active connection and try again.\n\nWould you like to disconnect now?")
-                        }
-                        LockActionOutcome.IGNORE_WHILE_DISCONNECTING -> Unit
-                    }
-                }
+                onCancel = handleExitRequest,
+                onSave = attemptSave
             )
         }
     ) {
@@ -1607,6 +1774,23 @@ fun FeaturesFullScreen(
             }
         )
     }
+
+    if (showUnsavedDialog) {
+        SettingsUnsavedChangesDialog(
+            accentColor = PrimaryCyan,
+            onSave = {
+                showUnsavedDialog = false
+                attemptSave()
+            },
+            onDiscard = {
+                showUnsavedDialog = false
+                onDismiss()
+            },
+            onCancel = {
+                showUnsavedDialog = false
+            }
+        )
+    }
 }
 
 // =========================================================================
@@ -1653,7 +1837,7 @@ fun CheckForUpdateFullScreen(
 
     SettingsFullScreenScaffold(
         title = "Check for Update",
-        subtitle = "Installed build & native binary diagnostics",
+        subtitle = "Build info & native core diagnostics",
         iconVector = Icons.Default.SystemUpdateAlt,
         onBack = onDismiss,
         bottomBar = {

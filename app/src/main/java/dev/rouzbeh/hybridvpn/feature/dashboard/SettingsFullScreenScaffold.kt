@@ -65,6 +65,8 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import dev.rouzbeh.hybridvpn.core.designsystem.BackgroundDark
 import dev.rouzbeh.hybridvpn.core.designsystem.PrimaryCyan
 
@@ -230,7 +232,7 @@ private fun SettingsTopHeaderBar(
                 )
             }
 
-            Spacer(modifier = Modifier.width(14.dp))
+            Spacer(modifier = Modifier.width(12.dp))
 
             // Title & Subtitle
             Column(
@@ -239,10 +241,11 @@ private fun SettingsTopHeaderBar(
                 Text(
                     text = title,
                     color = Color.White,
-                    fontSize = 19.sp,
+                    fontSize = 18.sp,
+                    lineHeight = 22.sp,
                     fontWeight = FontWeight.Bold,
                     fontFamily = SoraFamily,
-                    maxLines = 1,
+                    maxLines = 2,
                     overflow = TextOverflow.Ellipsis
                 )
                 if (subtitle != null) {
@@ -251,8 +254,9 @@ private fun SettingsTopHeaderBar(
                         text = subtitle,
                         color = Color(0xFF94A3B8),
                         fontSize = 12.sp,
+                        lineHeight = 16.sp,
                         fontFamily = SoraFamily,
-                        maxLines = 1,
+                        maxLines = 2,
                         overflow = TextOverflow.Ellipsis
                     )
                 }
@@ -260,10 +264,10 @@ private fun SettingsTopHeaderBar(
 
             // Optional trailing protocol/feature badge
             if (iconRes != null || iconVector != null) {
-                Spacer(modifier = Modifier.width(10.dp))
+                Spacer(modifier = Modifier.width(8.dp))
                 Box(
                     modifier = Modifier
-                        .size(38.dp)
+                        .size(36.dp)
                         .clip(RoundedCornerShape(12.dp))
                         .background(accentColor.copy(alpha = 0.12f))
                         .border(1.dp, accentColor.copy(alpha = 0.28f), RoundedCornerShape(12.dp)),
@@ -603,5 +607,149 @@ fun SettingsInfoBanner(
             fontFamily = SoraFamily,
             lineHeight = 17.sp
         )
+    }
+}
+
+/**
+ * Reusable dark cyberpunk glass dialog prompting the user when unsaved settings exist.
+ */
+@Composable
+fun SettingsUnsavedChangesDialog(
+    accentColor: Color = PrimaryCyan,
+    onSave: () -> Unit,
+    onDiscard: () -> Unit,
+    onCancel: () -> Unit
+) {
+    Dialog(
+        onDismissRequest = onCancel,
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 24.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(24.dp))
+                        .background(Color(0xFF0F172A))
+                        .border(1.dp, Color.White.copy(alpha = 0.10f), RoundedCornerShape(24.dp))
+                        .padding(24.dp)
+                ) {
+                    Column(
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(40.dp)
+                                    .clip(RoundedCornerShape(12.dp))
+                                    .background(accentColor.copy(alpha = 0.15f))
+                                    .border(1.dp, accentColor.copy(alpha = 0.35f), RoundedCornerShape(12.dp)),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Info,
+                                    contentDescription = null,
+                                    tint = accentColor,
+                                    modifier = Modifier.size(22.dp)
+                                )
+                            }
+                            Spacer(modifier = Modifier.width(14.dp))
+                            Text(
+                                text = "Unsaved Changes",
+                                color = Color.White,
+                                fontSize = 18.sp,
+                                fontWeight = FontWeight.Bold,
+                                fontFamily = SoraFamily
+                            )
+                        }
+
+                        Spacer(modifier = Modifier.height(14.dp))
+
+                        Text(
+                            text = "You have unsaved changes. Save them before leaving?",
+                            color = Color(0xFF94A3B8),
+                            fontSize = 14.sp,
+                            fontFamily = SoraFamily,
+                            lineHeight = 20.sp
+                        )
+
+                        Spacer(modifier = Modifier.height(24.dp))
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            OutlinedButton(
+                                onClick = onCancel,
+                                colors = ButtonDefaults.outlinedButtonColors(
+                                    contentColor = Color(0xFF94A3B8)
+                                ),
+                                border = BorderStroke(1.dp, Color.White.copy(alpha = 0.12f)),
+                                shape = RoundedCornerShape(12.dp),
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .height(44.dp),
+                                contentPadding = PaddingValues(horizontal = 8.dp)
+                            ) {
+                                Text(
+                                    text = "Cancel",
+                                    fontSize = 13.sp,
+                                    fontWeight = FontWeight.Medium,
+                                    fontFamily = SoraFamily
+                                )
+                            }
+
+                            Button(
+                                onClick = onDiscard,
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = Color(0xFFEF4444).copy(alpha = 0.15f),
+                                    contentColor = Color(0xFFFCA5A5)
+                                ),
+                                border = BorderStroke(1.dp, Color(0xFFEF4444).copy(alpha = 0.30f)),
+                                shape = RoundedCornerShape(12.dp),
+                                modifier = Modifier
+                                    .weight(1.1f)
+                                    .height(44.dp),
+                                contentPadding = PaddingValues(horizontal = 8.dp)
+                            ) {
+                                Text(
+                                    text = "Discard",
+                                    color = Color(0xFFFCA5A5),
+                                    fontSize = 13.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    fontFamily = SoraFamily
+                                )
+                            }
+
+                            Button(
+                                onClick = onSave,
+                                colors = ButtonDefaults.buttonColors(containerColor = accentColor),
+                                shape = RoundedCornerShape(12.dp),
+                                modifier = Modifier
+                                    .weight(1.1f)
+                                    .height(44.dp),
+                                contentPadding = PaddingValues(horizontal = 8.dp)
+                            ) {
+                                Text(
+                                    text = "Save",
+                                    color = BackgroundDark,
+                                    fontSize = 13.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    fontFamily = SoraFamily
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 }
