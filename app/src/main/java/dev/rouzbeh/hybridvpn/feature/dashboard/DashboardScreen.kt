@@ -17,9 +17,12 @@ import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.togetherWith
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.rememberScrollState
@@ -98,6 +101,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
@@ -1773,6 +1777,7 @@ fun ServerItemCard(
 
     val protocolIcon = when (profile.protocol) {
         "v2rayNG" -> R.drawable.ic_v2rayng // Ensure this exists
+        "WireGuard" -> R.drawable.ic_wireguard
         else -> R.drawable.ic_openconnect
     }
 
@@ -1986,6 +1991,7 @@ fun ServerItemCard(
                                 profile.serverAddress.substringBefore("://").uppercase()
                             }
                         }
+                        "WireGuard" -> ServerCardDisplay.formatWireGuardSubtitle(profile.serverAddress)
                         else -> profile.serverAddress
                     }
                 }
@@ -4510,6 +4516,7 @@ fun CustomGlassToast(message: String?, modifier: Modifier = Modifier) {
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun ServerListFullScreen(
     protocol: String,
@@ -4690,7 +4697,7 @@ fun ServerListFullScreen(
                         val subtitleText = when (protocol) {
                             "v2rayNG" -> {
                                 val activeTabName = if (selectedTab == "SingleLinks") "SingleLinks"
-                                    else subGroups[selectedTab]?.firstOrNull()?.subName?.takeIf { it.isNotBlank() } ?: "SubLink"
+                                    else subGroups[selectedTab]?.firstOrNull()?.subName?.takeIf { it.isNotBlank() } ?: "SubLink ${subKeys.indexOf(selectedTab).coerceAtLeast(0) + 1}"
                                 val serverCount = displayServers.count { !isSubscriptionInfoName(it.name) }
                                 val s = if (serverCount == 1) "server" else "servers"
                                 "$serverCount $s in $activeTabName"
@@ -4966,28 +4973,33 @@ fun ServerListFullScreen(
                         else subGroups[tabKey]?.firstOrNull()?.subName?.takeIf { it.isNotBlank() } ?: "SubLink ${subKeys.indexOf(tabKey) + 1}"
                     val isTabPinging = v2rayPingTabs.contains(tabKey)
                     val isSelected = selectedTab == tabKey
-                    val capsuleBg = if (isSelected) accentColor.copy(alpha = 0.16f) else Color.White.copy(alpha = 0.04f)
-                    val capsuleBorder = if (isSelected) accentColor.copy(alpha = 0.50f) else Color.White.copy(alpha = 0.08f)
+                    val capsuleBg by animateColorAsState(
+                        targetValue = if (isSelected) accentColor.copy(alpha = 0.16f) else Color.White.copy(alpha = 0.05f),
+                        label = "tab_capsule_bg"
+                    )
+                    val capsuleBorderColor by animateColorAsState(
+                        targetValue = if (isSelected) accentColor.copy(alpha = 0.60f) else Color.White.copy(alpha = 0.12f),
+                        label = "tab_capsule_border"
+                    )
                     val textColor = if (isSelected) Color.White else Color(0xFF94A3B8)
                     val textWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Normal
 
                     Box {
-                        Box(
-                            modifier = Modifier
-                                .clip(RoundedCornerShape(12.dp))
-                                .background(capsuleBg)
-                                .border(1.dp, capsuleBorder, RoundedCornerShape(12.dp))
-                                .bounceClick(
-                                    onLongClick = {
-                                        onSelectV2rayTab(tabKey)
-                                        expandedTabMenu = tabKey
-                                    }
-                                ) {
-                                    onSelectV2rayTab(tabKey)
-                                }
-                                .padding(horizontal = 14.dp, vertical = 8.dp)
+                        Surface(
+                            shape = RoundedCornerShape(12.dp),
+                            color = capsuleBg,
+                            border = BorderStroke(1.dp, capsuleBorderColor)
                         ) {
                             Row(
+                                modifier = Modifier
+                                    .combinedClickable(
+                                        onClick = { onSelectV2rayTab(tabKey) },
+                                        onLongClick = {
+                                            onSelectV2rayTab(tabKey)
+                                            expandedTabMenu = tabKey
+                                        }
+                                    )
+                                    .padding(horizontal = 14.dp, vertical = 8.dp),
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.spacedBy(6.dp)
                             ) {
@@ -5162,6 +5174,7 @@ fun ServerListFullScreen(
 
         androidx.compose.foundation.lazy.LazyColumn(
             modifier = Modifier.fillMaxSize().padding(horizontal = 16.dp),
+            contentPadding = PaddingValues(top = if (protocol == "v2rayNG") 4.dp else 14.dp, bottom = 24.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             if (visibleServers.isEmpty()) {
@@ -5257,7 +5270,6 @@ fun ServerListFullScreen(
                     isExternalPinging = v2rayPingingProfileIds.contains(profile.id)
                 )
             }
-            item { Spacer(modifier = Modifier.height(24.dp)) }
         }
     }
 

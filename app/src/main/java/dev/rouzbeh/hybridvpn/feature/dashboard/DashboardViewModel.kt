@@ -745,10 +745,83 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
                     parseIpResponse(url, body)
                 }
             }
+        } catch (ce: CancellationException) {
+            try { call.cancel() } catch (_: Throwable) {}
+            throw ce
         } catch (_: Throwable) {
             try { call.cancel() } catch (_: Throwable) {}
             null
         }
+    }
+
+    private suspend fun lookupPublicIpWithConsensus(
+        client: okhttp3.OkHttpClient,
+        rejectCandidate: (GeoIpResult) -> Boolean = { false }
+    ): GeoIpResult? = coroutineScope {
+        val primaryDeferred = GeoIpLookup.PRIMARY_PUBLIC_IP_ENDPOINTS.map { url ->
+            async(Dispatchers.IO) {
+                withTimeoutOrNull(3500L) {
+                    executeIpLookupRequest(client, url)
+                }
+            }
+        }
+        val primaryResults = primaryDeferred.awaitAll()
+            .filterNotNull()
+            .filterNot { rejectCandidate(it) }
+
+        val primaryIpv4 = primaryResults.filter { isValidIpv4(it.ip) }
+        val ipv6Candidates = primaryResults.filter { it.ip.contains(':') }.toMutableList()
+
+        if (primaryIpv4.size == 2) {
+            val code0 = primaryIpv4[0].countryCode.trim().lowercase(java.util.Locale.US)
+            val code1 = primaryIpv4[1].countryCode.trim().lowercase(java.util.Locale.US)
+            val hasValidCode0 = code0.length == 2 && code0 != "un" && code0 != "xx"
+            val hasValidCode1 = code1.length == 2 && code1 != "un" && code1 != "xx"
+
+            if (hasValidCode0 && hasValidCode1 && code0 == code1) {
+                return@coroutineScope GeoIpLookup.selectConsensusResult(primaryIpv4)
+            }
+
+            var tieBreaker: GeoIpResult? = null
+            for (fallbackUrl in GeoIpLookup.FALLBACK_PUBLIC_IP_ENDPOINTS) {
+                val candidate = withTimeoutOrNull(3500L) {
+                    executeIpLookupRequest(client, fallbackUrl)
+                }
+                if (candidate != null && !rejectCandidate(candidate)) {
+                    if (isValidIpv4(candidate.ip)) {
+                        tieBreaker = candidate
+                        break
+                    } else if (candidate.ip.contains(':')) {
+                        ipv6Candidates.add(candidate)
+                    }
+                }
+            }
+            val candidates = if (tieBreaker != null) primaryIpv4 + tieBreaker else primaryIpv4
+            return@coroutineScope GeoIpLookup.selectConsensusResult(candidates)
+        }
+
+        if (primaryIpv4.size == 1) {
+            return@coroutineScope primaryIpv4.first()
+        }
+
+        for (fallbackUrl in GeoIpLookup.FALLBACK_PUBLIC_IP_ENDPOINTS) {
+            val candidate = withTimeoutOrNull(3500L) {
+                executeIpLookupRequest(client, fallbackUrl)
+            }
+            if (candidate != null && !rejectCandidate(candidate)) {
+                if (isValidIpv4(candidate.ip)) {
+                    return@coroutineScope candidate
+                } else if (candidate.ip.contains(':')) {
+                    ipv6Candidates.add(candidate)
+                }
+            }
+        }
+
+        if (ipv6Candidates.isNotEmpty()) {
+            return@coroutineScope GeoIpLookup.selectConsensusResult(ipv6Candidates)
+        }
+
+        null
     }
 
     fun fetchInitialNetworkInfo(initialDelayMs: Long = 0L) {
@@ -761,12 +834,7 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
                 if (!isActive || currentLookupId != ipLookupSessionId || !connectionState.value.isTerminal) return@launch
             }
             System.setProperty("http.keepAlive", "false")
-            // Prefer IPv4-only endpoints first; if an endpoint returns IPv6,
-            // remember the first IPv6 result as a fallback and keep trying
-            // remaining endpoints for an IPv4 address.
-            val endpoints = GeoIpLookup.PUBLIC_IP_ENDPOINTS
-            var ipv4Result: GeoIpResult? = null
-            var ipv6Fallback: GeoIpResult? = null
+            var successResult: GeoIpResult? = null
             val retryDelaysMs = longArrayOf(0L, 2000L)
             val client = buildFreshHttpClient()
 
@@ -776,27 +844,16 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
                     if (delayBeforeMs > 0L) delay(delayBeforeMs)
                     if (!isActive || currentLookupId != ipLookupSessionId || !connectionState.value.isTerminal) return@launch
 
-                    for (url in endpoints) {
-                        if (!isActive || currentLookupId != ipLookupSessionId || !connectionState.value.isTerminal) return@launch
-                        val candidate = withTimeoutOrNull(3500L) {
-                            executeIpLookupRequest(client, url)
-                        }
-                        if (candidate != null) {
-                            if (isValidIpv4(candidate.ip)) {
-                                ipv4Result = candidate
-                                break
-                            } else if (candidate.ip.contains(':') && ipv6Fallback == null) {
-                                ipv6Fallback = candidate
-                            }
-                        }
+                    val result = lookupPublicIpWithConsensus(client) { false }
+                    if (result != null) {
+                        successResult = result
+                        break
                     }
-                    if (ipv4Result != null || ipv6Fallback != null) break
                 }
             } finally {
                 try { client.connectionPool.evictAll() } catch (_: Throwable) {}
             }
 
-            val successResult = ipv4Result ?: ipv6Fallback
             if (isActive && currentLookupId == ipLookupSessionId && connectionState.value.isTerminal) {
                 if (successResult != null) {
                     lastKnownRealNetworkInfo = successResult
@@ -858,13 +915,7 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
                 return false
             }
 
-            // Try all endpoints preferring IPv4; remember the first IPv6 result
-            // as a fallback and use it only if no endpoint returns IPv4.
-            val orderedEndpoints = GeoIpLookup.PUBLIC_IP_ENDPOINTS
-            var ipv4Result: GeoIpResult? = null
-            var ipv6Fallback: GeoIpResult? = null
-            // Sequential retries inside the same job so retries never cancel an
-            // in-flight lookup or reset the UI state prematurely.
+            var successResult: GeoIpResult? = null
             val retryDelaysMs = longArrayOf(0L, 1500L, 3000L, 5000L)
 
             for (attemptIndex in retryDelaysMs.indices) {
@@ -875,61 +926,52 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
                     VpnStateManager.currentSessionId != sessionAtStart
                 ) return@launch
 
-                for (url in orderedEndpoints) {
-                    if (!isActive || currentLookupId != ipLookupSessionId ||
-                        connectionState.value != ConnectionState.CONNECTED ||
-                        VpnStateManager.currentSessionId != sessionAtStart
-                    ) return@launch
-                    val candidate = withTimeoutOrNull(3500L) {
-                        try {
-                            val client = when {
-                                isXray -> buildFreshHttpClient(proxy = proxy)
-                                else -> {
-                                    var vpnNet = findVpnNetwork()
-                                    var waitCount = 0
-                                    while (vpnNet == null && waitCount < 5 && isActive && connectionState.value == ConnectionState.CONNECTED) {
-                                        delay(400)
-                                        vpnNet = findVpnNetwork()
-                                        waitCount++
-                                    }
-                                    if (vpnNet == null) {
-                                        android.util.Log.w("DashboardViewModel", "vpnNetwork null for $url, skipping endpoint (no direct fallback)")
-                                        return@withTimeoutOrNull null
-                                    }
-                                    buildFreshHttpClient(proxy = java.net.Proxy.NO_PROXY, vpnNetwork = vpnNet)
-                                }
+                val client = try {
+                    when {
+                        isXray -> buildFreshHttpClient(proxy = proxy)
+                        else -> {
+                            var vpnNet = findVpnNetwork()
+                            var waitCount = 0
+                            while (vpnNet == null && waitCount < 5 && isActive && connectionState.value == ConnectionState.CONNECTED) {
+                                delay(400)
+                                vpnNet = findVpnNetwork()
+                                waitCount++
                             }
-                            try {
-                                val res = executeIpLookupRequest(client, url)
-                                if (res != null && isRealIspLeak(res)) {
-                                    android.util.Log.w("DashboardViewModel", "Rejected pre-tunnel ISP leak from $url: ${res.ip} (${res.location})")
-                                    null
-                                } else {
-                                    res
-                                }
-                            } finally {
-                                try { client.connectionPool.evictAll() } catch (_: Throwable) {}
+                            if (vpnNet == null) {
+                                android.util.Log.w("DashboardViewModel", "vpnNetwork null, skipping attempt (no direct fallback)")
+                                continue
                             }
-                        } catch (e: Exception) { null }
-                    }
-                    if (candidate != null) {
-                        if (isValidIpv4(candidate.ip)) {
-                            ipv4Result = candidate
-                            break
-                        } else if (candidate.ip.contains(':') && ipv6Fallback == null) {
-                            ipv6Fallback = candidate
+                            buildFreshHttpClient(proxy = java.net.Proxy.NO_PROXY, vpnNetwork = vpnNet)
                         }
                     }
+                } catch (e: Exception) {
+                    if (e is CancellationException) throw e
+                    continue
                 }
-                if (ipv4Result != null || ipv6Fallback != null) break
+
+                try {
+                    val candidate = lookupPublicIpWithConsensus(client) { res ->
+                        val leak = isRealIspLeak(res)
+                        if (leak) {
+                            android.util.Log.w("DashboardViewModel", "Rejected pre-tunnel ISP leak: ${res.ip} (${res.location})")
+                        }
+                        leak
+                    }
+                    if (candidate != null) {
+                        successResult = candidate
+                        break
+                    }
+                } finally {
+                    try { client.connectionPool.evictAll() } catch (_: Throwable) {}
+                }
             }
 
-            val successResult = ipv4Result ?: ipv6Fallback
+            val successFinal = successResult
             if (isActive && connectionState.value == ConnectionState.CONNECTED &&
                 VpnStateManager.currentSessionId == sessionAtStart && currentLookupId == ipLookupSessionId
             ) {
-                if (successResult != null) {
-                    VpnStateManager.updateNetworkInfo(successResult.ip, successResult.location, successResult.flagCode)
+                if (successFinal != null) {
+                    VpnStateManager.updateNetworkInfo(successFinal.ip, successFinal.location, successFinal.flagCode)
                 } else {
                     VpnStateManager.updateNetworkInfo("Unavailable", "VPN exit unavailable", "un")
                 }
@@ -1211,7 +1253,7 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
      * Resolves country code from a hostname or IP address.
      */
     suspend fun resolveHostCountryCode(host: String): String {
-        val tld = host.substringAfterLast('.').lowercase()
+        val tld = host.substringAfterLast('.').lowercase(java.util.Locale.US)
         if (tld.length == 2 && BundledFlags.isSupported(tld)) {
             return tld
         }
@@ -1220,17 +1262,63 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
                 val ip = java.net.InetAddress.getByName(host).hostAddress ?: return@withContext "un"
                 val client = buildFreshHttpClient()
                 try {
-                    for (url in GeoIpLookup.hostLookupUrls(ip)) {
-                        val result = executeIpLookupRequest(client, url)
-                        val code = result?.countryCode?.let { BundledFlags.normalizeCode(it) }
-                        if (code != null && code != "un") {
-                            return@withContext code
+                    val primaryUrls = GeoIpLookup.primaryHostLookupUrls(ip)
+                    val primaryResults = coroutineScope {
+                        primaryUrls.map { url ->
+                            async(Dispatchers.IO) {
+                                withTimeoutOrNull(2500L) {
+                                    executeIpLookupRequest(client, url)
+                                }
+                            }
+                        }.awaitAll().filterNotNull()
+                    }
+
+                    val consensusResult = if (primaryResults.size == 2) {
+                        val code0 = primaryResults[0].countryCode.trim().lowercase(java.util.Locale.US)
+                        val code1 = primaryResults[1].countryCode.trim().lowercase(java.util.Locale.US)
+                        val valid0 = code0.length == 2 && code0 != "un" && code0 != "xx"
+                        val valid1 = code1.length == 2 && code1 != "un" && code1 != "xx"
+                        if (valid0 && valid1 && code0 == code1) {
+                            GeoIpLookup.selectConsensusResult(primaryResults)
+                        } else {
+                            var tieBreaker: GeoIpResult? = null
+                            for (fallbackUrl in GeoIpLookup.fallbackHostLookupUrls(ip)) {
+                                val candidate = withTimeoutOrNull(2500L) {
+                                    executeIpLookupRequest(client, fallbackUrl)
+                                }
+                                if (candidate != null) {
+                                    tieBreaker = candidate
+                                    break
+                                }
+                            }
+                            val pool = if (tieBreaker != null) primaryResults + tieBreaker else primaryResults
+                            GeoIpLookup.selectConsensusResult(pool)
                         }
+                    } else if (primaryResults.size == 1) {
+                        primaryResults.first()
+                    } else {
+                        var fallbackResult: GeoIpResult? = null
+                        for (fallbackUrl in GeoIpLookup.fallbackHostLookupUrls(ip)) {
+                            val candidate = withTimeoutOrNull(2500L) {
+                                executeIpLookupRequest(client, fallbackUrl)
+                            }
+                            if (candidate != null) {
+                                fallbackResult = candidate
+                                break
+                            }
+                        }
+                        fallbackResult
+                    }
+
+                    val code = consensusResult?.countryCode?.let { BundledFlags.normalizeCode(it) }
+                    if (code != null && code != "un") {
+                        code
+                    } else {
+                        "un"
                     }
                 } finally {
                     try { client.connectionPool.evictAll() } catch (_: Throwable) {}
                 }
-                "un"
             } catch (_: Exception) {
                 "un"
             }

@@ -10,24 +10,143 @@ import org.junit.Test
 class GeoIpLookupTest {
 
     @Test
-    fun `public IP endpoints priority order prioritizes HTTPS providers over ip-api`() {
+    fun `public IP endpoints priority order prioritizes Tier-1 consensus endpoints`() {
         val endpoints = GeoIpLookup.PUBLIC_IP_ENDPOINTS
         assertEquals(6, endpoints.size)
-        assertEquals("https://ipwho.is/", endpoints[0])
-        assertEquals("https://api-ipv4.ip.sb/geoip", endpoints[1])
-        assertEquals("https://v4.ifconfig.co/json", endpoints[2])
-        assertEquals("https://api.myip.world/json", endpoints[3])
-        assertEquals("https://free.freeipapi.com/api/json", endpoints[4])
+        assertEquals("https://ipinfo.io/json", endpoints[0])
+        assertEquals("https://ipwho.is/", endpoints[1])
+        assertEquals("https://free.freeipapi.com/api/json", endpoints[2])
+        assertEquals("https://api-ipv4.ip.sb/geoip", endpoints[3])
+        assertEquals("https://ifconfig.co/json", endpoints[4])
         assertEquals("http://ip-api.com/json", endpoints[5])
+
+        val primary = GeoIpLookup.PRIMARY_PUBLIC_IP_ENDPOINTS
+        assertEquals(2, primary.size)
+        assertEquals("https://ipinfo.io/json", primary[0])
+        assertEquals("https://ipwho.is/", primary[1])
     }
 
     @Test
-    fun `host lookup URLs prioritizes ipwho and ip-sb over ip-api`() {
+    fun `host lookup URLs prioritizes ipinfo and ipwho over fallback providers`() {
         val urls = GeoIpLookup.hostLookupUrls("2.31.203.3")
-        assertEquals(3, urls.size)
-        assertEquals("https://ipwho.is/2.31.203.3", urls[0])
-        assertEquals("https://api.ip.sb/geoip/2.31.203.3", urls[1])
-        assertEquals("http://ip-api.com/json/2.31.203.3", urls[2])
+        assertEquals(5, urls.size)
+        assertEquals("https://ipinfo.io/2.31.203.3/json", urls[0])
+        assertEquals("https://ipwho.is/2.31.203.3", urls[1])
+        assertEquals("https://free.freeipapi.com/api/json/2.31.203.3", urls[2])
+        assertEquals("https://api.ip.sb/geoip/2.31.203.3", urls[3])
+        assertEquals("http://ip-api.com/json/2.31.203.3", urls[4])
+
+        val primary = GeoIpLookup.primaryHostLookupUrls("2.31.203.3")
+        assertEquals(2, primary.size)
+        assertEquals("https://ipinfo.io/2.31.203.3/json", primary[0])
+        assertEquals("https://ipwho.is/2.31.203.3", primary[1])
+    }
+
+    @Test
+    fun `parse ipinfo-io success response resolves Amsterdam Benthost server to NL and Netherlands`() {
+        val response = """
+            {
+                "ip": "178.253.233.142",
+                "city": "Amsterdam",
+                "region": "North Holland",
+                "country": "NL",
+                "loc": "52.3740,4.8897",
+                "org": "AS200000 Benthost LLC",
+                "postal": "1012",
+                "timezone": "Europe/Amsterdam"
+            }
+        """.trimIndent()
+        val result = GeoIpLookup.parseResponse("https://ipinfo.io/json", response)
+        assertNotNull(result)
+        assertEquals("178.253.233.142", result!!.ip)
+        assertEquals("nl", result.countryCode)
+        assertEquals("Netherlands", result.countryName)
+        assertEquals("Netherlands", result.location)
+        assertEquals("nl", result.flagCode)
+    }
+
+    @Test
+    fun `parse ipinfo-io success response resolves Frankfurt Hetzner server to DE and Germany`() {
+        val response = """
+            {
+                "ip": "2.31.203.3",
+                "city": "Frankfurt am Main",
+                "region": "Hesse",
+                "country": "DE",
+                "loc": "50.1109,8.6821",
+                "org": "AS24940 Hetzner Online GmbH",
+                "postal": "60311",
+                "timezone": "Europe/Berlin"
+            }
+        """.trimIndent()
+        val result = GeoIpLookup.parseResponse("https://ipinfo.io/2.31.203.3/json", response)
+        assertNotNull(result)
+        assertEquals("2.31.203.3", result!!.ip)
+        assertEquals("de", result.countryCode)
+        assertEquals("Germany", result.countryName)
+    }
+
+    @Test
+    fun `rejection of ipinfo-io bogon response`() {
+        val response = """
+            {
+                "ip": "127.0.0.1",
+                "bogon": true
+            }
+        """.trimIndent()
+        val result = GeoIpLookup.parseResponse("https://ipinfo.io/json", response)
+        assertNull(result)
+    }
+
+    @Test
+    fun `selectConsensusResult returns unanimous agreement when ipinfo and ipwho match`() {
+        val ipinfo = GeoIpResult("178.253.233.142", "nl", "Netherlands")
+        val ipwho = GeoIpResult("178.253.233.142", "nl", "Netherlands")
+        val result = GeoIpLookup.selectConsensusResult(listOf(ipinfo, ipwho))
+        assertNotNull(result)
+        assertEquals("178.253.233.142", result!!.ip)
+        assertEquals("nl", result.countryCode)
+        assertEquals("Netherlands", result.countryName)
+    }
+
+    @Test
+    fun `selectConsensusResult returns single survivor when one provider times out`() {
+        val ipinfo = GeoIpResult("178.253.233.142", "nl", "Netherlands")
+        val result = GeoIpLookup.selectConsensusResult(listOf(ipinfo))
+        assertNotNull(result)
+        assertEquals("178.253.233.142", result!!.ip)
+        assertEquals("nl", result.countryCode)
+    }
+
+    @Test
+    fun `selectConsensusResult picks majority when ipinfo and freeipapi agree against ipsb misclassification`() {
+        val ipinfo = GeoIpResult("178.253.233.142", "nl", "Netherlands")
+        val ipsb = GeoIpResult("178.253.233.142", "rs", "Serbia")
+        val freeipapi = GeoIpResult("178.253.233.142", "nl", "Netherlands")
+        val result = GeoIpLookup.selectConsensusResult(listOf(ipinfo, ipsb, freeipapi))
+        assertNotNull(result)
+        assertEquals("nl", result!!.countryCode)
+        assertEquals("Netherlands", result.countryName)
+    }
+
+    @Test
+    fun `selectConsensusResult breaks two-way tie in favor of highest-priority candidate`() {
+        val ipinfo = GeoIpResult("178.253.233.142", "nl", "Netherlands")
+        val ipsb = GeoIpResult("178.253.233.142", "rs", "Serbia")
+        val result = GeoIpLookup.selectConsensusResult(listOf(ipinfo, ipsb))
+        assertNotNull(result)
+        assertEquals("nl", result!!.countryCode)
+        assertEquals("Netherlands", result.countryName)
+    }
+
+    @Test
+    fun `selectConsensusResult prefers IPv4 over IPv6 when both are present`() {
+        val ipv6 = GeoIpResult("2a01:4f8:c012:a1b::1", "de", "Germany")
+        val ipv4 = GeoIpResult("178.253.233.142", "nl", "Netherlands")
+        val result = GeoIpLookup.selectConsensusResult(listOf(ipv6, ipv4))
+        assertNotNull(result)
+        assertEquals("178.253.233.142", result!!.ip)
+        assertEquals("nl", result.countryCode)
     }
 
     @Test
@@ -84,7 +203,7 @@ class GeoIpLookupTest {
     }
 
     @Test
-    fun `parse v4 ifconfig-co success response`() {
+    fun `parse ifconfig-co success response`() {
         val response = """
             {
                 "ip": "2.31.203.3",
@@ -97,25 +216,7 @@ class GeoIpLookupTest {
                 "city": "Frankfurt am Main"
             }
         """.trimIndent()
-        val result = GeoIpLookup.parseResponse("https://v4.ifconfig.co/json", response)
-        assertNotNull(result)
-        assertEquals("2.31.203.3", result!!.ip)
-        assertEquals("de", result.countryCode)
-        assertEquals("Germany", result.countryName)
-    }
-
-    @Test
-    fun `parse api myip-world success response`() {
-        val response = """
-            {
-                "ip": "2.31.203.3",
-                "country": "Germany",
-                "country_code": "DE",
-                "city": "Frankfurt am Main",
-                "region": "Hesse"
-            }
-        """.trimIndent()
-        val result = GeoIpLookup.parseResponse("https://api.myip.world/json", response)
+        val result = GeoIpLookup.parseResponse("https://ifconfig.co/json", response)
         assertNotNull(result)
         assertEquals("2.31.203.3", result!!.ip)
         assertEquals("de", result.countryCode)
