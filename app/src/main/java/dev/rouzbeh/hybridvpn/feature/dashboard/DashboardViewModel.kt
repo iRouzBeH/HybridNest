@@ -109,6 +109,23 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
     val activeProfile: StateFlow<VpnProfile?> = dao.getActiveProfile()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
 
+    private val _pendingRestoredProfile = MutableStateFlow<VpnProfile?>(null)
+    val displayedActiveProfile: StateFlow<VpnProfile?> = combine(
+        selectedProtocol,
+        activeProfile,
+        _pendingRestoredProfile
+    ) { protocol, roomProfile, pendingProfile ->
+        ProtocolSwitchResolver.resolveDisplayedActiveProfile(protocol, roomProfile, pendingProfile)
+    }.stateIn(
+        viewModelScope,
+        SharingStarted.WhileSubscribed(5000),
+        ProtocolSwitchResolver.resolveDisplayedActiveProfile(
+            _selectedProtocol.value,
+            activeProfile.value,
+            _pendingRestoredProfile.value
+        )
+    )
+
     val connectionState: StateFlow<ConnectionState> = VpnStateManager.connectionState
     val speed: StateFlow<Pair<String, String>> = VpnStateManager.speed
     val networkInfo: StateFlow<NetworkInfo> = VpnStateManager.networkInfo
@@ -278,6 +295,16 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
         }
 
         viewModelScope.launch {
+            combine(selectedProtocol, activeProfile, _pendingRestoredProfile) { protocol, room, pending ->
+                Triple(protocol, room, pending)
+            }.collect { (protocol, room, pending) ->
+                if (ProtocolSwitchResolver.shouldClearPendingProfile(protocol, room, pending)) {
+                    _pendingRestoredProfile.value = null
+                }
+            }
+        }
+
+        viewModelScope.launch {
             // "applies after reconnect" state: recompute whenever the applied revision
             // changes (tunnel established/removed) or settings change.
             RoutingPolicyStatus.appliedRevision.collect {
@@ -376,6 +403,15 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
 
         viewModelScope.launch {
             connectionState.collect { state ->
+                if (isIntentionalReconnect) {
+                    if (state == ConnectionState.CONNECTED || state == ConnectionState.ERROR || state == ConnectionState.FAILED) {
+                        isIntentionalReconnect = false
+                    } else {
+                        VpnStateManager.updateState(ConnectionState.RECONNECTING)
+                        return@collect
+                    }
+                }
+
                 if (state.isConnectingState || state == ConnectionState.CONNECTED) {
                     val protocol = activeProfile.value?.protocol ?: _selectedProtocol.value
                     VpnStateManager.startEngine(getApplication(), protocol)
@@ -425,15 +461,6 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
 
                         VpnStateManager.updateNetworkInfo("Detecting...", "Detecting...", "un")
                         fetchInitialNetworkInfo(initialDelayMs = 300L)
-                    }
-                }
-
-                if (isIntentionalReconnect) {
-                    if (state == ConnectionState.CONNECTED || state.isTerminal) {
-                        isIntentionalReconnect = false
-                    } else {
-                        VpnStateManager.updateState(ConnectionState.RECONNECTING)
-                        return@collect
                     }
                 }
 
@@ -496,6 +523,14 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
 
     fun setProtocol(protocol: String) {
         if (protocol !in setOf("OpenConnect", "WireGuard", "v2rayNG")) return
+        if (ConnectionLockGuard.isLocked(connectionState.value)) return
+
+        val savedId = settingsRepository.getLastServerId(protocol)
+        val matchedProfile = if (savedId != null) {
+            allProfiles.value.firstOrNull { it.id == savedId && it.protocol == protocol }
+        } else null
+
+        _pendingRestoredProfile.value = matchedProfile
         _selectedProtocol.value = protocol
         settingsRepository.setLastSelectedProtocol(protocol)
         // Do NOT clear logs when switching protocol tabs; logs are per-protocol
@@ -504,17 +539,28 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
         protocolRestoreJob?.cancel()
         protocolRestoreJob = viewModelScope.launch(Dispatchers.IO) {
             if (ConnectionLockGuard.isLocked(connectionState.value)) return@launch
-            val savedId = settingsRepository.getLastServerId(protocol) ?: return@launch
-            val savedProfile = dao.getProfileById(savedId)
+            val currentSavedId = settingsRepository.getLastServerId(protocol) ?: run {
+                if (_selectedProtocol.value == protocol) {
+                    _pendingRestoredProfile.value = null
+                }
+                return@launch
+            }
+            val savedProfile = dao.getProfileById(currentSavedId)
             if (savedProfile != null && savedProfile.protocol == protocol) {
                 if (_selectedProtocol.value == protocol && !ConnectionLockGuard.isLocked(connectionState.value)) {
-                    if (dao.getActiveProfile().firstOrNull()?.id != savedId) {
+                    if (_pendingRestoredProfile.value?.id != currentSavedId && _selectedProtocol.value == protocol) {
+                        _pendingRestoredProfile.value = savedProfile
+                    }
+                    if (dao.getActiveProfile().firstOrNull()?.id != currentSavedId) {
                         dao.deactivateAll()
-                        dao.setActiveProfile(savedId)
+                        dao.setActiveProfile(currentSavedId)
                     }
                 }
             } else {
                 settingsRepository.clearLastServerId(protocol)
+                if (_selectedProtocol.value == protocol) {
+                    _pendingRestoredProfile.value = null
+                }
             }
         }
     }
@@ -1016,6 +1062,7 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
      * disconnect vs. a cancel, branch on VpnStateManager.connectionState here.
      */
     fun cancelConnection(context: Context) {
+        isIntentionalReconnect = false
         val current = VpnStateManager.connectionState.value
         if (current == ConnectionState.CANCELING || current == ConnectionState.DISCONNECTED) {
             android.util.Log.d("DashboardViewModel", "cancelConnection: already $current, ignoring re-entrant call")
@@ -1059,6 +1106,7 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
      * VPN state as if doing a force stop".
      */
     fun initiateDisconnect(context: Context = getApplication(), onActualStop: (Context) -> Unit = {}) {
+        isIntentionalReconnect = false
         android.util.Log.d("DashboardViewModel", "initiateDisconnect via DisconnectCoordinator from ${VpnStateManager.connectionState.value}")
         ++ipLookupSessionId
         networkFetchJob?.cancel()
@@ -1073,7 +1121,10 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
         onActualStop(context)
     }
 
-    fun resetState() { VpnStateManager.updateStateFromNative(0) }
+    fun resetState() {
+        isIntentionalReconnect = false
+        VpnStateManager.updateStateFromNative(0)
+    }
 
     fun addServer(name: String, serverAddress: String, user: String, pass: String, protocol: String, countryCode: String = "un") {
         val cName = name.trim(); val cAddr = serverAddress.trim()
@@ -1465,6 +1516,11 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
     fun updateServer(profile: VpnProfile) { viewModelScope.launch(Dispatchers.IO) { dao.updateProfile(profile) } }
 
     fun selectServer(profileId: Int, context: Context) {
+        val currentState = connectionState.value
+        if (currentState.isConnectingState || currentState == ConnectionState.DISCONNECTING || currentState == ConnectionState.CANCELING) {
+            return
+        }
+        _pendingRestoredProfile.value = null
         viewModelScope.launch(Dispatchers.IO) {
             try {
                 val isConnected = connectionState.value == ConnectionState.CONNECTED
@@ -1481,6 +1537,9 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
                 val currentProfile = activeProfile.value
                 if (isConnected) {
                     if (currentProfile?.protocol == newProfile?.protocol) {
+                        if (currentProfile?.id == newProfile.id) {
+                            return@launch
+                        }
                         withContext(Dispatchers.Main) {
                             isIntentionalReconnect = true; VpnStateManager.updateState(ConnectionState.RECONNECTING)
                             context.startService(Intent(context, HybridVpnService::class.java).apply { action = "ACTION_STOP_VPN" })
@@ -1501,6 +1560,9 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
     }
 
     fun deleteServer(profile: VpnProfile) {
+        if (_pendingRestoredProfile.value?.id == profile.id) {
+            _pendingRestoredProfile.value = null
+        }
         viewModelScope.launch(Dispatchers.IO) {
             if (settingsRepository.getLastServerId(profile.protocol) == profile.id) {
                 settingsRepository.clearLastServerId(profile.protocol)
@@ -1511,6 +1573,9 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
 
     fun deleteSubscriptionGroup(subKey: String) {
         stopV2rayPing(subKey)
+        if (_pendingRestoredProfile.value?.username == subKey) {
+            _pendingRestoredProfile.value = null
+        }
         viewModelScope.launch(Dispatchers.IO) {
             val targets = allProfiles.value.filter { it.username == subKey }
             val savedId = settingsRepository.getLastServerId("v2rayNG")
@@ -1673,6 +1738,9 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
      * tabs are untouched. Info cards are never treated as deletable configs.
      */
     fun deleteInvalidV2rayConfigs(groupName: String) {
+        if (_pendingRestoredProfile.value?.ping == -1L) {
+            _pendingRestoredProfile.value = null
+        }
         viewModelScope.launch(Dispatchers.IO) {
             val base = allProfiles.value.filter {
                 it.protocol == "v2rayNG" && !isSubscriptionInfoName(it.name) && it.ping == -1L

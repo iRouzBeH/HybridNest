@@ -296,4 +296,86 @@ class ConnectionUiGuardTest {
         observer.cancel()
         coordinator.cancel()
     }
+
+    @Test
+    fun `evaluateServerSelectTap maps every state and combination accurately`() {
+        // 1. CONNECTED: Same protocol + same profile -> ALREADY_ACTIVE_NOOP
+        assertEquals(
+            ServerSelectOutcome.ALREADY_ACTIVE_NOOP,
+            ConnectionLockGuard.evaluateServerSelectTap(ConnectionState.CONNECTED, isSameProtocol = true, isSameProfile = true)
+        )
+
+        // 2. CONNECTED: Same protocol + different profile -> ALLOW_RECONNECT
+        assertEquals(
+            ServerSelectOutcome.ALLOW_RECONNECT,
+            ConnectionLockGuard.evaluateServerSelectTap(ConnectionState.CONNECTED, isSameProtocol = true, isSameProfile = false)
+        )
+
+        // 3. CONNECTED: Different protocol -> SHOW_LOCK_WARNING
+        assertEquals(
+            ServerSelectOutcome.SHOW_LOCK_WARNING,
+            ConnectionLockGuard.evaluateServerSelectTap(ConnectionState.CONNECTED, isSameProtocol = false, isSameProfile = false)
+        )
+        assertEquals(
+            ServerSelectOutcome.SHOW_LOCK_WARNING,
+            ConnectionLockGuard.evaluateServerSelectTap(ConnectionState.CONNECTED, isSameProtocol = false, isSameProfile = true)
+        )
+
+        // 4. In-flight connecting / reconnecting: always SHOW_LOCK_WARNING
+        for (state in listOf(ConnectionState.CONNECTING, ConnectionState.RECONNECTING)) {
+            for (sameProto in listOf(true, false)) {
+                for (sameProf in listOf(true, false)) {
+                    assertEquals(
+                        "State $state (sameProto=$sameProto, sameProf=$sameProf) must require lock warning",
+                        ServerSelectOutcome.SHOW_LOCK_WARNING,
+                        ConnectionLockGuard.evaluateServerSelectTap(state, isSameProtocol = sameProto, isSameProfile = sameProf)
+                    )
+                }
+            }
+        }
+
+        // 5. In-flight disconnecting / canceling: always IGNORE_WHILE_DISCONNECTING
+        for (state in listOf(ConnectionState.DISCONNECTING, ConnectionState.CANCELING)) {
+            for (sameProto in listOf(true, false)) {
+                for (sameProf in listOf(true, false)) {
+                    assertEquals(
+                        "State $state (sameProto=$sameProto, sameProf=$sameProf) must ignore tap",
+                        ServerSelectOutcome.IGNORE_WHILE_DISCONNECTING,
+                        ConnectionLockGuard.evaluateServerSelectTap(state, isSameProtocol = sameProto, isSameProfile = sameProf)
+                    )
+                }
+            }
+        }
+
+        // 6. Terminal / idle states: always ALLOW_SELECT
+        val terminalStates = listOf(
+            ConnectionState.DISCONNECTED,
+            ConnectionState.IDLE,
+            ConnectionState.CANCELLED,
+            ConnectionState.ERROR,
+            ConnectionState.FAILED
+        )
+        for (state in terminalStates) {
+            for (sameProto in listOf(true, false)) {
+                for (sameProf in listOf(true, false)) {
+                    assertEquals(
+                        "State $state (sameProto=$sameProto, sameProf=$sameProf) must allow select",
+                        ServerSelectOutcome.ALLOW_SELECT,
+                        ConnectionLockGuard.evaluateServerSelectTap(state, isSameProtocol = sameProto, isSameProfile = sameProf)
+                    )
+                }
+            }
+        }
+
+        // 7. Exhaustive verification across all ConnectionState enum values
+        for (state in ConnectionState.values()) {
+            val outcomeSameProtoDiffProf = ConnectionLockGuard.evaluateServerSelectTap(state, isSameProtocol = true, isSameProfile = false)
+            when (state) {
+                ConnectionState.CONNECTED -> assertEquals(ServerSelectOutcome.ALLOW_RECONNECT, outcomeSameProtoDiffProf)
+                ConnectionState.CONNECTING, ConnectionState.RECONNECTING -> assertEquals(ServerSelectOutcome.SHOW_LOCK_WARNING, outcomeSameProtoDiffProf)
+                ConnectionState.DISCONNECTING, ConnectionState.CANCELING -> assertEquals(ServerSelectOutcome.IGNORE_WHILE_DISCONNECTING, outcomeSameProtoDiffProf)
+                else -> assertEquals(ServerSelectOutcome.ALLOW_SELECT, outcomeSameProtoDiffProf)
+            }
+        }
+    }
 }

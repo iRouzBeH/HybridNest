@@ -13,6 +13,14 @@ enum class LockActionOutcome {
     IGNORE_WHILE_DISCONNECTING
 }
 
+enum class ServerSelectOutcome {
+    ALLOW_SELECT,
+    ALLOW_RECONNECT,
+    ALREADY_ACTIVE_NOOP,
+    SHOW_LOCK_WARNING,
+    IGNORE_WHILE_DISCONNECTING
+}
+
 object ConnectionLockGuard {
     fun evaluateControlTap(state: ConnectionState): LockActionOutcome {
         return when (state) {
@@ -28,6 +36,34 @@ object ConnectionLockGuard {
             ConnectionState.CANCELLED,
             ConnectionState.ERROR,
             ConnectionState.FAILED -> LockActionOutcome.ALLOW
+        }
+    }
+
+    fun evaluateServerSelectTap(
+        state: ConnectionState,
+        isSameProtocol: Boolean,
+        isSameProfile: Boolean
+    ): ServerSelectOutcome {
+        return when (state) {
+            ConnectionState.CONNECTED -> {
+                when {
+                    isSameProtocol && isSameProfile -> ServerSelectOutcome.ALREADY_ACTIVE_NOOP
+                    isSameProtocol -> ServerSelectOutcome.ALLOW_RECONNECT
+                    else -> ServerSelectOutcome.SHOW_LOCK_WARNING
+                }
+            }
+
+            ConnectionState.CONNECTING,
+            ConnectionState.RECONNECTING -> ServerSelectOutcome.SHOW_LOCK_WARNING
+
+            ConnectionState.DISCONNECTING,
+            ConnectionState.CANCELING -> ServerSelectOutcome.IGNORE_WHILE_DISCONNECTING
+
+            ConnectionState.DISCONNECTED,
+            ConnectionState.IDLE,
+            ConnectionState.CANCELLED,
+            ConnectionState.ERROR,
+            ConnectionState.FAILED -> ServerSelectOutcome.ALLOW_SELECT
         }
     }
 

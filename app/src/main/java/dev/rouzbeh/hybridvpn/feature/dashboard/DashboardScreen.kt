@@ -361,6 +361,7 @@ fun DashboardScreen(
     val networkInfo by viewModel.networkInfo.collectAsStateWithLifecycle()
     val filteredProfiles by viewModel.filteredProfiles.collectAsStateWithLifecycle()
     val activeProfile by viewModel.activeProfile.collectAsStateWithLifecycle()
+    val displayedActiveProfile by viewModel.displayedActiveProfile.collectAsStateWithLifecycle()
     val speed by viewModel.speed.collectAsStateWithLifecycle()
     val rawSpeed by VpnStateManager.rawSpeed.collectAsStateWithLifecycle()
     val pingResult by viewModel.pingResult.collectAsStateWithLifecycle()
@@ -437,6 +438,7 @@ fun DashboardScreen(
                 isConnectivityDegraded = isConnectivityDegraded,
                 filteredProfiles = filteredProfiles,
                 activeProfile = activeProfile,
+                displayedActiveProfile = displayedActiveProfile,
                 speed = speed,
                 rawSpeed = rawSpeed,
                 pingResult = pingResult,
@@ -537,6 +539,7 @@ fun DashboardContent(
     isConnectivityDegraded: Boolean = false,
     filteredProfiles: List<VpnProfile>,
     activeProfile: VpnProfile?,
+    displayedActiveProfile: VpnProfile? = activeProfile,
     speed: Pair<String, String>,
     rawSpeed: Pair<Long, Long>,
     pingResult: String?,
@@ -637,7 +640,7 @@ fun DashboardContent(
     val context = LocalContext.current
 
     val currentActiveProfile =
-        if (activeProfile?.protocol == selectedProtocol) activeProfile else null
+        if (displayedActiveProfile?.protocol == selectedProtocol) displayedActiveProfile else null
 
     val canConnect = currentActiveProfile != null
 
@@ -906,7 +909,7 @@ fun DashboardContent(
 
                 // 5. Server Selector
                 ServerSelectorButton(
-                    activeProfile = activeProfile,
+                    activeProfile = currentActiveProfile,
                     selectedProtocol = currentProtocolDisplay,
                     hasProfiles = filteredProfiles.isNotEmpty(),
                     isEnabled = isUiUnlocked,
@@ -946,64 +949,73 @@ fun DashboardContent(
                                 .border(1.dp, BorderGlass, RoundedCornerShape(16.dp)),
                             contentAlignment = Alignment.Center
                         ) {
-                            if (!canConnect) {
-                                Text(
-                                    text = "Select Server",
-                                    color = Color.Gray,
-                                    fontSize = 16.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    fontFamily = SoraFamily
-                                )
-                            } else {
-                                when (connectionState) {
-                                    ConnectionState.CONNECTED -> Text(
-                                        text = "Connected",
-                                        color = Color(0xFF00D8E6),
-                                        fontSize = 18.sp,
-                                        fontWeight = FontWeight.Black,
+                            AnimatedContent(
+                                targetState = canConnect to connectionState,
+                                transitionSpec = {
+                                    fadeIn(animationSpec = tween(160)) togetherWith fadeOut(animationSpec = tween(120))
+                                },
+                                contentAlignment = Alignment.Center,
+                                label = "StatusCardTransition"
+                            ) { (targetCanConnect, targetConnectionState) ->
+                                if (!targetCanConnect) {
+                                    Text(
+                                        text = "Select Server",
+                                        color = Color.Gray,
+                                        fontSize = 16.sp,
+                                        fontWeight = FontWeight.Bold,
                                         fontFamily = SoraFamily
                                     )
-
-                                    ConnectionState.CONNECTING -> ShimmerText(
-                                        "Connecting",
-                                        Color.Gray.copy(alpha = 0.5f),
-                                        PrimaryCyan
-                                    )
-
-                                    ConnectionState.RECONNECTING -> ShimmerText(
-                                        "Reconnecting",
-                                        Color.Gray.copy(alpha = 0.5f),
-                                        Color(0xFFFFD700)
-                                    )
-
-                                    ConnectionState.DISCONNECTING -> ShimmerText(
-                                        "Disconnecting",
-                                        Color.Gray.copy(alpha = 0.5f),
-                                        Color(0xFFFF5252)
-                                    )
-
-                                    ConnectionState.CANCELING, ConnectionState.CANCELLED -> ShimmerText(
-                                        "Canceling",
-                                        Color.Gray.copy(alpha = 0.5f),
-                                        Color.White
-                                    )
-
-                                    ConnectionState.ERROR, ConnectionState.FAILED -> Text(
-                                        text = "Failed",
-                                        color = Color(0xFFFF5252),
-                                        fontSize = 18.sp,
-                                        fontWeight = FontWeight.Black,
-                                        fontFamily = SoraFamily
-                                    )
-
-                                    else -> {
-                                        Text(
-                                            text = "Ready",
-                                            color = Color.White,
+                                } else {
+                                    when (targetConnectionState) {
+                                        ConnectionState.CONNECTED -> Text(
+                                            text = "Connected",
+                                            color = Color(0xFF00D8E6),
                                             fontSize = 18.sp,
                                             fontWeight = FontWeight.Black,
                                             fontFamily = SoraFamily
                                         )
+
+                                        ConnectionState.CONNECTING -> ShimmerText(
+                                            "Connecting",
+                                            Color.Gray.copy(alpha = 0.5f),
+                                            PrimaryCyan
+                                        )
+
+                                        ConnectionState.RECONNECTING -> ShimmerText(
+                                            "Reconnecting",
+                                            Color.Gray.copy(alpha = 0.5f),
+                                            Color(0xFFFFD700)
+                                        )
+
+                                        ConnectionState.DISCONNECTING -> ShimmerText(
+                                            "Disconnecting",
+                                            Color.Gray.copy(alpha = 0.5f),
+                                            Color(0xFFFF5252)
+                                        )
+
+                                        ConnectionState.CANCELING, ConnectionState.CANCELLED -> ShimmerText(
+                                            "Canceling",
+                                            Color.Gray.copy(alpha = 0.5f),
+                                            Color.White
+                                        )
+
+                                        ConnectionState.ERROR, ConnectionState.FAILED -> Text(
+                                            text = "Failed",
+                                            color = Color(0xFFFF5252),
+                                            fontSize = 18.sp,
+                                            fontWeight = FontWeight.Black,
+                                            fontFamily = SoraFamily
+                                        )
+
+                                        else -> {
+                                            Text(
+                                                text = "Ready",
+                                                color = Color.White,
+                                                fontSize = 18.sp,
+                                                fontWeight = FontWeight.Black,
+                                                fontFamily = SoraFamily
+                                            )
+                                        }
                                     }
                                 }
                             }
@@ -1026,7 +1038,7 @@ fun DashboardContent(
                                 pingResult?.filter { it.isDigit() }?.toIntOrNull() ?: -1
                             }
                             val pText =
-                                remember(pValue) { if (pValue != -1) "${pValue}ms" else "Test Ping" }
+                                remember(pValue) { if (pValue != -1) "${pValue}ms" else "Ping" }
                             val pColor = Color(0xFF00D8E6) // PrimaryCyan fixed color
 
                             if (isTesting) {
@@ -1476,23 +1488,32 @@ fun ServerSelectorButton(
                     fontFamily = SoraFamily
                 )
                 Spacer(modifier = Modifier.height(4.dp))
-                var nameFontSize by remember(serverText) { mutableStateOf(14.sp) }
-                Text(
-                    text = serverText,
-                    color = if (activeProfile != null && activeProfile.protocol == selectedProtocol.title) PrimaryCyan else Color.Gray,
-                    fontSize = nameFontSize,
-                    fontWeight = FontWeight.Bold,
-                    maxLines = 1,
-                    softWrap = false,
-                    overflow = TextOverflow.Ellipsis,
-                    onTextLayout = { result ->
-                        val minFontSize = 10.sp
-                        if (result.hasVisualOverflow && nameFontSize.value > minFontSize.value) {
-                            nameFontSize = (nameFontSize.value - 1f).coerceAtLeast(minFontSize.value).sp
-                        }
+                AnimatedContent(
+                    targetState = serverText to (activeProfile != null && activeProfile.protocol == selectedProtocol.title),
+                    transitionSpec = {
+                        fadeIn(animationSpec = tween(160)) togetherWith fadeOut(animationSpec = tween(120))
                     },
-                    fontFamily = SoraFamily
-                )
+                    contentAlignment = Alignment.CenterStart,
+                    label = "ServerSelectorTextTransition"
+                ) { (text, isActive) ->
+                    var nameFontSize by remember(text) { mutableStateOf(14.sp) }
+                    Text(
+                        text = text,
+                        color = if (isActive) PrimaryCyan else Color.Gray,
+                        fontSize = nameFontSize,
+                        fontWeight = FontWeight.Bold,
+                        maxLines = 1,
+                        softWrap = false,
+                        overflow = TextOverflow.Ellipsis,
+                        onTextLayout = { result ->
+                            val minFontSize = 10.sp
+                            if (result.hasVisualOverflow && nameFontSize.value > minFontSize.value) {
+                                nameFontSize = (nameFontSize.value - 1f).coerceAtLeast(minFontSize.value).sp
+                            }
+                        },
+                        fontFamily = SoraFamily
+                    )
+                }
             }
             Spacer(modifier = Modifier.width(12.dp))
             Icon(
@@ -1583,12 +1604,19 @@ fun ServerListSheetContent(
                         profile = profile, isSelected = isSelected,
                         connectionState = connectionState,
                         onClick = {
-                            when (ConnectionLockGuard.evaluateControlTap(connectionState)) {
-                                LockActionOutcome.ALLOW -> onSelect(profile.id)
-                                LockActionOutcome.SHOW_LOCK_WARNING -> {
+                            val outcome = ConnectionLockGuard.evaluateServerSelectTap(
+                                state = connectionState,
+                                isSameProtocol = activeProfile?.protocol == profile.protocol,
+                                isSameProfile = activeProfile?.id == profile.id
+                            )
+                            when (outcome) {
+                                ServerSelectOutcome.ALLOW_SELECT,
+                                ServerSelectOutcome.ALLOW_RECONNECT -> onSelect(profile.id)
+                                ServerSelectOutcome.ALREADY_ACTIVE_NOOP -> Unit
+                                ServerSelectOutcome.SHOW_LOCK_WARNING -> {
                                     onShowDisconnectWarning("Cannot switch server while VPN is active. Please disconnect first and try again.\n\nWould you like to disconnect now?")
                                 }
-                                LockActionOutcome.IGNORE_WHILE_DISCONNECTING -> Unit
+                                ServerSelectOutcome.IGNORE_WHILE_DISCONNECTING -> Unit
                             }
                         },
                         onDelete = {
@@ -4915,15 +4943,24 @@ fun ServerListFullScreen(
                     isSelected = isSelected,
                     connectionState = connectionState,
                     onClick = {
-                        when (ConnectionLockGuard.evaluateControlTap(connectionState)) {
-                            LockActionOutcome.ALLOW -> {
+                        val outcome = ConnectionLockGuard.evaluateServerSelectTap(
+                            state = connectionState,
+                            isSameProtocol = activeProfile?.protocol == profile.protocol,
+                            isSameProfile = activeProfile?.id == profile.id
+                        )
+                        when (outcome) {
+                            ServerSelectOutcome.ALLOW_SELECT,
+                            ServerSelectOutcome.ALLOW_RECONNECT -> {
                                 onSelect(profile.id)
                                 onNavigateBack()
                             }
-                            LockActionOutcome.SHOW_LOCK_WARNING -> {
+                            ServerSelectOutcome.ALREADY_ACTIVE_NOOP -> {
+                                onNavigateBack()
+                            }
+                            ServerSelectOutcome.SHOW_LOCK_WARNING -> {
                                 onShowDisconnectWarning("Cannot switch server while VPN is active. Please disconnect first and try again.\n\nWould you like to disconnect now?")
                             }
-                            LockActionOutcome.IGNORE_WHILE_DISCONNECTING -> Unit
+                            ServerSelectOutcome.IGNORE_WHILE_DISCONNECTING -> Unit
                         }
                     },
                     onDelete = if (isSub) null else {
