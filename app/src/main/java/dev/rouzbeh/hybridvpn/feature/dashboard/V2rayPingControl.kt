@@ -26,3 +26,54 @@ object V2rayTabMenuPolicy {
         )
     }
 }
+
+data class V2rayPingProgressState(
+    val batchByGroup: Map<String, Set<Int>> = emptyMap(),
+    val singleIds: Set<Int> = emptySet()
+) {
+    val activeProfileIds: Set<Int>
+        get() {
+            if (batchByGroup.isEmpty()) return singleIds
+            if (singleIds.isEmpty() && batchByGroup.size == 1) return batchByGroup.values.first()
+            val all = HashSet<Int>(singleIds)
+            for (set in batchByGroup.values) {
+                all.addAll(set)
+            }
+            return all
+        }
+
+    fun startBatch(groupName: String, profileIds: Set<Int>): V2rayPingProgressState {
+        if (profileIds.isEmpty()) {
+            if (!batchByGroup.containsKey(groupName)) return this
+            return copy(batchByGroup = batchByGroup - groupName)
+        }
+        return copy(batchByGroup = batchByGroup + (groupName to profileIds))
+    }
+
+    fun finishProfileInBatch(groupName: String, profileId: Int): V2rayPingProgressState {
+        val currentGroupIds = batchByGroup[groupName] ?: return this
+        if (!currentGroupIds.contains(profileId)) return this
+        val nextGroupIds = currentGroupIds - profileId
+        return if (nextGroupIds.isEmpty()) {
+            copy(batchByGroup = batchByGroup - groupName)
+        } else {
+            copy(batchByGroup = batchByGroup + (groupName to nextGroupIds))
+        }
+    }
+
+    fun clearBatch(groupName: String): V2rayPingProgressState {
+        if (!batchByGroup.containsKey(groupName)) return this
+        return copy(batchByGroup = batchByGroup - groupName)
+    }
+
+    fun startSingle(profileId: Int): V2rayPingProgressState {
+        if (singleIds.contains(profileId)) return this
+        return copy(singleIds = singleIds + profileId)
+    }
+
+    fun finishSingle(profileId: Int): V2rayPingProgressState {
+        if (!singleIds.contains(profileId)) return this
+        return copy(singleIds = singleIds - profileId)
+    }
+}
+

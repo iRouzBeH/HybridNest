@@ -69,6 +69,14 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
     private val v2rayPingJobs = ConcurrentHashMap<String, Job>()
     private val _singleLinksPingProgress = MutableStateFlow<PingProgress?>(null)
     val singleLinksPingProgress: StateFlow<PingProgress?> = _singleLinksPingProgress.asStateFlow()
+    private val _v2rayPingProgressState = MutableStateFlow(V2rayPingProgressState())
+    private val _v2rayPingingProfileIds = MutableStateFlow<Set<Int>>(emptySet())
+    val v2rayPingingProfileIds: StateFlow<Set<Int>> = _v2rayPingingProfileIds.asStateFlow()
+
+    private fun updateV2rayPingProgress(transform: (V2rayPingProgressState) -> V2rayPingProgressState) {
+        val newState = _v2rayPingProgressState.updateAndGet(transform)
+        _v2rayPingingProfileIds.value = newState.activeProfileIds
+    }
 
     private val _v2rayTabOrder = MutableStateFlow<List<String>>(emptyList())
     val v2rayTabOrder: StateFlow<List<String>> = _v2rayTabOrder.asStateFlow()
@@ -1627,6 +1635,7 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
         val previousJob = v2rayPingJobs.remove(groupName)
         val wasActive = previousJob?.isActive == true
         previousJob?.cancel()
+        updateV2rayPingProgress { it.clearBatch(groupName) }
         _v2rayPingTabs.value = _v2rayPingTabs.value - groupName
         if (groupName == V2rayTabOrderResolver.SINGLE_LINKS_TAB) {
             _singleLinksPingProgress.value = null
@@ -1666,6 +1675,9 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
                 }
                 if (targets.isEmpty() || !isStillCurrent()) return@launch
 
+                val targetIds = targets.map { it.id }.toSet()
+                updateV2rayPingProgress { it.startBatch(groupName, targetIds) }
+
                 // Mark this tab as pinging so only its UI shows the loading state.
                 _v2rayPingTabs.value = _v2rayPingTabs.value + groupName
                 if (groupName == V2rayTabOrderResolver.SINGLE_LINKS_TAB) {
@@ -1688,28 +1700,33 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
                     targets.map { profile ->
                         async(Dispatchers.IO) {
                             if (!isStillCurrent()) return@async
-                            semaphore.withPermit {
-                                if (!isStillCurrent()) return@withPermit
-                                val ping = try {
-                                    measureProfileDelay(profile)
-                                } catch (ce: CancellationException) {
-                                    throw ce
-                                } catch (_: Exception) {
-                                    -1L
+                            try {
+                                semaphore.withPermit {
+                                    if (!isStillCurrent()) return@withPermit
+                                    val ping = try {
+                                        measureProfileDelay(profile)
+                                    } catch (ce: CancellationException) {
+                                        throw ce
+                                    } catch (_: Exception) {
+                                        -1L
+                                    }
+                                    if (!isStillCurrent()) return@withPermit
+                                    dao.updateProfile(profile.copy(ping = ping))
+                                    if (groupName == V2rayTabOrderResolver.SINGLE_LINKS_TAB && isStillCurrent()) {
+                                        _singleLinksPingProgress.value = PingProgress(
+                                            completedCounter.incrementAndGet(),
+                                            targets.size
+                                        )
+                                    }
                                 }
-                                if (!isStillCurrent()) return@withPermit
-                                dao.updateProfile(profile.copy(ping = ping))
-                                if (groupName == V2rayTabOrderResolver.SINGLE_LINKS_TAB && isStillCurrent()) {
-                                    _singleLinksPingProgress.value = PingProgress(
-                                        completedCounter.incrementAndGet(),
-                                        targets.size
-                                    )
-                                }
+                            } finally {
+                                updateV2rayPingProgress { it.finishProfileInBatch(groupName, profile.id) }
                             }
                         }
                     }.awaitAll()
                 }
             } finally {
+                updateV2rayPingProgress { it.clearBatch(groupName) }
                 if (v2rayPingJobs.remove(groupName, currentJob)) {
                     _v2rayPingTabs.value = _v2rayPingTabs.value - groupName
                     if (groupName == V2rayTabOrderResolver.SINGLE_LINKS_TAB) {
@@ -1759,9 +1776,19 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
 
     fun testServerPing(profile: VpnProfile) {
         if (isSubscriptionInfoName(profile.name)) return
+        val isV2ray = profile.protocol == "v2rayNG"
+        if (isV2ray) {
+            updateV2rayPingProgress { it.startSingle(profile.id) }
+        }
         viewModelScope.launch(Dispatchers.IO) {
-            val ping = measureProfileDelay(profile)
-            dao.updateProfile(profile.copy(ping = ping))
+            try {
+                val ping = measureProfileDelay(profile)
+                dao.updateProfile(profile.copy(ping = ping))
+            } finally {
+                if (isV2ray) {
+                    updateV2rayPingProgress { it.finishSingle(profile.id) }
+                }
+            }
         }
     }
 
@@ -2114,5 +2141,6 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
         disconnectCoordinator.cancel()
         v2rayPingJobs.values.forEach { it.cancel() }
         v2rayPingJobs.clear()
+        updateV2rayPingProgress { V2rayPingProgressState() }
     }
 }

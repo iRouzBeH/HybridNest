@@ -17,8 +17,10 @@ import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.togetherWith
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -373,6 +375,7 @@ fun DashboardScreen(
     val isRoutingPending by viewModel.isRoutingPending.collectAsStateWithLifecycle()
     val currentLogs by viewModel.currentLogs.collectAsStateWithLifecycle()
     val v2rayPingTabs by viewModel.v2rayPingTabs.collectAsStateWithLifecycle()
+    val v2rayPingingProfileIds by viewModel.v2rayPingingProfileIds.collectAsStateWithLifecycle()
     val v2rayTabOrder by viewModel.v2rayTabOrder.collectAsStateWithLifecycle()
     val v2raySelectedTab by viewModel.v2raySelectedTab.collectAsStateWithLifecycle()
     val singleLinksPingProgress by viewModel.singleLinksPingProgress.collectAsStateWithLifecycle()
@@ -475,6 +478,7 @@ fun DashboardScreen(
                 onUpdateSub = { subKey -> if (!subscriptionUpdateState.isLocked) viewModel.updateSubscription(subKey) },
                 subscriptionUpdateState = subscriptionUpdateState,
                 v2rayPingTabs = v2rayPingTabs,
+                v2rayPingingProfileIds = v2rayPingingProfileIds,
                 v2rayTabOrder = v2rayTabOrder,
                 v2raySelectedTab = v2raySelectedTab,
                 singleLinksPingProgress = singleLinksPingProgress,
@@ -566,6 +570,7 @@ fun DashboardContent(
     onUpdateSub: (String) -> Unit,
     subscriptionUpdateState: SubscriptionUpdateState = SubscriptionUpdateState(),
     v2rayPingTabs: Set<String>,
+    v2rayPingingProfileIds: Set<Int> = emptySet(),
     v2rayTabOrder: List<String> = emptyList(),
     v2raySelectedTab: String = V2rayTabOrderResolver.SINGLE_LINKS_TAB,
     singleLinksPingProgress: PingProgress? = null,
@@ -714,6 +719,7 @@ fun DashboardContent(
             onUpdateSub = onUpdateSub,
             isSubscriptionUpdating = subscriptionUpdateState.isLocked,
             v2rayPingTabs = v2rayPingTabs,
+            v2rayPingingProfileIds = v2rayPingingProfileIds,
             v2rayTabOrder = v2rayTabOrder,
             v2raySelectedTab = v2raySelectedTab,
             singleLinksPingProgress = singleLinksPingProgress,
@@ -1243,7 +1249,8 @@ fun DashboardContent(
                                 },
                                 onTestSinglePing = onTestSinglePing,
                                 onShowToast = onShowToast,
-                                onShowDisconnectWarning = onShowDisconnectWarning
+                                onShowDisconnectWarning = onShowDisconnectWarning,
+                                v2rayPingingProfileIds = v2rayPingingProfileIds
                             )
                         }
                     }
@@ -1556,7 +1563,8 @@ fun ServerListSheetContent(
     onEdit: (VpnProfile) -> Unit,
     onTestSinglePing: (VpnProfile) -> Unit = {},
     onShowToast: (String) -> Unit = {},
-    onShowDisconnectWarning: (String) -> Unit = {}
+    onShowDisconnectWarning: (String) -> Unit = {},
+    v2rayPingingProfileIds: Set<Int> = emptySet()
 ) {
     Column(
         modifier = Modifier
@@ -1639,7 +1647,8 @@ fun ServerListSheetContent(
                         },
                         onPingClick = { onTestSinglePing(profile) },
                         onShowToast = onShowToast,
-                        onShowDisconnectWarning = onShowDisconnectWarning
+                        onShowDisconnectWarning = onShowDisconnectWarning,
+                        isExternalPinging = v2rayPingingProfileIds.contains(profile.id)
                     )
                 }
             }
@@ -1756,10 +1765,11 @@ fun ServerItemCard(
     onShowToast: (String) -> Unit = {},
     onShowDisconnectWarning: (String) -> Unit = {},
     subscriptionMeta: SubscriptionMeta? = null,
-    subscriptionLabel: String = "Subscription"
+    subscriptionLabel: String = "Subscription",
+    isExternalPinging: Boolean = false
 ) {
     val haptic = LocalHapticFeedback.current
-    val bgColor = if (isSelected) PrimaryCyan.copy(alpha = 0.1f) else SurfaceGlass
+    val bgColor = if (isSelected) PrimaryCyan.copy(alpha = 0.12f) else Color(0xFF0F172A).copy(alpha = 0.85f)
 
     val protocolIcon = when (profile.protocol) {
         "v2rayNG" -> R.drawable.ic_v2rayng // Ensure this exists
@@ -1812,7 +1822,7 @@ fun ServerItemCard(
             .background(bgColor)
             .border(
                 1.dp,
-                if (isSelected) PrimaryCyan.copy(alpha = 0.5f) else BorderGlass,
+                if (isSelected) PrimaryCyan.copy(alpha = 0.50f) else Color.White.copy(alpha = 0.08f),
                 RoundedCornerShape(18.dp)
             )
             .then(
@@ -1836,6 +1846,7 @@ fun ServerItemCard(
         LaunchedEffect(profile.ping) {
             isPinging = false
         }
+        val effectiveIsPinging = isPinging || isExternalPinging
 
         // Subscription info cards (volume/time) don't show the protocol/v2rayNG logo
         // — removing it frees up room for the meta row and keeps the card minimal.
@@ -1997,12 +2008,18 @@ fun ServerItemCard(
                         .clip(RoundedCornerShape(10.dp))
                         .background(Color.Black.copy(alpha = 0.30f))
                         .border(1.dp, BorderGlass.copy(alpha = 0.18f), RoundedCornerShape(10.dp))
-                        .clickable { isPinging = true; onPingClick() }
+                        .clickable {
+                            if (effectiveIsPinging) return@clickable
+                            if (profile.protocol != "v2rayNG") {
+                                isPinging = true
+                            }
+                            onPingClick()
+                        }
                         .padding(horizontal = 14.dp, vertical = 6.dp),
                     contentAlignment = Alignment.Center
                 ) {
                     AnimatedContent(
-                        targetState = isPinging,
+                        targetState = effectiveIsPinging,
                         transitionSpec = {
                             fadeIn(animationSpec = tween(220, delayMillis = 90)) togetherWith
                                     fadeOut(animationSpec = tween(90))
@@ -4510,6 +4527,7 @@ fun ServerListFullScreen(
     onUpdateSub: (String) -> Unit,
     isSubscriptionUpdating: Boolean = false,
     v2rayPingTabs: Set<String> = emptySet(),
+    v2rayPingingProfileIds: Set<Int> = emptySet(),
     v2rayTabOrder: List<String> = emptyList(),
     v2raySelectedTab: String = V2rayTabOrderResolver.SINGLE_LINKS_TAB,
     singleLinksPingProgress: PingProgress? = null,
@@ -4593,11 +4611,37 @@ fun ServerListFullScreen(
         parseSubscriptionMeta(displayServers.map { it.name })
     }
 
+    val accentColor = PrimaryCyan
+
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(SurfaceDark)
+            .background(BackgroundDark)
     ) {
+        // Subtle ambient top radial glow matching SettingsFullScreenScaffold
+        Canvas(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(280.dp)
+                .align(Alignment.TopCenter)
+        ) {
+            val center = Offset(size.width / 2f, 0f)
+            val radius = size.width * 0.85f
+            drawCircle(
+                brush = Brush.radialGradient(
+                    colors = listOf(
+                        accentColor.copy(alpha = 0.09f),
+                        accentColor.copy(alpha = 0.03f),
+                        Color.Transparent
+                    ),
+                    center = center,
+                    radius = radius
+                ),
+                radius = radius,
+                center = center
+            )
+        }
+
         Column(
             modifier = Modifier
                 .fillMaxSize()
@@ -4605,136 +4649,308 @@ fun ServerListFullScreen(
                 .displayCutoutPadding()
                 .navigationBarsPadding()
         ) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(top = 8.dp, start = 16.dp, end = 16.dp, bottom = 16.dp),
-                verticalAlignment = Alignment.CenterVertically
+            // Modern Glass Top Header Bar
+            Column(
+                modifier = Modifier.fillMaxWidth()
             ) {
-            Icon(
-                imageVector = androidx.compose.material.icons.Icons.AutoMirrored.Filled.ArrowBack,
-                contentDescription = "Back",
-                tint = Color.White,
-                modifier = Modifier.size(28.dp).bounceClick { if (isReorderMode) isReorderMode = false else onNavigateBack() }
-            )
-            Spacer(modifier = Modifier.width(16.dp))
-
-            if (!isReorderMode) {
-                Text(
-                    when (protocol) {
-                        "v2rayNG" -> "v2rayNG Server List"
-                        "WireGuard" -> "WireGuard Server List"
-                        else -> "AnyConnect Server List"
-                    },
-                    color = Color.White, fontSize = 20.sp, fontWeight = FontWeight.Bold, fontFamily = SoraFamily
-                )
-                Spacer(modifier = Modifier.weight(1f))
-
-                if (protocol == "v2rayNG") {
-                    var showV2rayMenu by androidx.compose.runtime.remember { mutableStateOf(false) }
-                    Box {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    // Circular glass back button (40dp)
+                    Box(
+                        modifier = Modifier
+                            .size(40.dp)
+                            .clip(CircleShape)
+                            .background(Color.White.copy(alpha = 0.06f))
+                            .border(1.dp, Color.White.copy(alpha = 0.10f), CircleShape)
+                            .clickable {
+                                if (isReorderMode) isReorderMode = false else onNavigateBack()
+                            },
+                        contentAlignment = Alignment.Center
+                    ) {
                         Icon(
-                            imageVector = androidx.compose.material.icons.Icons.Default.MoreVert,
-                            contentDescription = "Options",
+                            imageVector = androidx.compose.material.icons.Icons.AutoMirrored.Filled.ArrowBack,
+                            contentDescription = "Back",
                             tint = Color.White,
-                            modifier = Modifier.size(28.dp).bounceClick { showV2rayMenu = true }
+                            modifier = Modifier.size(20.dp)
                         )
-                        androidx.compose.material3.DropdownMenu(
-                            expanded = showV2rayMenu,
-                            onDismissRequest = { showV2rayMenu = false },
-                            modifier = Modifier.background(SurfaceDark).border(1.dp, BorderGlass, RoundedCornerShape(8.dp))
+                    }
+
+                    Spacer(modifier = Modifier.width(14.dp))
+
+                    if (!isReorderMode) {
+                        val titleText = when (protocol) {
+                            "v2rayNG" -> "v2rayNG Servers"
+                            "WireGuard" -> "WireGuard Servers"
+                            else -> "AnyConnect Servers"
+                        }
+                        val subtitleText = when (protocol) {
+                            "v2rayNG" -> {
+                                val activeTabName = if (selectedTab == "SingleLinks") "SingleLinks"
+                                    else subGroups[selectedTab]?.firstOrNull()?.subName?.takeIf { it.isNotBlank() } ?: "SubLink"
+                                val serverCount = displayServers.count { !isSubscriptionInfoName(it.name) }
+                                val s = if (serverCount == 1) "server" else "servers"
+                                "$serverCount $s in $activeTabName"
+                            }
+                            else -> {
+                                val serverCount = servers.count { !isSubscriptionInfoName(it.name) }
+                                val s = if (serverCount == 1) "server" else "servers"
+                                "$serverCount $s available"
+                            }
+                        }
+
+                        Column(
+                            modifier = Modifier.weight(1f)
                         ) {
-                            CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
-                                // Every action captures the currently-selected tab at tap time
-                                // so a mid-operation tab switch can't redirect it elsewhere.
-                                androidx.compose.material3.DropdownMenuItem(
-                                    text = { Text("Sorting by test results", color = Color.White, fontFamily = SoraFamily) },
-                                    leadingIcon = { Icon(androidx.compose.material.icons.Icons.Default.Sort, contentDescription = null, tint = Color.White) },
-                                    onClick = { val tab = selectedTab; showV2rayMenu = false; onSortV2ray(tab) }
-                                )
+                            Text(
+                                text = titleText,
+                                color = Color.White,
+                                fontSize = 19.sp,
+                                fontWeight = FontWeight.Bold,
+                                fontFamily = SoraFamily,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            Spacer(modifier = Modifier.height(2.dp))
+                            Text(
+                                text = subtitleText,
+                                color = Color(0xFF94A3B8),
+                                fontSize = 12.sp,
+                                fontFamily = SoraFamily,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+
+                        if (protocol == "v2rayNG") {
+                            Spacer(modifier = Modifier.width(8.dp))
+                            var showV2rayMenu by androidx.compose.runtime.remember { mutableStateOf(false) }
+
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
                                 if (menuState.showStopPingAction) {
-                                    androidx.compose.material3.DropdownMenuItem(
-                                        text = { Text("Stop ping test", color = Color(0xFFFF6B6B), fontFamily = SoraFamily) },
-                                        leadingIcon = { Icon(androidx.compose.material.icons.Icons.Default.Stop, contentDescription = null, tint = Color(0xFFFF6B6B)) },
-                                        onClick = { showV2rayMenu = false; onStopSingleLinksPing() }
-                                    )
-                                } else {
-                                    androidx.compose.material3.DropdownMenuItem(
-                                        text = { Text("Test Real delay config", color = Color.White, fontFamily = SoraFamily) },
-                                        leadingIcon = { Icon(androidx.compose.material.icons.Icons.Default.Speed, contentDescription = null, tint = Color.White) },
-                                        onClick = { val tab = selectedTab; showV2rayMenu = false; onTestAllV2rayPing(tab) }
-                                    )
-                                }
-                                if (menuState.showUpdateSubscription) {
-                                    androidx.compose.material3.DropdownMenuItem(
-                                        text = { Text("Update subscription", color = Color.White, fontFamily = SoraFamily) },
-                                        leadingIcon = { Icon(androidx.compose.material.icons.Icons.Outlined.Sync, contentDescription = null, tint = Color.White) },
-                                        onClick = {
-                                            val tab = selectedTab
-                                            showV2rayMenu = false
-                                            if (tab != "SingleLinks" && !isSubscriptionUpdating) {
-                                                when (ConnectionLockGuard.evaluateControlTap(connectionState)) {
-                                                    LockActionOutcome.ALLOW -> onUpdateSub(tab)
-                                                    LockActionOutcome.SHOW_LOCK_WARNING -> {
-                                                        onShowDisconnectWarning("Cannot update subscription while VPN is active. Please disconnect first and try again.\n\nWould you like to disconnect now?")
-                                                    }
-                                                    LockActionOutcome.IGNORE_WHILE_DISCONNECTING -> Unit
-                                                }
-                                            }
-                                        }
-                                    )
-                                }
-                                androidx.compose.material3.DropdownMenuItem(
-                                    text = { Text("Delete invalid config", color = Color(0xFFE53935), fontFamily = SoraFamily) },
-                                    leadingIcon = { Icon(androidx.compose.material.icons.Icons.Outlined.Delete, contentDescription = null, tint = Color(0xFFE53935)) },
-                                    onClick = {
-                                        val tab = selectedTab
-                                        showV2rayMenu = false
-                                        when (ConnectionLockGuard.evaluateControlTap(connectionState)) {
-                                            LockActionOutcome.ALLOW -> onDeleteInvalidV2ray(tab)
-                                            LockActionOutcome.SHOW_LOCK_WARNING -> {
-                                                onShowDisconnectWarning("Cannot delete servers while VPN is active. Please disconnect first and try again.\n\nWould you like to disconnect now?")
-                                            }
-                                            LockActionOutcome.IGNORE_WHILE_DISCONNECTING -> Unit
+                                    Box(
+                                        modifier = Modifier
+                                            .height(36.dp)
+                                            .clip(RoundedCornerShape(10.dp))
+                                            .background(Color(0xFFFF4D6D).copy(alpha = 0.15f))
+                                            .border(1.dp, Color(0xFFFF4D6D).copy(alpha = 0.40f), RoundedCornerShape(10.dp))
+                                            .clickable { onStopSingleLinksPing() }
+                                            .padding(horizontal = 10.dp),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Row(
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                        ) {
+                                            Icon(
+                                                imageVector = androidx.compose.material.icons.Icons.Default.Stop,
+                                                contentDescription = "Stop",
+                                                tint = Color(0xFFFF4D6D),
+                                                modifier = Modifier.size(16.dp)
+                                            )
+                                            Text(
+                                                text = "Stop",
+                                                color = Color(0xFFFF4D6D),
+                                                fontSize = 12.sp,
+                                                fontWeight = FontWeight.Bold,
+                                                fontFamily = SoraFamily
+                                            )
                                         }
                                     }
+                                }
+
+                                Box {
+                                    Box(
+                                        modifier = Modifier
+                                            .size(40.dp)
+                                            .clip(CircleShape)
+                                            .background(Color.White.copy(alpha = 0.06f))
+                                            .border(1.dp, Color.White.copy(alpha = 0.10f), CircleShape)
+                                            .clickable { showV2rayMenu = true },
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Icon(
+                                            imageVector = androidx.compose.material.icons.Icons.Default.MoreVert,
+                                            contentDescription = "Options",
+                                            tint = Color.White,
+                                            modifier = Modifier.size(20.dp)
+                                        )
+                                    }
+                                    androidx.compose.material3.DropdownMenu(
+                                        expanded = showV2rayMenu,
+                                        onDismissRequest = { showV2rayMenu = false },
+                                        modifier = Modifier
+                                            .background(Color(0xFF0F172A))
+                                            .border(1.dp, Color.White.copy(alpha = 0.10f), RoundedCornerShape(12.dp))
+                                    ) {
+                                        CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
+                                            // Every action captures the currently-selected tab at tap time
+                                            // so a mid-operation tab switch can't redirect it elsewhere.
+                                            androidx.compose.material3.DropdownMenuItem(
+                                                text = { Text("Sorting by test results", color = Color.White, fontFamily = SoraFamily) },
+                                                leadingIcon = { Icon(androidx.compose.material.icons.Icons.Default.Sort, contentDescription = null, tint = Color.White) },
+                                                onClick = { val tab = selectedTab; showV2rayMenu = false; onSortV2ray(tab) }
+                                            )
+                                            if (menuState.showStopPingAction) {
+                                                androidx.compose.material3.DropdownMenuItem(
+                                                    text = { Text("Stop ping test", color = Color(0xFFFF6B6B), fontFamily = SoraFamily) },
+                                                    leadingIcon = { Icon(androidx.compose.material.icons.Icons.Default.Stop, contentDescription = null, tint = Color(0xFFFF6B6B)) },
+                                                    onClick = { showV2rayMenu = false; onStopSingleLinksPing() }
+                                                )
+                                            } else {
+                                                androidx.compose.material3.DropdownMenuItem(
+                                                    text = { Text("Test Real delay config", color = Color.White, fontFamily = SoraFamily) },
+                                                    leadingIcon = { Icon(androidx.compose.material.icons.Icons.Default.Speed, contentDescription = null, tint = Color.White) },
+                                                    onClick = { val tab = selectedTab; showV2rayMenu = false; onTestAllV2rayPing(tab) }
+                                                )
+                                            }
+                                            if (menuState.showUpdateSubscription) {
+                                                androidx.compose.material3.DropdownMenuItem(
+                                                    text = { Text("Update subscription", color = Color.White, fontFamily = SoraFamily) },
+                                                    leadingIcon = { Icon(androidx.compose.material.icons.Icons.Outlined.Sync, contentDescription = null, tint = Color.White) },
+                                                    onClick = {
+                                                        val tab = selectedTab
+                                                        showV2rayMenu = false
+                                                        if (tab != "SingleLinks" && !isSubscriptionUpdating) {
+                                                            when (ConnectionLockGuard.evaluateControlTap(connectionState)) {
+                                                                LockActionOutcome.ALLOW -> onUpdateSub(tab)
+                                                                LockActionOutcome.SHOW_LOCK_WARNING -> {
+                                                                    onShowDisconnectWarning("Cannot update subscription while VPN is active. Please disconnect first and try again.\n\nWould you like to disconnect now?")
+                                                                }
+                                                                LockActionOutcome.IGNORE_WHILE_DISCONNECTING -> Unit
+                                                            }
+                                                        }
+                                                    }
+                                                )
+                                            }
+                                            androidx.compose.material3.DropdownMenuItem(
+                                                text = { Text("Delete invalid config", color = Color(0xFFE53935), fontFamily = SoraFamily) },
+                                                leadingIcon = { Icon(androidx.compose.material.icons.Icons.Outlined.Delete, contentDescription = null, tint = Color(0xFFE53935)) },
+                                                onClick = {
+                                                    val tab = selectedTab
+                                                    showV2rayMenu = false
+                                                    when (ConnectionLockGuard.evaluateControlTap(connectionState)) {
+                                                        LockActionOutcome.ALLOW -> onDeleteInvalidV2ray(tab)
+                                                        LockActionOutcome.SHOW_LOCK_WARNING -> {
+                                                            onShowDisconnectWarning("Cannot delete servers while VPN is active. Please disconnect first and try again.\n\nWould you like to disconnect now?")
+                                                        }
+                                                        LockActionOutcome.IGNORE_WHILE_DISCONNECTING -> Unit
+                                                    }
+                                                }
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    } else {
+                        // Reorder mode
+                        Column(
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Text(
+                                text = "Reorder Tabs",
+                                color = Color.White,
+                                fontSize = 19.sp,
+                                fontWeight = FontWeight.Bold,
+                                fontFamily = SoraFamily,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            Spacer(modifier = Modifier.height(2.dp))
+                            Text(
+                                text = "Move selected tab left or right",
+                                color = Color(0xFF94A3B8),
+                                fontSize = 12.sp,
+                                fontFamily = SoraFamily,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                            val currentIndex = tabOrder.indexOf(selectedTab)
+
+                            Box(
+                                modifier = Modifier
+                                    .size(36.dp)
+                                    .clip(CircleShape)
+                                    .background(Color.White.copy(alpha = if (currentIndex > 0) 0.08f else 0.03f))
+                                    .border(1.dp, Color.White.copy(alpha = if (currentIndex > 0) 0.15f else 0.06f), CircleShape)
+                                    .clickable(enabled = currentIndex > 0) {
+                                        onMoveV2rayTab(tabOrder, selectedTab, -1)
+                                    },
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    imageVector = androidx.compose.material.icons.Icons.AutoMirrored.Filled.KeyboardArrowLeft,
+                                    contentDescription = "Move Left",
+                                    tint = if (currentIndex > 0) accentColor else Color.Gray,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                            }
+
+                            Box(
+                                modifier = Modifier
+                                    .size(36.dp)
+                                    .clip(CircleShape)
+                                    .background(Color.White.copy(alpha = if (currentIndex in 0 until tabOrder.size - 1) 0.08f else 0.03f))
+                                    .border(1.dp, Color.White.copy(alpha = if (currentIndex in 0 until tabOrder.size - 1) 0.15f else 0.06f), CircleShape)
+                                    .clickable(enabled = currentIndex in 0 until tabOrder.size - 1) {
+                                        onMoveV2rayTab(tabOrder, selectedTab, +1)
+                                    },
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    imageVector = androidx.compose.material.icons.Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                                    contentDescription = "Move Right",
+                                    tint = if (currentIndex in 0 until tabOrder.size - 1) accentColor else Color.Gray,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                            }
+
+                            Box(
+                                modifier = Modifier
+                                    .height(36.dp)
+                                    .clip(RoundedCornerShape(10.dp))
+                                    .background(accentColor.copy(alpha = 0.15f))
+                                    .border(1.dp, accentColor.copy(alpha = 0.35f), RoundedCornerShape(10.dp))
+                                    .clickable { isReorderMode = false }
+                                    .padding(horizontal = 12.dp),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text(
+                                    text = "Done",
+                                    color = accentColor,
+                                    fontSize = 13.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    fontFamily = SoraFamily
                                 )
                             }
                         }
                     }
                 }
-            } else {
-                Spacer(modifier = Modifier.weight(1f))
-                Row(horizontalArrangement = Arrangement.spacedBy(16.dp), verticalAlignment = Alignment.CenterVertically) {
-                    val currentIndex = tabOrder.indexOf(selectedTab)
 
-                    androidx.compose.material3.IconButton(
-                        onClick = {
-                            onMoveV2rayTab(tabOrder, selectedTab, -1)
-                        },
-                        enabled = currentIndex > 0
-                    ) {
-                        Icon(androidx.compose.material.icons.Icons.AutoMirrored.Filled.KeyboardArrowLeft, contentDescription = "Move Left", tint = if (currentIndex > 0) PrimaryCyan else Color.Gray)
-                    }
-
-                    androidx.compose.material3.IconButton(
-                        onClick = {
-                            onMoveV2rayTab(tabOrder, selectedTab, +1)
-                        },
-                        enabled = currentIndex in 0 until tabOrder.size - 1
-                    ) {
-                        Icon(androidx.compose.material.icons.Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = "Move Right", tint = if (currentIndex in 0 until tabOrder.size - 1) PrimaryCyan else Color.Gray)
-                    }
-                }
-                Spacer(modifier = Modifier.weight(1f))
-                Text(text = "Done", color = PrimaryCyan, fontSize = 16.sp, fontWeight = FontWeight.Bold, fontFamily = SoraFamily, modifier = Modifier.bounceClick { isReorderMode = false }.padding(8.dp))
+                // Thin hairline bottom divider matching SettingsTopHeaderBar
+                HorizontalDivider(
+                    thickness = 1.dp,
+                    color = Color.White.copy(alpha = 0.07f)
+                )
             }
-        }
 
         if (protocol == "v2rayNG") {
             androidx.compose.foundation.lazy.LazyRow(
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
-                horizontalArrangement = Arrangement.spacedBy(16.dp)
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 10.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 // CRITICAL FIX: key = { it } prevents the visual state inversion bug
                 items(sortedTabs, key = { it }) { tabKey ->
@@ -4749,32 +4965,56 @@ fun ServerListFullScreen(
                     val customName = if (tabKey == "SingleLinks") "SingleLinks"
                         else subGroups[tabKey]?.firstOrNull()?.subName?.takeIf { it.isNotBlank() } ?: "SubLink ${subKeys.indexOf(tabKey) + 1}"
                     val isTabPinging = v2rayPingTabs.contains(tabKey)
+                    val isSelected = selectedTab == tabKey
+                    val capsuleBg = if (isSelected) accentColor.copy(alpha = 0.16f) else Color.White.copy(alpha = 0.04f)
+                    val capsuleBorder = if (isSelected) accentColor.copy(alpha = 0.50f) else Color.White.copy(alpha = 0.08f)
+                    val textColor = if (isSelected) Color.White else Color(0xFF94A3B8)
+                    val textWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Normal
 
                     Box {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            if (isTabPinging) {
-                                CircularProgressIndicator(
-                                    modifier = Modifier.size(11.dp),
-                                    strokeWidth = 1.5.dp,
-                                    color = PrimaryCyan
+                        Box(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(capsuleBg)
+                                .border(1.dp, capsuleBorder, RoundedCornerShape(12.dp))
+                                .bounceClick(
+                                    onLongClick = {
+                                        onSelectV2rayTab(tabKey)
+                                        expandedTabMenu = tabKey
+                                    }
+                                ) {
+                                    onSelectV2rayTab(tabKey)
+                                }
+                                .padding(horizontal = 14.dp, vertical = 8.dp)
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                if (isTabPinging) {
+                                    CircularProgressIndicator(
+                                        modifier = Modifier.size(11.dp),
+                                        strokeWidth = 1.5.dp,
+                                        color = accentColor
+                                    )
+                                }
+                                Text(
+                                    text = "$customName ($count)",
+                                    color = textColor,
+                                    fontWeight = textWeight,
+                                    fontSize = 13.sp,
+                                    fontFamily = SoraFamily,
+                                    maxLines = 1
                                 )
-                                Spacer(modifier = Modifier.width(5.dp))
                             }
-                            Text(
-                                text = "$customName ($count)",
-                                color = if (selectedTab == tabKey) PrimaryCyan else TextSecondary,
-                                fontWeight = if (selectedTab == tabKey) FontWeight.Bold else FontWeight.Normal,
-                                fontFamily = SoraFamily,
-                                modifier = Modifier
-                                    .bounceClick(onLongClick = { onSelectV2rayTab(tabKey); expandedTabMenu = tabKey }) { onSelectV2rayTab(tabKey) }
-                                    .padding(8.dp)
-                            )
                         }
 
                         androidx.compose.material3.DropdownMenu(
                             expanded = expandedTabMenu == tabKey,
                             onDismissRequest = { expandedTabMenu = null },
-                            modifier = Modifier.background(SurfaceDark).border(1.dp, BorderGlass, RoundedCornerShape(8.dp))
+                            modifier = Modifier
+                                .background(Color(0xFF0F172A))
+                                .border(1.dp, Color.White.copy(alpha = 0.10f), RoundedCornerShape(12.dp))
                         ) {
                             CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
                                 androidx.compose.material3.DropdownMenuItem(
@@ -4830,10 +5070,10 @@ fun ServerListFullScreen(
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 4.dp)
-                    .background(Color(0xFF071926).copy(alpha = 0.90f), RoundedCornerShape(14.dp))
-                    .border(1.dp, PrimaryCyan.copy(alpha = 0.25f), RoundedCornerShape(14.dp))
+                    .padding(horizontal = 16.dp, vertical = 6.dp)
                     .clip(RoundedCornerShape(14.dp))
+                    .background(Color(0xFF0F172A).copy(alpha = 0.90f))
+                    .border(1.dp, PrimaryCyan.copy(alpha = 0.25f), RoundedCornerShape(14.dp))
             ) {
                 Column(
                     modifier = Modifier
@@ -4880,8 +5120,9 @@ fun ServerListFullScreen(
 
                         Row(
                             modifier = Modifier
-                                .background(Color(0xFFFF4D6D).copy(alpha = 0.15f), RoundedCornerShape(12.dp))
-                                .border(1.dp, Color(0xFFFF4D6D).copy(alpha = 0.4f), RoundedCornerShape(12.dp))
+                                .clip(RoundedCornerShape(10.dp))
+                                .background(Color(0xFFFF4D6D).copy(alpha = 0.15f))
+                                .border(1.dp, Color(0xFFFF4D6D).copy(alpha = 0.4f), RoundedCornerShape(10.dp))
                                 .bounceClick { onStopSingleLinksPing() }
                                 .padding(horizontal = 10.dp, vertical = 4.dp),
                             verticalAlignment = Alignment.CenterVertically,
@@ -4923,6 +5164,29 @@ fun ServerListFullScreen(
             modifier = Modifier.fillMaxSize().padding(horizontal = 16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
+            if (visibleServers.isEmpty()) {
+                item {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 48.dp, horizontal = 16.dp)
+                            .clip(RoundedCornerShape(16.dp))
+                            .background(Color(0xFF0F172A).copy(alpha = 0.60f))
+                            .border(1.dp, Color.White.copy(alpha = 0.08f), RoundedCornerShape(16.dp))
+                            .padding(24.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = "No servers found in this group",
+                            color = Color(0xFF94A3B8),
+                            fontSize = 14.sp,
+                            fontFamily = SoraFamily,
+                            textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                        )
+                    }
+                }
+            }
+
             // The leading info block merges into a single pinned box: render only
             // its first entry (carrying the merged meta); the remaining info
             // entries are hidden entirely — not selectable, connectable, pingable,
@@ -4989,7 +5253,8 @@ fun ServerListFullScreen(
                     onShowToast = { msg -> localToast = msg },
                     onShowDisconnectWarning = onShowDisconnectWarning,
                     subscriptionMeta = if (isInfoCard) mergedSubMeta else null,
-                    subscriptionLabel = groupLabel
+                    subscriptionLabel = groupLabel,
+                    isExternalPinging = v2rayPingingProfileIds.contains(profile.id)
                 )
             }
             item { Spacer(modifier = Modifier.height(24.dp)) }
@@ -5014,8 +5279,8 @@ fun ServerListFullScreen(
                         .safeDrawingPadding()
                         .padding(horizontal = 24.dp)
                         .clip(RoundedCornerShape(24.dp))
-                        .background(SurfaceMenu)
-                        .border(1.dp, BorderGlass, RoundedCornerShape(24.dp))
+                        .background(Color(0xFF0F172A))
+                        .border(1.dp, Color.White.copy(alpha = 0.10f), RoundedCornerShape(24.dp))
                         .padding(24.dp)
                 ) {
                     Column(
