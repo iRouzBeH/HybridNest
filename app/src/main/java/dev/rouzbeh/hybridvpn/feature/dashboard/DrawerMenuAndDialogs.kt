@@ -5,6 +5,7 @@ import android.content.ClipDescription
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
+import android.net.Uri
 import android.os.Build
 import android.os.PersistableBundle
 import android.provider.Settings
@@ -60,10 +61,13 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.ContentPaste
 import androidx.compose.material.icons.filled.DeleteOutline
+import androidx.compose.material.icons.filled.Description
+import androidx.compose.material.icons.filled.FileDownload
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.SystemUpdateAlt
 import androidx.compose.material.icons.filled.Tune
+import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -78,6 +82,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -96,6 +101,7 @@ import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextDirection
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -114,6 +120,9 @@ import dev.rouzbeh.hybridvpn.core.designsystem.TextSecondary
 import dev.rouzbeh.hybridvpn.core.vpn.v2ray.V2raySettings
 import dev.rouzbeh.hybridvpn.data.repository.SettingsRepository
 import dev.rouzbeh.hybridvpn.service.ConnectionState
+import dev.rouzbeh.hybridvpn.service.DetailedState
+import dev.rouzbeh.hybridvpn.service.VpnProtocol
+import dev.rouzbeh.hybridvpn.service.VpnStateManager
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
@@ -1799,9 +1808,13 @@ fun FeaturesFullScreen(
 
 @Composable
 fun CheckForUpdateFullScreen(
-    onDismiss: () -> Unit
+    onDismiss: () -> Unit,
+    viewModel: DashboardViewModel? = null,
+    connectionState: ConnectionState = ConnectionState.DISCONNECTED
 ) {
+    var checkTrigger by remember { mutableIntStateOf(0) }
     var isChecking by remember { mutableStateOf(true) }
+    var checkResult by remember { mutableStateOf<UpdateCheckResult?>(null) }
     val context = LocalContext.current
 
     val (versionName, versionCode) = remember(context) {
@@ -1828,10 +1841,32 @@ fun CheckForUpdateFullScreen(
         }
     }
 
-    LaunchedEffect(isChecking) {
-        if (isChecking) {
-            delay(800L)
-            isChecking = false
+    val isConnected = connectionState == ConnectionState.CONNECTED ||
+        VpnStateManager.connectionState.value == ConnectionState.CONNECTED
+    val detailedState = VpnStateManager.detailedConnectionStateFlow.value
+    val detailedProto = (detailedState as? DetailedState.Connected)?.activeProtocol
+    val activeProfileProto = viewModel?.activeProfile?.value?.protocol
+    val isXray = isConnected && (detailedProto == VpnProtocol.V2rayNG || detailedProto == VpnProtocol.WireGuard ||
+        activeProfileProto == "v2rayNG" || activeProfileProto == "WireGuard")
+
+    LaunchedEffect(checkTrigger) {
+        isChecking = true
+        checkResult = GitHubUpdateChecker.fetchLatestRelease(
+            installedVersion = versionName,
+            useLocalXrayProxy = isXray
+        )
+        isChecking = false
+    }
+
+    val openUrlSafely: (String) -> Unit = remember(context) {
+        { rawUrl ->
+            val safeUrl = GitHubUpdateChecker.sanitizeReleaseUrl(rawUrl)
+            runCatching {
+                val intent = Intent(Intent.ACTION_VIEW, Uri.parse(safeUrl)).apply {
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+                context.startActivity(intent)
+            }
         }
     }
 
@@ -1864,7 +1899,7 @@ fun CheckForUpdateFullScreen(
                 }
 
                 Button(
-                    onClick = { isChecking = true },
+                    onClick = { checkTrigger++ },
                     enabled = !isChecking,
                     colors = ButtonDefaults.buttonColors(
                         containerColor = PrimaryCyan,
@@ -1883,7 +1918,7 @@ fun CheckForUpdateFullScreen(
                     )
                     Spacer(modifier = Modifier.width(6.dp))
                     Text(
-                        text = "Check Again",
+                        text = if (checkResult is UpdateCheckResult.Error) "Retry" else "Check Again",
                         color = BackgroundDark,
                         fontSize = 13.sp,
                         fontWeight = FontWeight.Bold,
@@ -1915,7 +1950,7 @@ fun CheckForUpdateFullScreen(
                     )
                     Spacer(modifier = Modifier.height(16.dp))
                     Text(
-                        text = "Checking installed version...",
+                        text = "Checking GitHub Releases...",
                         color = Color.White,
                         fontSize = 15.sp,
                         fontWeight = FontWeight.SemiBold,
@@ -1923,54 +1958,7 @@ fun CheckForUpdateFullScreen(
                     )
                     Spacer(modifier = Modifier.height(4.dp))
                     Text(
-                        text = "Verifying local package integrity & architecture",
-                        color = Color(0xFF94A3B8),
-                        fontSize = 12.sp,
-                        fontFamily = SoraFamily
-                    )
-                }
-            }
-        } else {
-            val emeraldColor = Color(0xFF10B981)
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clip(RoundedCornerShape(20.dp))
-                    .background(Color(0xFF0F172A).copy(alpha = 0.88f))
-                    .border(1.dp, emeraldColor.copy(alpha = 0.36f), RoundedCornerShape(20.dp))
-                    .padding(vertical = 28.dp, horizontal = 20.dp),
-                contentAlignment = Alignment.Center
-            ) {
-                Column(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalAlignment = Alignment.CenterHorizontally
-                ) {
-                    Box(
-                        modifier = Modifier
-                            .size(54.dp)
-                            .clip(CircleShape)
-                            .background(emeraldColor.copy(alpha = 0.12f))
-                            .border(1.dp, emeraldColor.copy(alpha = 0.32f), CircleShape),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.CheckCircle,
-                            contentDescription = "Up to Date",
-                            tint = emeraldColor,
-                            modifier = Modifier.size(32.dp)
-                        )
-                    }
-                    Spacer(modifier = Modifier.height(14.dp))
-                    Text(
-                        text = "Up to Date",
-                        color = Color.White,
-                        fontSize = 17.sp,
-                        fontWeight = FontWeight.Bold,
-                        fontFamily = SoraFamily
-                    )
-                    Spacer(modifier = Modifier.height(4.dp))
-                    Text(
-                        text = "You are on the latest local build",
+                        text = "Verifying latest version against HybridNest repository",
                         color = Color(0xFF94A3B8),
                         fontSize = 12.sp,
                         fontFamily = SoraFamily
@@ -1984,7 +1972,7 @@ fun CheckForUpdateFullScreen(
                             .padding(horizontal = 14.dp, vertical = 6.dp)
                     ) {
                         Text(
-                            text = "HybridNest v$versionName (Build $versionCode)",
+                            text = "Installed: v$versionName (Build $versionCode)",
                             color = PrimaryCyan,
                             fontSize = 12.sp,
                             fontWeight = FontWeight.SemiBold,
@@ -1993,6 +1981,368 @@ fun CheckForUpdateFullScreen(
                         )
                     }
                 }
+            }
+        } else {
+            when (val result = checkResult) {
+                is UpdateCheckResult.UpToDate -> {
+                    val emeraldColor = Color(0xFF10B981)
+                    val release = result.latestRelease
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(20.dp))
+                            .background(Color(0xFF0F172A).copy(alpha = 0.88f))
+                            .border(1.dp, emeraldColor.copy(alpha = 0.36f), RoundedCornerShape(20.dp))
+                            .padding(vertical = 28.dp, horizontal = 20.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Column(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalAlignment = Alignment.CenterHorizontally
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(54.dp)
+                                    .clip(CircleShape)
+                                    .background(emeraldColor.copy(alpha = 0.12f))
+                                    .border(1.dp, emeraldColor.copy(alpha = 0.32f), CircleShape),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.CheckCircle,
+                                    contentDescription = "Up to Date",
+                                    tint = emeraldColor,
+                                    modifier = Modifier.size(32.dp)
+                                )
+                            }
+                            Spacer(modifier = Modifier.height(14.dp))
+                            Text(
+                                text = "You're Up to Date",
+                                color = Color.White,
+                                fontSize = 17.sp,
+                                fontWeight = FontWeight.Bold,
+                                fontFamily = SoraFamily
+                            )
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Text(
+                                text = "Installed v$versionName matches latest release ${release.tagName}",
+                                color = Color(0xFF94A3B8),
+                                fontSize = 12.sp,
+                                fontFamily = SoraFamily,
+                                textAlign = TextAlign.Center
+                            )
+                            if (!release.publishedAt.isNullOrBlank()) {
+                                Spacer(modifier = Modifier.height(2.dp))
+                                Text(
+                                    text = "Published on ${release.publishedAt}",
+                                    color = Color(0xFF64748B),
+                                    fontSize = 11.sp,
+                                    fontFamily = SoraFamily
+                                )
+                            }
+                            Spacer(modifier = Modifier.height(14.dp))
+                            OutlinedButton(
+                                onClick = { openUrlSafely(release.htmlUrl) },
+                                shape = RoundedCornerShape(10.dp),
+                                border = BorderStroke(1.dp, emeraldColor.copy(alpha = 0.40f)),
+                                colors = ButtonDefaults.outlinedButtonColors(contentColor = emeraldColor),
+                                modifier = Modifier.height(38.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Description,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(14.dp)
+                                )
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text(
+                                    text = "Open GitHub Releases",
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    fontFamily = SoraFamily
+                                )
+                            }
+                        }
+                    }
+                }
+
+                is UpdateCheckResult.UpdateAvailable -> {
+                    val release = result.latestRelease
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(20.dp))
+                            .background(Color(0xFF0F172A).copy(alpha = 0.88f))
+                            .border(1.dp, PrimaryCyan.copy(alpha = 0.50f), RoundedCornerShape(20.dp))
+                            .padding(vertical = 24.dp, horizontal = 20.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Column(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalAlignment = Alignment.CenterHorizontally
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(54.dp)
+                                    .clip(CircleShape)
+                                    .background(PrimaryCyan.copy(alpha = 0.15f))
+                                    .border(1.dp, PrimaryCyan.copy(alpha = 0.45f), CircleShape),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.FileDownload,
+                                    contentDescription = "Update Available",
+                                    tint = PrimaryCyan,
+                                    modifier = Modifier.size(30.dp)
+                                )
+                            }
+                            Spacer(modifier = Modifier.height(12.dp))
+                            Text(
+                                text = "Update Available: ${release.tagName}",
+                                color = Color.White,
+                                fontSize = 17.sp,
+                                fontWeight = FontWeight.Bold,
+                                fontFamily = SoraFamily,
+                                textAlign = TextAlign.Center
+                            )
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Text(
+                                text = "Installed: v$versionName → Latest: ${release.tagName}",
+                                color = PrimaryCyan,
+                                fontSize = 13.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                fontFamily = SoraFamily
+                            )
+                            if (!release.publishedAt.isNullOrBlank()) {
+                                Spacer(modifier = Modifier.height(2.dp))
+                                Text(
+                                    text = "Released on ${release.publishedAt}",
+                                    color = Color(0xFF94A3B8),
+                                    fontSize = 11.sp,
+                                    fontFamily = SoraFamily
+                                )
+                            }
+
+                            if (!release.notesSummary.isNullOrBlank()) {
+                                Spacer(modifier = Modifier.height(14.dp))
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clip(RoundedCornerShape(12.dp))
+                                        .background(Color(0xFF1E293B).copy(alpha = 0.70f))
+                                        .border(1.dp, Color.White.copy(alpha = 0.08f), RoundedCornerShape(12.dp))
+                                        .padding(12.dp)
+                                ) {
+                                    Column {
+                                        Text(
+                                            text = "Release Notes",
+                                            color = PrimaryCyan,
+                                            fontSize = 11.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            fontFamily = SoraFamily
+                                        )
+                                        Spacer(modifier = Modifier.height(4.dp))
+                                        Text(
+                                            text = release.notesSummary,
+                                            color = Color(0xFFCBD5E1),
+                                            fontSize = 11.sp,
+                                            lineHeight = 15.sp,
+                                            fontFamily = SoraFamily
+                                        )
+                                    }
+                                }
+                            }
+
+                            Spacer(modifier = Modifier.height(16.dp))
+                            Button(
+                                onClick = { openUrlSafely(release.htmlUrl) },
+                                colors = ButtonDefaults.buttonColors(containerColor = PrimaryCyan),
+                                shape = RoundedCornerShape(12.dp),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(44.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.FileDownload,
+                                    contentDescription = null,
+                                    tint = BackgroundDark,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text(
+                                    text = "Download from GitHub",
+                                    color = BackgroundDark,
+                                    fontSize = 13.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    fontFamily = SoraFamily
+                                )
+                            }
+                        }
+                    }
+                }
+
+                is UpdateCheckResult.NoPublishedRelease -> {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(20.dp))
+                            .background(Color(0xFF0F172A).copy(alpha = 0.88f))
+                            .border(1.dp, Color.White.copy(alpha = 0.14f), RoundedCornerShape(20.dp))
+                            .padding(vertical = 28.dp, horizontal = 20.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Column(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalAlignment = Alignment.CenterHorizontally
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(54.dp)
+                                    .clip(CircleShape)
+                                    .background(Color.White.copy(alpha = 0.06f))
+                                    .border(1.dp, Color.White.copy(alpha = 0.16f), CircleShape),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Info,
+                                    contentDescription = "No Release",
+                                    tint = Color(0xFF94A3B8),
+                                    modifier = Modifier.size(30.dp)
+                                )
+                            }
+                            Spacer(modifier = Modifier.height(14.dp))
+                            Text(
+                                text = "No Public Release Found Yet",
+                                color = Color.White,
+                                fontSize = 17.sp,
+                                fontWeight = FontWeight.Bold,
+                                fontFamily = SoraFamily
+                            )
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Text(
+                                text = "No published releases found on GitHub. Running local build v$versionName.",
+                                color = Color(0xFF94A3B8),
+                                fontSize = 12.sp,
+                                fontFamily = SoraFamily,
+                                textAlign = TextAlign.Center
+                            )
+                            Spacer(modifier = Modifier.height(14.dp))
+                            OutlinedButton(
+                                onClick = { openUrlSafely(result.releasesUrl) },
+                                shape = RoundedCornerShape(10.dp),
+                                border = BorderStroke(1.dp, Color.White.copy(alpha = 0.20f)),
+                                colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFF94A3B8)),
+                                modifier = Modifier.height(38.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Description,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(14.dp)
+                                )
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text(
+                                    text = "Open GitHub Releases",
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    fontFamily = SoraFamily
+                                )
+                            }
+                        }
+                    }
+                }
+
+                is UpdateCheckResult.Error -> {
+                    val amberColor = Color(0xFFF59E0B)
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(20.dp))
+                            .background(Color(0xFF0F172A).copy(alpha = 0.88f))
+                            .border(1.dp, amberColor.copy(alpha = 0.40f), RoundedCornerShape(20.dp))
+                            .padding(vertical = 24.dp, horizontal = 20.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Column(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalAlignment = Alignment.CenterHorizontally
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(54.dp)
+                                    .clip(CircleShape)
+                                    .background(amberColor.copy(alpha = 0.12f))
+                                    .border(1.dp, amberColor.copy(alpha = 0.35f), CircleShape),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Warning,
+                                    contentDescription = "Error",
+                                    tint = amberColor,
+                                    modifier = Modifier.size(30.dp)
+                                )
+                            }
+                            Spacer(modifier = Modifier.height(12.dp))
+                            Text(
+                                text = "Update Check Failed",
+                                color = Color.White,
+                                fontSize = 17.sp,
+                                fontWeight = FontWeight.Bold,
+                                fontFamily = SoraFamily
+                            )
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Text(
+                                text = result.message,
+                                color = Color(0xFFE2E8F0),
+                                fontSize = 12.sp,
+                                fontFamily = SoraFamily,
+                                textAlign = TextAlign.Center
+                            )
+                            Spacer(modifier = Modifier.height(14.dp))
+                            Row(
+                                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Button(
+                                    onClick = { checkTrigger++ },
+                                    colors = ButtonDefaults.buttonColors(containerColor = amberColor),
+                                    shape = RoundedCornerShape(10.dp),
+                                    modifier = Modifier.height(38.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Refresh,
+                                        contentDescription = null,
+                                        tint = BackgroundDark,
+                                        modifier = Modifier.size(14.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text(
+                                        text = "Retry",
+                                        color = BackgroundDark,
+                                        fontSize = 12.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        fontFamily = SoraFamily
+                                    )
+                                }
+
+                                OutlinedButton(
+                                    onClick = { openUrlSafely(result.releasesUrl) },
+                                    shape = RoundedCornerShape(10.dp),
+                                    border = BorderStroke(1.dp, Color.White.copy(alpha = 0.18f)),
+                                    colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFF94A3B8)),
+                                    modifier = Modifier.height(38.dp)
+                                ) {
+                                    Text(
+                                        text = "Open GitHub Releases",
+                                        fontSize = 12.sp,
+                                        fontWeight = FontWeight.SemiBold,
+                                        fontFamily = SoraFamily
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+
+                null -> Unit
             }
         }
 
@@ -2373,7 +2723,9 @@ fun DrawerModalHost(
                 onShowConnectionWarning = onShowConnectionWarning
             )
             DrawerModalType.CHECK_UPDATE -> CheckForUpdateFullScreen(
-                onDismiss = onDismiss
+                onDismiss = onDismiss,
+                viewModel = viewModel,
+                connectionState = connectionState
             )
             DrawerModalType.ABOUT -> AboutFullScreen(
                 onDismiss = onDismiss
